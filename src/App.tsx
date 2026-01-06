@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { IconPhotoStar } from '@tabler/icons-react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, listImagesRecursive, type FolderPath } from './drive/scan';
 import {
@@ -22,6 +23,9 @@ const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
 const METADATA_CACHE_KEY = 'poseviewer-metadata-cache';
 const METADATA_CACHE_TIME_KEY = 'poseviewer-metadata-cache-ts';
 const METADATA_CACHE_ROOT_KEY = 'poseviewer-metadata-root';
+const IMAGE_LIST_CACHE_TTL = 24 * 60 * 60 * 1000;
+const IMAGE_LIST_CACHE_PREFIX = 'poseviewer-set-images:';
+const IMAGE_LIST_CACHE_TIME_PREFIX = 'poseviewer-set-images-ts:';
 
 const emptyFolders: FolderPath[] = [];
 
@@ -78,6 +82,34 @@ function writeMetadataCache(
   );
 }
 
+function readImageListCache(setId: string) {
+  const data = localStorage.getItem(`${IMAGE_LIST_CACHE_PREFIX}${setId}`);
+  const ts = localStorage.getItem(`${IMAGE_LIST_CACHE_TIME_PREFIX}${setId}`);
+  if (!data || !ts) {
+    return null;
+  }
+  const timestamp = Number(ts);
+  if (Number.isNaN(timestamp) || Date.now() - timestamp > IMAGE_LIST_CACHE_TTL) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(data) as Array<{ id: string; name: string }>;
+    return parsed.map((item) => ({
+      id: item.id,
+      name: item.name,
+      mimeType: 'image/jpeg',
+    })) as DriveImage[];
+  } catch {
+    return null;
+  }
+}
+
+function writeImageListCache(setId: string, images: DriveImage[]) {
+  const payload = images.map((image) => ({ id: image.id, name: image.name }));
+  localStorage.setItem(`${IMAGE_LIST_CACHE_PREFIX}${setId}`, JSON.stringify(payload));
+  localStorage.setItem(`${IMAGE_LIST_CACHE_TIME_PREFIX}${setId}`, String(Date.now()));
+}
+
 function setTokenCookie(token: string | null) {
   if (!token) {
     document.cookie = 'poseviewer_token=; Path=/; Max-Age=0; SameSite=Lax';
@@ -105,6 +137,7 @@ function ImageThumb({
   alt: string;
   size: number;
 }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   if (!fileId) {
     return <div className="thumb thumb--empty">No thumbnail</div>;
   }
@@ -114,7 +147,33 @@ function ImageThumb({
   }
 
   return (
-    <div className="thumb">
+    <div
+      className="thumb"
+      ref={containerRef}
+      onMouseMove={(event) => {
+        const bounds = containerRef.current?.getBoundingClientRect();
+        if (!bounds) {
+          return;
+        }
+        const y = event.clientY - bounds.top;
+        const raw = y / bounds.height;
+        const clamped = Math.min(1, Math.max(0, raw));
+        const start = 0.2;
+        const end = 0.8;
+        let percent = 0;
+        if (clamped <= start) {
+          percent = 0;
+        } else if (clamped >= end) {
+          percent = 100;
+        } else {
+          percent = ((clamped - start) / (end - start)) * 100;
+        }
+        containerRef.current?.style.setProperty('--thumb-pos', `${percent}%`);
+      }}
+      onMouseLeave={() => {
+        containerRef.current?.style.setProperty('--thumb-pos', '50%');
+      }}
+    >
       <img src={createProxyThumbUrl(fileId, size)} alt={alt} loading="lazy" decoding="async" />
     </div>
   );
@@ -162,7 +221,10 @@ export default function App() {
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
+  const [allImages, setAllImages] = useState<DriveImage[]>([]);
+  const [isLoadingAllImages, setIsLoadingAllImages] = useState(false);
   const [modalIndex, setModalIndex] = useState<number | null>(null);
+  const [modalImageId, setModalImageId] = useState<string | null>(null);
   const [isModalLoaded, setIsModalLoaded] = useState(false);
 
   const filteredFolders = useMemo(() => {
@@ -376,6 +438,10 @@ export default function App() {
       return;
     }
 
+    if (activeSet?.id === setId) {
+      setActiveSet((current) => (current ? { ...current, ...update } : current));
+    }
+
     const updated: MetadataDocument = {
       version: 1,
       sets: metadata.sets.map((set) => (set.id === setId ? { ...set, ...update } : set)),
@@ -396,6 +462,10 @@ export default function App() {
     }
   };
 
+  const handleSetThumbnail = async (setId: string, fileId: string) => {
+    await handleUpdateSet(setId, { thumbnailFileId: fileId });
+  };
+
   const loadSetImages = async (set: PoseSet, limit: number, append = false) => {
     if (!token) {
       return;
@@ -408,7 +478,28 @@ export default function App() {
     setError('');
 
     try {
+      const cached = readImageListCache(set.id);
+      if (cached && cached.length >= limit) {
+        const slice = cached.slice(0, limit);
+        if (append) {
+          setActiveImages((current) => {
+            const merged = [...current];
+            const existing = new Set(current.map((item) => item.id));
+            for (const image of slice) {
+              if (!existing.has(image.id)) {
+                merged.push(image);
+              }
+            }
+            return merged;
+          });
+        } else {
+          setActiveImages(slice);
+        }
+        return;
+      }
+
       const images = await listImagesRecursive(token, set.rootFolderId, limit);
+      writeImageListCache(set.id, images);
       if (append) {
         setActiveImages((current) => {
           const merged = [...current];
@@ -434,10 +525,33 @@ export default function App() {
     }
   };
 
+  const loadAllImages = async (set: PoseSet) => {
+    if (!token) {
+      return;
+    }
+    const cached = readImageListCache(set.id);
+    if (cached) {
+      setAllImages(cached);
+      return;
+    }
+    setIsLoadingAllImages(true);
+    try {
+      const images = await listImagesRecursive(token, set.rootFolderId);
+      setAllImages(images);
+      writeImageListCache(set.id, images);
+    } catch (loadError) {
+      setError((loadError as Error).message);
+    } finally {
+      setIsLoadingAllImages(false);
+    }
+  };
+
   const handleOpenSet = async (set: PoseSet) => {
     setActiveSet(set);
     setImageLimit(IMAGE_PAGE_SIZE);
+    setAllImages([]);
     await loadSetImages(set, IMAGE_PAGE_SIZE);
+    void loadAllImages(set);
   };
 
   const handleLoadMoreImages = async () => {
@@ -450,37 +564,41 @@ export default function App() {
   };
 
   const isConnected = Boolean(token);
+  const modalList = allImages.length > 0 ? allImages : activeImages;
   const modalImage =
-    modalIndex !== null && modalIndex >= 0 && modalIndex < activeImages.length
-      ? activeImages[modalIndex]
+    modalIndex !== null && modalIndex >= 0 && modalIndex < modalList.length
+      ? modalList[modalIndex]
       : null;
 
   const openModal = (index: number) => {
+    const image = activeImages[index];
+    setModalImageId(image?.id ?? null);
     setModalIndex(index);
     setIsModalLoaded(false);
   };
 
   const closeModal = () => {
     setModalIndex(null);
+    setModalImageId(null);
     setIsModalLoaded(false);
   };
 
   const goNextImage = () => {
     setModalIndex((current) => {
-      if (current === null || activeImages.length === 0) {
+      if (current === null || modalList.length === 0) {
         return current;
       }
-      return (current + 1) % activeImages.length;
+      return (current + 1) % modalList.length;
     });
     setIsModalLoaded(false);
   };
 
   const goPrevImage = () => {
     setModalIndex((current) => {
-      if (current === null || activeImages.length === 0) {
+      if (current === null || modalList.length === 0) {
         return current;
       }
-      return (current - 1 + activeImages.length) % activeImages.length;
+      return (current - 1 + modalList.length) % modalList.length;
     });
     setIsModalLoaded(false);
   };
@@ -506,7 +624,27 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKey);
     };
-  }, [modalIndex, activeImages.length]);
+  }, [modalIndex, modalList.length]);
+
+  useEffect(() => {
+    if (!modalImageId || allImages.length === 0) {
+      return;
+    }
+    const nextIndex = allImages.findIndex((image) => image.id === modalImageId);
+    if (nextIndex >= 0) {
+      setModalIndex(nextIndex);
+    }
+  }, [allImages, modalImageId]);
+
+  useEffect(() => {
+    if (modalIndex === null) {
+      return;
+    }
+    const image = modalList[modalIndex];
+    if (image?.id && image.id !== modalImageId) {
+      setModalImageId(image.id);
+    }
+  }, [modalIndex, modalList, modalImageId]);
 
 
   return (
@@ -761,28 +899,44 @@ export default function App() {
               </div>
               <div className="stack">
                 {isLoadingImages ? <p className="empty">Loading images…</p> : null}
-                <div className="image-grid">
+                <div className="image-grid image-grid--zoom">
                   {activeImages.map((image, index) => (
-                    <button
-                      key={image.id}
-                      type="button"
-                      className="image-button"
-                      onClick={() => openModal(index)}
-                    >
-                      <ImageThumb
-                        token={token ?? ''}
-                        fileId={image.id}
-                        alt={activeSet.name}
-                        size={VIEWER_SIZE}
-                      />
-                    </button>
+                    <div key={image.id} className="image-tile">
+                      <button
+                        type="button"
+                        className="image-button"
+                        onClick={() => openModal(index)}
+                      >
+                        <ImageThumb
+                          token={token ?? ''}
+                          fileId={image.id}
+                          alt={activeSet.name}
+                          size={VIEWER_SIZE}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        className={`thumb-action ${
+                          activeSet.thumbnailFileId === image.id ? 'is-active' : ''
+                        }`}
+                        onClick={() => handleSetThumbnail(activeSet.id, image.id)}
+                        disabled={isSaving || activeSet.thumbnailFileId === image.id}
+                        aria-label="Use as thumbnail"
+                      >
+                        <IconPhotoStar size={16} />
+                      </button>
+                    </div>
                   ))}
                   {!isLoadingImages && activeImages.length === 0 ? (
                     <p className="empty">No images found in this set.</p>
                   ) : null}
                 </div>
                 {activeImages.length > 0 ? (
-                  <button className="ghost" onClick={handleLoadMoreImages} disabled={isLoadingMore}>
+                  <button
+                    className="ghost load-more"
+                    onClick={handleLoadMoreImages}
+                    disabled={isLoadingMore}
+                  >
                     {isLoadingMore ? 'Loading more…' : 'Load more images'}
                   </button>
                 ) : null}

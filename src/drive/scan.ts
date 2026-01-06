@@ -81,9 +81,6 @@ export async function listImagesRecursive(
   const queue: string[] = [folderId];
 
   while (queue.length > 0) {
-    if (images.length >= maxCount) {
-      break;
-    }
     const currentId = queue.shift();
     if (!currentId) {
       continue;
@@ -98,13 +95,14 @@ export async function listImagesRecursive(
         queue.push(child.id);
       } else if (child.mimeType.startsWith('image/')) {
         images.push(child as DriveImage);
-        if (images.length >= maxCount) {
-          break;
-        }
       }
     }
   }
 
+  images.sort((a, b) => a.name.localeCompare(b.name));
+  if (Number.isFinite(maxCount)) {
+    return images.slice(0, maxCount);
+  }
   return images;
 }
 

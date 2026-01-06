@@ -12,6 +12,7 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 type FolderScanOptions = {
   excludeIds?: Set<string>;
+  excludePaths?: string[];
   maxCount?: number;
   onProgress?: (count: number, currentPath: string) => void;
 };
@@ -23,6 +24,7 @@ export async function listFolderPaths(
 ) {
   const root = await driveGetFile(token, rootId, 'id,name');
   const excludeIds = options.excludeIds ?? new Set<string>();
+  const excludePaths = options.excludePaths ?? [];
   const maxCount = options.maxCount ?? 50;
   const onProgress = options.onProgress;
 
@@ -48,6 +50,14 @@ export async function listFolderPaths(
       continue;
     }
 
+    if (
+      excludePaths.some(
+        (prefix) => current.path === prefix || current.path.startsWith(`${prefix}/`)
+      )
+    ) {
+      continue;
+    }
+
     folders.push(current);
     if (onProgress) {
       onProgress(folders.length, current.path);
@@ -57,9 +67,13 @@ export async function listFolderPaths(
       break;
     }
 
-    const children = await driveList(token, {
-      q: `'${current.id}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
-    });
+    const children = await driveList(
+      token,
+      {
+        q: `'${current.id}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+      },
+      'nextPageToken,files(id,name,mimeType)'
+    );
 
     for (const child of children) {
       const childPath = {
@@ -91,9 +105,13 @@ export async function listImagesRecursive(
       continue;
     }
 
-    const children = await driveList(token, {
-      q: `'${currentId}' in parents and trashed=false`,
-    });
+    const children = await driveList(
+      token,
+      {
+        q: `'${currentId}' in parents and trashed=false`,
+      },
+      'nextPageToken,files(id,name,mimeType)'
+    );
 
     for (const child of children) {
       if (child.mimeType === FOLDER_MIME) {

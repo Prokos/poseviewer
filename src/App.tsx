@@ -3,6 +3,13 @@ import { IconLoader2, IconPhotoStar } from '@tabler/icons-react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, listImagesRecursive, type FolderPath } from './drive/scan';
 import {
+  buildSetIndex,
+  findSetIndexFileId,
+  indexItemsToImages,
+  loadSetIndex,
+  saveSetIndex,
+} from './drive/index';
+import {
   createPoseSet,
   emptyMetadata,
   loadMetadata,
@@ -15,7 +22,7 @@ import type { DriveImage } from './drive/types';
 const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
-const IMAGE_PAGE_SIZE = 30;
+const IMAGE_PAGE_SIZE = 60;
 const THUMB_SIZE = 320;
 const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
 const METADATA_CACHE_KEY = 'poseviewer-metadata-cache';
@@ -226,6 +233,7 @@ export default function App() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [imageLoadStatus, setImageLoadStatus] = useState('');
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
   const [allImages, setAllImages] = useState<DriveImage[]>([]);
   const [isLoadingAllImages, setIsLoadingAllImages] = useState(false);
@@ -348,8 +356,16 @@ export default function App() {
     try {
       const meta = await loadMetadata(token, rootId);
       const excludeIds = new Set(meta.data.sets.map((set) => set.rootFolderId));
+      const excludePaths = [
+        ...meta.data.sets.map((set) => set.rootPath),
+        ...hiddenFolders.map((folder) => folder.path),
+      ];
+      for (const hidden of hiddenFolders) {
+        excludeIds.add(hidden.id);
+      }
       const folders = await listFolderPaths(token, rootId, {
         excludeIds,
+        excludePaths,
         maxCount: 50,
         onProgress: (count, path) => {
           setScanCount(count);
@@ -413,8 +429,11 @@ export default function App() {
 
     const loadPreview = async () => {
       try {
-        const images = await listImagesRecursive(token, selectedFolder.id, 80);
-        const sample = pickRandom(images, 4);
+        const index = await loadSetIndex(token, selectedFolder.id);
+        const images = index
+          ? indexItemsToImages(index.data.items)
+          : indexItemsToImages(await buildSetIndex(token, selectedFolder.id));
+        const sample = pickRandom(images, 8);
         if (isActive) {
           setPreviewImages(sample);
         }
@@ -460,6 +479,8 @@ export default function App() {
     try {
       const images = await listImagesRecursive(token, selectedFolder.id);
       const thumbnailFileId = images[0]?.id;
+      const indexItems = images.map((image) => ({ id: image.id, name: image.name }));
+      await saveSetIndex(token, selectedFolder.id, null, indexItems);
       const next = createPoseSet({
         name: setName.trim() || selectedFolder.name,
         rootFolderId: selectedFolder.id,
@@ -526,12 +547,14 @@ export default function App() {
       setIsLoadingMore(true);
     } else {
       setIsLoadingImages(true);
+      setImageLoadStatus('Images: loading');
     }
     setError('');
 
     try {
       const cached = readImageListCache(set.id);
       if (cached && cached.length >= limit) {
+        setImageLoadStatus('Images: using local cache');
         const slice = cached.slice(0, limit);
         if (append) {
           setActiveImages((current) => {
@@ -550,13 +573,41 @@ export default function App() {
         return;
       }
 
-      const images = await listImagesRecursive(token, set.rootFolderId, limit);
+      const index = await loadSetIndex(token, set.rootFolderId);
+      if (index) {
+        setImageLoadStatus('Images: using Drive index');
+        const images = indexItemsToImages(index.data.items);
+        writeImageListCache(set.id, images);
+        const slice = images.slice(0, limit);
+        if (append) {
+          setActiveImages((current) => {
+            const merged = [...current];
+            const existing = new Set(current.map((item) => item.id));
+            for (const image of slice) {
+              if (!existing.has(image.id)) {
+                merged.push(image);
+              }
+            }
+            return merged;
+          });
+        } else {
+          setActiveImages(slice);
+        }
+        return;
+      }
+
+      setImageLoadStatus('Images: building Drive index (first time)');
+      const items = await buildSetIndex(token, set.rootFolderId);
+      const images = indexItemsToImages(items);
+      const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
+      await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
       writeImageListCache(set.id, images);
+      const slice = images.slice(0, limit);
       if (append) {
         setActiveImages((current) => {
           const merged = [...current];
           const existing = new Set(current.map((item) => item.id));
-          for (const image of images) {
+          for (const image of slice) {
             if (!existing.has(image.id)) {
               merged.push(image);
             }
@@ -564,10 +615,11 @@ export default function App() {
           return merged;
         });
       } else {
-        setActiveImages(images);
+        setActiveImages(slice);
       }
     } catch (loadError) {
       setError((loadError as Error).message);
+      setImageLoadStatus('');
     } finally {
       if (append) {
         setIsLoadingMore(false);
@@ -588,9 +640,19 @@ export default function App() {
     }
     setIsLoadingAllImages(true);
     try {
-      const images = await listImagesRecursive(token, set.rootFolderId);
+      const index = await loadSetIndex(token, set.rootFolderId);
+      if (index) {
+        const images = indexItemsToImages(index.data.items);
+        setAllImages(images);
+        writeImageListCache(set.id, images);
+        return;
+      }
+      const items = await buildSetIndex(token, set.rootFolderId);
+      const images = indexItemsToImages(items);
       setAllImages(images);
       writeImageListCache(set.id, images);
+      const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
+      await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
     } catch (loadError) {
       setError((loadError as Error).message);
     } finally {
@@ -602,8 +664,8 @@ export default function App() {
     setActiveSet(set);
     setImageLimit(IMAGE_PAGE_SIZE);
     setAllImages([]);
+    setImageLoadStatus('');
     await loadSetImages(set, IMAGE_PAGE_SIZE);
-    void loadAllImages(set);
   };
 
   const handleRefreshSet = async (set: PoseSet) => {
@@ -611,14 +673,22 @@ export default function App() {
       return;
     }
     setIsRefreshingSet(true);
-    const refreshed = await listImagesRecursive(token, set.rootFolderId);
-    writeImageListCache(set.id, refreshed);
-    const updatedSet = { ...set, imageCount: refreshed.length };
-    await handleUpdateSet(set.id, { imageCount: refreshed.length });
-    setActiveSet(updatedSet);
-    setActiveImages(refreshed.slice(0, imageLimit));
-    setAllImages(refreshed);
-    setIsRefreshingSet(false);
+    try {
+      const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
+      const items = await buildSetIndex(token, set.rootFolderId);
+      const refreshed = indexItemsToImages(items);
+      await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
+      writeImageListCache(set.id, refreshed);
+      const updatedSet = { ...set, imageCount: refreshed.length };
+      await handleUpdateSet(set.id, { imageCount: refreshed.length });
+      setActiveSet(updatedSet);
+      setActiveImages(refreshed.slice(0, imageLimit));
+      setAllImages(refreshed);
+    } catch (refreshError) {
+      setError((refreshError as Error).message);
+    } finally {
+      setIsRefreshingSet(false);
+    }
   };
 
   const handleLoadMoreImages = async () => {
@@ -631,7 +701,12 @@ export default function App() {
   };
 
   const isConnected = Boolean(token);
-  const modalList = allImages.length > 0 ? allImages : activeImages;
+  const hasFullList =
+    allImages.length > 0 &&
+    (activeSet?.imageCount
+      ? allImages.length >= activeSet.imageCount
+      : allImages.length >= activeImages.length);
+  const modalList = hasFullList ? allImages : activeImages;
   const modalImage =
     modalIndex !== null && modalIndex >= 0 && modalIndex < modalList.length
       ? modalList[modalIndex]
@@ -681,7 +756,7 @@ export default function App() {
       if (current === null || modalList.length === 0) {
         return current;
       }
-      const isUsingFullList = allImages.length > 0;
+      const isUsingFullList = hasFullList;
       const isLast = current + 1 >= modalList.length;
       if (!isUsingFullList && isLast) {
         if (!isLoadingAllImages && activeSet) {
@@ -703,7 +778,7 @@ export default function App() {
       if (current === null || modalList.length === 0) {
         return current;
       }
-      const isUsingFullList = allImages.length > 0;
+      const isUsingFullList = hasFullList;
       const isFirst = current - 1 < 0;
       if (!isUsingFullList && isFirst) {
         if (!isLoadingAllImages && activeSet) {
@@ -988,7 +1063,7 @@ export default function App() {
                   </div>
                 ) : null}
                 <div className="preview">
-                  <p className="muted">Preview sample (random 4)</p>
+                  <p className="muted">Preview sample</p>
                   {isLoadingPreview ? (
                     <p className="empty">Loading preview…</p>
                   ) : previewImages.length > 0 ? (
@@ -1105,7 +1180,7 @@ export default function App() {
                   onClick={() => handleRefreshSet(activeSet)}
                   disabled={isRefreshingSet}
                 >
-                  {isRefreshingSet ? 'Refreshing…' : 'Refresh images'}
+                  {isRefreshingSet ? 'Refreshing…' : 'Refresh data'}
                 </button>
               </div>
               <div key={activeSet.id} className="field-group">
@@ -1150,6 +1225,7 @@ export default function App() {
                     Loading images… {activeImages.length}/{totalImages} loaded
                   </p>
                 ) : null}
+                {imageLoadStatus ? <p className="muted">{imageLoadStatus}</p> : null}
                 <div className="image-grid image-grid--zoom">
                   {activeImages.map((image, index) => (
                     <div key={image.id} className="image-tile">

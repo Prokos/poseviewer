@@ -18,10 +18,14 @@ export type MetadataDocument = {
 const METADATA_NAME = 'metadata.txt';
 
 export async function loadMetadata(token: string, rootId: string) {
-  const files = await driveList(token, {
-    q: `'${rootId}' in parents and name='${METADATA_NAME}' and trashed=false`,
-    pageSize: '1',
-  });
+  const files = await driveList(
+    token,
+    {
+      q: `'${rootId}' in parents and name='${METADATA_NAME}' and trashed=false`,
+      pageSize: '1',
+    },
+    'nextPageToken,files(id)'
+  );
 
   if (files.length === 0) {
     return { fileId: null, data: emptyMetadata() };

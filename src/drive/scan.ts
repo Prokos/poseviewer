@@ -13,6 +13,7 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder';
 type FolderScanOptions = {
   excludeIds?: Set<string>;
   maxCount?: number;
+  onProgress?: (count: number, currentPath: string) => void;
 };
 
 export async function listFolderPaths(
@@ -23,6 +24,7 @@ export async function listFolderPaths(
   const root = await driveGetFile(token, rootId, 'id,name');
   const excludeIds = options.excludeIds ?? new Set<string>();
   const maxCount = options.maxCount ?? 50;
+  const onProgress = options.onProgress;
 
   const folders: FolderPath[] = [];
   const rootPath = {
@@ -47,6 +49,9 @@ export async function listFolderPaths(
     }
 
     folders.push(current);
+    if (onProgress) {
+      onProgress(folders.length, current.path);
+    }
 
     if (folders.length >= maxCount) {
       break;

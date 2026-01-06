@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { IconPhotoStar } from '@tabler/icons-react';
+import { IconLoader2, IconPhotoStar } from '@tabler/icons-react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, listImagesRecursive, type FolderPath } from './drive/scan';
 import {
@@ -16,16 +16,14 @@ const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefine
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const IMAGE_PAGE_SIZE = 30;
-const OVERVIEW_SIZE = 320;
-const PREVIEW_SIZE = 220;
-const VIEWER_SIZE = 1000;
+const THUMB_SIZE = 320;
 const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
 const METADATA_CACHE_KEY = 'poseviewer-metadata-cache';
 const METADATA_CACHE_TIME_KEY = 'poseviewer-metadata-cache-ts';
 const METADATA_CACHE_ROOT_KEY = 'poseviewer-metadata-root';
 const IMAGE_LIST_CACHE_TTL = 24 * 60 * 60 * 1000;
-const IMAGE_LIST_CACHE_PREFIX = 'poseviewer-set-images:';
-const IMAGE_LIST_CACHE_TIME_PREFIX = 'poseviewer-set-images-ts:';
+const IMAGE_LIST_CACHE_PREFIX = 'poseviewer-set-images:v2:';
+const IMAGE_LIST_CACHE_TIME_PREFIX = 'poseviewer-set-images-ts:v2:';
 
 const emptyFolders: FolderPath[] = [];
 
@@ -45,7 +43,7 @@ function pickRandom<T>(items: T[], count: number) {
   return result.slice(0, count);
 }
 
-function readMetadataCache(rootId: string) {
+function readMetadataCache(rootId: string, options?: { allowStale?: boolean }) {
   const cacheRoot = localStorage.getItem(METADATA_CACHE_ROOT_KEY);
   const cacheTs = localStorage.getItem(METADATA_CACHE_TIME_KEY);
   const cacheData = localStorage.getItem(METADATA_CACHE_KEY);
@@ -55,9 +53,11 @@ function readMetadataCache(rootId: string) {
   if (cacheRoot !== rootId) {
     return null;
   }
-  const timestamp = Number(cacheTs);
-  if (Number.isNaN(timestamp) || Date.now() - timestamp > METADATA_CACHE_TTL) {
-    return null;
+  if (!options?.allowStale) {
+    const timestamp = Number(cacheTs);
+    if (Number.isNaN(timestamp) || Date.now() - timestamp > METADATA_CACHE_TTL) {
+      return null;
+    }
   }
   try {
     return JSON.parse(cacheData) as { fileId: string | null; data: MetadataDocument };
@@ -196,11 +196,16 @@ export default function App() {
   });
   const [tokenStatus, setTokenStatus] = useState<string>('');
   const rootId = DEFAULT_ROOT_ID ?? '';
-  const [folderPaths, setFolderPaths] = useState<FolderPath[]>(emptyFolders);
+  const [folderPaths, setFolderPaths] = useLocalStorage<FolderPath[]>(
+    'poseviewer-folder-paths',
+    emptyFolders
+  );
   const [metadata, setMetadata] = useState<MetadataDocument>(emptyMetadata());
   const [metadataFileId, setMetadataFileId] = useState<string | null>(null);
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanCount, setScanCount] = useState(0);
+  const [scanPath, setScanPath] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string>('');
   const [folderFilter, setFolderFilter] = useState('');
@@ -210,6 +215,7 @@ export default function App() {
     'poseviewer-hidden-folders',
     []
   );
+  const [showHiddenFolders, setShowHiddenFolders] = useState(false);
   const [setFilter, setSetFilter] = useState('');
   const [selectedFolder, setSelectedFolder] = useState<FolderPath | null>(null);
   const [setName, setSetName] = useState('');
@@ -223,14 +229,29 @@ export default function App() {
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
   const [allImages, setAllImages] = useState<DriveImage[]>([]);
   const [isLoadingAllImages, setIsLoadingAllImages] = useState(false);
+  const [isRefreshingSet, setIsRefreshingSet] = useState(false);
   const [modalIndex, setModalIndex] = useState<number | null>(null);
   const [modalImageId, setModalImageId] = useState<string | null>(null);
   const [isModalLoaded, setIsModalLoaded] = useState(false);
+  const [modalPulse, setModalPulse] = useState(false);
+  const [modalZoom, setModalZoom] = useState(1);
+  const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
+  const isPanningRef = useRef(false);
+  const panStartRef = useRef({ x: 0, y: 0, originX: 0, originY: 0 });
+  const modalPulseTimeout = useRef<number | null>(null);
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
+    const setPrefixes = metadata.sets.map((set) => set.rootPath);
     return folderPaths.filter((folder) => {
       if (hiddenFolders.some((hidden) => hidden.id === folder.id)) {
+        return false;
+      }
+      if (
+        setPrefixes.some(
+          (prefix) => folder.path === prefix || folder.path.startsWith(`${prefix}/`)
+        )
+      ) {
         return false;
       }
       if (!query) {
@@ -238,7 +259,7 @@ export default function App() {
       }
       return folder.path.toLowerCase().includes(query);
     });
-  }, [folderFilter, folderPaths, hiddenFolders]);
+  }, [folderFilter, folderPaths, hiddenFolders, metadata.sets]);
 
   const filteredSets = useMemo(() => {
     const query = setFilter.trim().toLowerCase();
@@ -250,6 +271,16 @@ export default function App() {
       return combined.includes(query);
     });
   }, [metadata.sets, setFilter]);
+
+  const availableTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    for (const set of metadata.sets) {
+      for (const tag of set.tags) {
+        tagSet.add(tag);
+      }
+    }
+    return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
+  }, [metadata.sets]);
 
   useEffect(() => {
     setTokenCookie(token);
@@ -293,6 +324,7 @@ export default function App() {
 
     try {
       const meta = await loadMetadata(token, rootId);
+
       setMetadata(meta.data);
       setMetadataFileId(meta.fileId);
       writeMetadataCache(rootId, meta.fileId, meta.data);
@@ -309,6 +341,8 @@ export default function App() {
     }
 
     setIsScanning(true);
+    setScanCount(0);
+    setScanPath('');
     setError('');
 
     try {
@@ -317,6 +351,10 @@ export default function App() {
       const folders = await listFolderPaths(token, rootId, {
         excludeIds,
         maxCount: 50,
+        onProgress: (count, path) => {
+          setScanCount(count);
+          setScanPath(path);
+        },
       });
       setFolderPaths(folders);
       setMetadata(meta.data);
@@ -327,27 +365,41 @@ export default function App() {
     } finally {
       setIsScanning(false);
     }
-  }, [rootId, token]);
+  }, [hiddenFolders, rootId, token]);
 
   useEffect(() => {
-    if (!token || !rootId) {
+    if (!rootId) {
       return;
     }
 
-    const cached = readMetadataCache(rootId);
+    const cached = readMetadataCache(rootId, { allowStale: !token });
     if (cached) {
       setMetadata(cached.data);
       setMetadataFileId(cached.fileId);
+    }
+
+    if (!token) {
       return;
     }
 
-    void handleFetchMetadata();
+    if (!cached) {
+      void handleFetchMetadata();
+    }
   }, [handleFetchMetadata, rootId, token]);
 
   const handleSelectFolder = (folder: FolderPath) => {
     setSelectedFolder(folder);
     setSetName(folder.name);
     setSetTags('');
+  };
+
+  const handleAddTag = (tag: string) => {
+    const current = normalizeTags(setTags);
+    if (current.includes(tag)) {
+      return;
+    }
+    const next = [...current, tag];
+    setSetTags(next.join(', '));
   };
 
   useEffect(() => {
@@ -362,7 +414,7 @@ export default function App() {
     const loadPreview = async () => {
       try {
         const images = await listImagesRecursive(token, selectedFolder.id, 80);
-        const sample = pickRandom(images, 10);
+        const sample = pickRandom(images, 4);
         if (isActive) {
           setPreviewImages(sample);
         }
@@ -554,6 +606,21 @@ export default function App() {
     void loadAllImages(set);
   };
 
+  const handleRefreshSet = async (set: PoseSet) => {
+    if (!token || !rootId) {
+      return;
+    }
+    setIsRefreshingSet(true);
+    const refreshed = await listImagesRecursive(token, set.rootFolderId);
+    writeImageListCache(set.id, refreshed);
+    const updatedSet = { ...set, imageCount: refreshed.length };
+    await handleUpdateSet(set.id, { imageCount: refreshed.length });
+    setActiveSet(updatedSet);
+    setActiveImages(refreshed.slice(0, imageLimit));
+    setAllImages(refreshed);
+    setIsRefreshingSet(false);
+  };
+
   const handleLoadMoreImages = async () => {
     if (!activeSet) {
       return;
@@ -569,18 +636,44 @@ export default function App() {
     modalIndex !== null && modalIndex >= 0 && modalIndex < modalList.length
       ? modalList[modalIndex]
       : null;
+  const totalImages =
+    activeSet?.imageCount ??
+    (allImages.length > 0 ? allImages.length : undefined) ??
+    activeImages.length;
+  const pendingExtra = Math.max(0, Math.min(IMAGE_PAGE_SIZE, totalImages - activeImages.length));
 
   const openModal = (index: number) => {
     const image = activeImages[index];
     setModalImageId(image?.id ?? null);
     setModalIndex(index);
     setIsModalLoaded(false);
+    triggerModalPulse();
   };
 
   const closeModal = () => {
     setModalIndex(null);
     setModalImageId(null);
     setIsModalLoaded(false);
+    setModalPulse(false);
+    setModalZoom(1);
+    setModalPan({ x: 0, y: 0 });
+    if (modalPulseTimeout.current) {
+      window.clearTimeout(modalPulseTimeout.current);
+      modalPulseTimeout.current = null;
+    }
+  };
+
+  const triggerModalPulse = () => {
+    setModalPulse(false);
+    if (modalPulseTimeout.current) {
+      window.clearTimeout(modalPulseTimeout.current);
+    }
+    modalPulseTimeout.current = window.setTimeout(() => {
+      setModalPulse(true);
+      modalPulseTimeout.current = window.setTimeout(() => {
+        setModalPulse(false);
+      }, 220);
+    }, 10);
   };
 
   const goNextImage = () => {
@@ -588,9 +681,21 @@ export default function App() {
       if (current === null || modalList.length === 0) {
         return current;
       }
-      return (current + 1) % modalList.length;
+      const isUsingFullList = allImages.length > 0;
+      const isLast = current + 1 >= modalList.length;
+      if (!isUsingFullList && isLast) {
+        if (!isLoadingAllImages && activeSet) {
+          void loadAllImages(activeSet);
+        }
+        return current;
+      }
+      if (isUsingFullList) {
+        return (current + 1) % modalList.length;
+      }
+      return current + 1;
     });
     setIsModalLoaded(false);
+    triggerModalPulse();
   };
 
   const goPrevImage = () => {
@@ -598,9 +703,21 @@ export default function App() {
       if (current === null || modalList.length === 0) {
         return current;
       }
-      return (current - 1 + modalList.length) % modalList.length;
+      const isUsingFullList = allImages.length > 0;
+      const isFirst = current - 1 < 0;
+      if (!isUsingFullList && isFirst) {
+        if (!isLoadingAllImages && activeSet) {
+          void loadAllImages(activeSet);
+        }
+        return current;
+      }
+      if (isUsingFullList) {
+        return (current - 1 + modalList.length) % modalList.length;
+      }
+      return current - 1;
     });
     setIsModalLoaded(false);
+    triggerModalPulse();
   };
 
   useEffect(() => {
@@ -627,6 +744,14 @@ export default function App() {
   }, [modalIndex, modalList.length]);
 
   useEffect(() => {
+    return () => {
+      if (modalPulseTimeout.current) {
+        window.clearTimeout(modalPulseTimeout.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!modalImageId || allImages.length === 0) {
       return;
     }
@@ -645,6 +770,80 @@ export default function App() {
       setModalImageId(image.id);
     }
   }, [modalIndex, modalList, modalImageId]);
+
+  useEffect(() => {
+    if (modalImageId) {
+      setModalZoom(1);
+      setModalPan({ x: 0, y: 0 });
+    }
+  }, [modalImageId]);
+
+  const handleModalWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
+    const nextZoom = Math.min(4, Math.max(1, modalZoom * zoomFactor));
+    if (nextZoom === modalZoom) {
+      return;
+    }
+
+    if (nextZoom === 1) {
+      setModalZoom(1);
+      setModalPan({ x: 0, y: 0 });
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const pointerX = event.clientX - centerX;
+    const pointerY = event.clientY - centerY;
+    const worldX = (pointerX - modalPan.x) / modalZoom;
+    const worldY = (pointerY - modalPan.y) / modalZoom;
+    const nextPanX = pointerX - worldX * nextZoom;
+    const nextPanY = pointerY - worldY * nextZoom;
+
+    setModalZoom(nextZoom);
+    setModalPan({ x: nextPanX, y: nextPanY });
+  };
+
+  const handleModalPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || modalZoom <= 1) {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button')) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    isPanningRef.current = true;
+    panStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      originX: modalPan.x,
+      originY: modalPan.y,
+    };
+  };
+
+  const handleModalPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isPanningRef.current) {
+      return;
+    }
+    const deltaX = event.clientX - panStartRef.current.x;
+    const deltaY = event.clientY - panStartRef.current.y;
+    setModalPan({
+      x: panStartRef.current.originX + deltaX,
+      y: panStartRef.current.originY + deltaY,
+    });
+  };
+
+  const handleModalPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isPanningRef.current) {
+      return;
+    }
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    isPanningRef.current = false;
+  };
 
 
   return (
@@ -682,7 +881,7 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div className="panel-body">
+          <div className="panel-body panel-body--overlay">
             <label className="field">
               <span>Filter folders</span>
               <input
@@ -693,12 +892,21 @@ export default function App() {
               />
             </label>
             {hiddenFolders.length > 0 ? (
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => setShowHiddenFolders((value) => !value)}
+              >
+                {showHiddenFolders ? 'Hide hidden folders' : 'Show hidden folders'}
+              </button>
+            ) : null}
+            {showHiddenFolders && hiddenFolders.length > 0 ? (
               <div className="hidden-list">
                 {hiddenFolders.map((folder) => (
                   <div key={folder.id} className="hidden-pill">
                     <span>{folder.path}</span>
                     <button className="pill-button" onClick={() => handleShowFolder(folder.id)}>
-                      Show
+                      Unhide
                     </button>
                   </div>
                 ))}
@@ -724,6 +932,15 @@ export default function App() {
               ) : null}
             </div>
             {error ? <p className="error">{error}</p> : null}
+            {isScanning ? (
+              <div className="panel-overlay">
+                <div className="overlay-card">
+                  <p>Scanning folders…</p>
+                  <p className="muted">{scanCount}/50 found</p>
+                  {scanPath ? <p className="overlay-path">{scanPath}</p> : null}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -753,8 +970,25 @@ export default function App() {
                     placeholder="male, clothed, 1000+"
                   />
                 </label>
+                {availableTags.length > 0 ? (
+                  <div className="tag-suggestions">
+                    <p className="muted">Quick tags</p>
+                    <div className="tag-row">
+                      {availableTags.map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          className="tag-button"
+                          onClick={() => handleAddTag(tag)}
+                        >
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="preview">
-                  <p className="muted">Preview sample (random 10)</p>
+                  <p className="muted">Preview sample (random 4)</p>
                   {isLoadingPreview ? (
                     <p className="empty">Loading preview…</p>
                   ) : previewImages.length > 0 ? (
@@ -765,7 +999,7 @@ export default function App() {
                           token={token ?? ''}
                           fileId={image.id}
                           alt={selectedFolder.name}
-                          size={PREVIEW_SIZE}
+                          size={THUMB_SIZE}
                         />
                       ))}
                     </div>
@@ -811,7 +1045,7 @@ export default function App() {
                       token={token}
                       fileId={set.thumbnailFileId}
                       alt={set.name}
-                      size={OVERVIEW_SIZE}
+                      size={THUMB_SIZE}
                     />
                   ) : (
                     <div className="thumb thumb--empty">No thumbnail</div>
@@ -843,7 +1077,6 @@ export default function App() {
       <section className="panel">
         <div className="panel-header">
           <h2>Set viewer</h2>
-          <p>{activeSet ? 'Edit metadata and preview images.' : 'Open a set to preview its images.'}</p>
         </div>
         <div className="panel-body">
           {activeSet ? (
@@ -852,13 +1085,27 @@ export default function App() {
                 <div>
                   <h3>{activeSet.name}</h3>
                   <p className="muted">
+                    <a
+                      className="link"
+                      href={`https://drive.google.com/drive/folders/${activeSet.rootFolderId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {activeSet.rootPath}
+                    </a>
+                  </p>
+                  <p className="muted">
                     {typeof activeSet.imageCount === 'number'
                       ? `${activeSet.imageCount} images`
                       : `${activeImages.length} loaded`}
                   </p>
                 </div>
-                <button className="ghost" onClick={() => handleOpenSet(activeSet)}>
-                  Refresh images
+                <button
+                  className="ghost"
+                  onClick={() => handleRefreshSet(activeSet)}
+                  disabled={isRefreshingSet}
+                >
+                  {isRefreshingSet ? 'Refreshing…' : 'Refresh images'}
                 </button>
               </div>
               <div key={activeSet.id} className="field-group">
@@ -898,7 +1145,11 @@ export default function App() {
                 </label>
               </div>
               <div className="stack">
-                {isLoadingImages ? <p className="empty">Loading images…</p> : null}
+                {isLoadingImages ? (
+                  <p className="empty">
+                    Loading images… {activeImages.length}/{totalImages} loaded
+                  </p>
+                ) : null}
                 <div className="image-grid image-grid--zoom">
                   {activeImages.map((image, index) => (
                     <div key={image.id} className="image-tile">
@@ -911,7 +1162,7 @@ export default function App() {
                           token={token ?? ''}
                           fileId={image.id}
                           alt={activeSet.name}
-                          size={VIEWER_SIZE}
+                          size={THUMB_SIZE}
                         />
                       </button>
                       <button
@@ -937,7 +1188,9 @@ export default function App() {
                     onClick={handleLoadMoreImages}
                     disabled={isLoadingMore}
                   >
-                    {isLoadingMore ? 'Loading more…' : 'Load more images'}
+                    {isLoadingMore
+                      ? `Loading... (+${pendingExtra}) • ${activeImages.length}/${totalImages}`
+                      : `Load more images (+${pendingExtra}) • ${activeImages.length}/${totalImages}`}
                   </button>
                 ) : null}
               </div>
@@ -949,22 +1202,46 @@ export default function App() {
       </section>
       {modalImage ? (
         <div className="modal" onClick={closeModal}>
-          <div className="modal-content" onClick={(event) => event.stopPropagation()}>
+          <div
+            className="modal-content"
+            onClick={(event) => event.stopPropagation()}
+            onWheel={handleModalWheel}
+            onPointerDown={handleModalPointerDown}
+            onPointerMove={handleModalPointerMove}
+            onPointerUp={handleModalPointerUp}
+            onPointerCancel={handleModalPointerUp}
+          >
             <button type="button" className="modal-close" onClick={closeModal}>
               Close
             </button>
-            <img
-              className="modal-thumb"
-              src={createProxyThumbUrl(modalImage.id, VIEWER_SIZE)}
-              alt={modalImage.name}
-            />
-            <img
-              className={`modal-full ${isModalLoaded ? 'is-loaded' : ''}`}
-              src={createProxyMediaUrl(modalImage.id)}
-              alt={modalImage.name}
-              onLoad={() => setIsModalLoaded(true)}
-            />
-            <div className="modal-hint">Use ← → to navigate</div>
+            <div
+              className={`modal-media ${modalZoom > 1 ? 'is-zoomed' : ''}`}
+              style={{
+                transform: `translate(${modalPan.x}px, ${modalPan.y}px) scale(${modalZoom})`,
+              }}
+            >
+              <img
+                className="modal-thumb"
+                src={createProxyThumbUrl(modalImage.id, THUMB_SIZE)}
+                alt={modalImage.name}
+              />
+              <img
+                className={`modal-full ${isModalLoaded ? 'is-loaded' : ''}`}
+                src={createProxyMediaUrl(modalImage.id)}
+                alt={modalImage.name}
+                onLoad={() => setIsModalLoaded(true)}
+              />
+            </div>
+            <div className={`modal-status ${!isModalLoaded ? 'is-visible' : ''}`}>
+              <div className={`modal-status-inner ${modalPulse ? 'pulse' : ''}`}>
+                <IconLoader2 size={20} />
+                <span>Loading image</span>
+              </div>
+            </div>
+            <div className="modal-hint">
+              {modalZoom > 1 ? 'Drag to pan • ' : ''}
+              Scroll to zoom • Use ← → to navigate
+            </div>
           </div>
         </div>
       ) : null}

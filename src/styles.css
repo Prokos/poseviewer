@@ -197,6 +197,37 @@ button.ghost:hover {
   gap: 16px;
 }
 
+.panel-body--overlay {
+  position: relative;
+}
+
+.panel-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(250, 247, 241, 0.75);
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  z-index: 5;
+}
+
+.overlay-card {
+  background: var(--white);
+  padding: 16px 20px;
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  text-align: center;
+  display: grid;
+  gap: 6px;
+  max-width: 320px;
+}
+
+.overlay-path {
+  font-size: 0.8rem;
+  color: var(--muted);
+  word-break: break-word;
+}
+
 .grid {
   display: grid;
   gap: 16px;
@@ -352,6 +383,19 @@ button.ghost:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.tag-suggestions {
+  display: grid;
+  gap: 8px;
+}
+
+.tag-button {
+  background: rgba(31, 28, 23, 0.08);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
 }
 
 .tag {
@@ -513,6 +557,22 @@ button.ghost:hover {
   color: var(--muted);
 }
 
+.link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link:hover {
+  color: var(--ink);
+}
+
+.link:focus-visible {
+  outline: 2px solid rgba(108, 125, 94, 0.4);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 .modal {
   position: fixed;
   inset: 0;
@@ -534,6 +594,22 @@ button.ghost:hover {
   place-items: center;
 }
 
+.modal-media {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transform-origin: center;
+}
+
+.modal-media.is-zoomed {
+  cursor: grab;
+}
+
+.modal-media.is-zoomed:active {
+  cursor: grabbing;
+}
+
 .modal-thumb,
 .modal-full {
   position: absolute;
@@ -550,6 +626,46 @@ button.ghost:hover {
 
 .modal-full.is-loaded {
   opacity: 1;
+}
+
+.modal-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 24px;
+  display: flex;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.8);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.modal-status.is-visible {
+  opacity: 1;
+}
+
+.modal-status-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(20, 18, 15, 0.6);
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
+.modal-status-inner svg {
+  animation: spin 1s linear infinite;
+}
+
+.modal-status-inner.pulse {
+  animation: pulse 0.22s ease;
+}
+
+.modal-status-inner.pulse svg {
+  animation: spin 0.6s linear infinite;
 }
 
 .modal-close {
@@ -574,6 +690,27 @@ button.ghost:hover {
 
 .load-more {
   margin-top: 64px;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.96);
+  }
+  60% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 

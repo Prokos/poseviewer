@@ -7,6 +7,7 @@ export type PoseSet = {
   rootPath: string;
   tags: string[];
   thumbnailFileId?: string;
+  imageCount?: number;
 };
 
 export type MetadataDocument = {

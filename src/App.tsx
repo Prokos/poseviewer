@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocalStorage } from './hooks/useLocalStorage';
-import { driveDownloadBlob } from './drive/api';
 import { listFolderPaths, listImagesRecursive, type FolderPath } from './drive/scan';
 import {
   createPoseSet,
@@ -16,7 +15,9 @@ const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefine
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const IMAGE_PAGE_SIZE = 30;
-const THUMBNAIL_CONCURRENCY = 4;
+const OVERVIEW_SIZE = 320;
+const PREVIEW_SIZE = 220;
+const VIEWER_SIZE = 1000;
 const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
 const METADATA_CACHE_KEY = 'poseviewer-metadata-cache';
 const METADATA_CACHE_TIME_KEY = 'poseviewer-metadata-cache-ts';
@@ -77,105 +78,44 @@ function writeMetadataCache(
   );
 }
 
-type QueueTask<T> = () => Promise<T>;
-
-const thumbQueue: Array<() => void> = [];
-let activeThumbTasks = 0;
-
-function enqueueThumbTask<T>(task: QueueTask<T>) {
-  return new Promise<T>((resolve, reject) => {
-    const run = () => {
-      activeThumbTasks += 1;
-      task()
-        .then(resolve)
-        .catch(reject)
-        .finally(() => {
-          activeThumbTasks -= 1;
-          const next = thumbQueue.shift();
-          if (next) {
-            next();
-          }
-        });
-    };
-
-    if (activeThumbTasks < THUMBNAIL_CONCURRENCY) {
-      run();
-    } else {
-      thumbQueue.push(run);
-    }
-  });
-}
-
-async function fetchMediaBlob(token: string, fileId: string) {
-  let attempt = 0;
-  let delay = 400;
-
-  while (attempt < 3) {
-    try {
-      return await driveDownloadBlob(token, fileId);
-    } catch (error) {
-      const message = (error as Error).message;
-      if (!message.includes('429')) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      delay *= 2;
-      attempt += 1;
-    }
+function setTokenCookie(token: string | null) {
+  if (!token) {
+    document.cookie = 'poseviewer_token=; Path=/; Max-Age=0; SameSite=Lax';
+    return;
   }
-
-  throw new Error('Drive download failed: 429');
+  document.cookie = `poseviewer_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
 }
 
-function ImageThumb({ token, fileId, alt }: { token: string; fileId: string; alt: string }) {
-  const [src, setSrc] = useState('');
-  const [loading, setLoading] = useState(true);
+function createProxyThumbUrl(fileId: string, size: number) {
+  return `/api/thumb/${encodeURIComponent(fileId)}?size=${size}`;
+}
 
+function createProxyMediaUrl(fileId: string) {
+  return `/api/media/${encodeURIComponent(fileId)}`;
+}
+
+function ImageThumb({
+  token,
+  fileId,
+  alt,
+  size,
+}: {
+  token: string;
+  fileId: string;
+  alt: string;
+  size: number;
+}) {
   if (!fileId) {
     return <div className="thumb thumb--empty">No thumbnail</div>;
   }
-
-  useEffect(() => {
-    let isActive = true;
-    let url = '';
-    setSrc('');
-
-    const load = async () => {
-      if (!token) {
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      try {
-        const blob = await enqueueThumbTask(() => fetchMediaBlob(token, fileId));
-        url = URL.createObjectURL(blob);
-        if (isActive) {
-          setSrc(url);
-        }
-      } finally {
-        if (isActive) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void load();
-
-    return () => {
-      isActive = false;
-      if (url) {
-        URL.revokeObjectURL(url);
-      }
-    };
-  }, [fileId, token]);
 
   if (!token) {
     return <div className="thumb thumb--empty">Connect to load</div>;
   }
 
   return (
-    <div className={`thumb ${loading ? 'thumb--loading' : ''}`}>
-      {src ? <img src={src} alt={alt} loading="lazy" decoding="async" /> : <span>Loading…</span>}
+    <div className="thumb">
+      <img src={createProxyThumbUrl(fileId, size)} alt={alt} loading="lazy" decoding="async" />
     </div>
   );
 }
@@ -218,9 +158,12 @@ export default function App() {
   const [activeSet, setActiveSet] = useState<PoseSet | null>(null);
   const [activeImages, setActiveImages] = useState<DriveImage[]>([]);
   const [isLoadingImages, setIsLoadingImages] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
+  const [modalIndex, setModalIndex] = useState<number | null>(null);
+  const [isModalLoaded, setIsModalLoaded] = useState(false);
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
@@ -245,6 +188,10 @@ export default function App() {
       return combined.includes(query);
     });
   }, [metadata.sets, setFilter]);
+
+  useEffect(() => {
+    setTokenCookie(token);
+  }, [token]);
 
   const requestToken = useCallback(() => {
     if (!CLIENT_ID) {
@@ -397,7 +344,7 @@ export default function App() {
     setError('');
 
     try {
-      const images = await listImagesRecursive(token, selectedFolder.id, 1);
+      const images = await listImagesRecursive(token, selectedFolder.id);
       const thumbnailFileId = images[0]?.id;
       const next = createPoseSet({
         name: setName.trim() || selectedFolder.name,
@@ -405,6 +352,7 @@ export default function App() {
         rootPath: selectedFolder.path,
         tags: normalizeTags(setTags),
         thumbnailFileId,
+        imageCount: images.length,
       });
 
       const updated: MetadataDocument = {
@@ -448,20 +396,41 @@ export default function App() {
     }
   };
 
-  const loadSetImages = async (set: PoseSet, limit: number) => {
+  const loadSetImages = async (set: PoseSet, limit: number, append = false) => {
     if (!token) {
       return;
     }
-    setIsLoadingImages(true);
+    if (append) {
+      setIsLoadingMore(true);
+    } else {
+      setIsLoadingImages(true);
+    }
     setError('');
 
     try {
       const images = await listImagesRecursive(token, set.rootFolderId, limit);
-      setActiveImages(images);
+      if (append) {
+        setActiveImages((current) => {
+          const merged = [...current];
+          const existing = new Set(current.map((item) => item.id));
+          for (const image of images) {
+            if (!existing.has(image.id)) {
+              merged.push(image);
+            }
+          }
+          return merged;
+        });
+      } else {
+        setActiveImages(images);
+      }
     } catch (loadError) {
       setError((loadError as Error).message);
     } finally {
-      setIsLoadingImages(false);
+      if (append) {
+        setIsLoadingMore(false);
+      } else {
+        setIsLoadingImages(false);
+      }
     }
   };
 
@@ -477,10 +446,67 @@ export default function App() {
     }
     const nextLimit = imageLimit + IMAGE_PAGE_SIZE;
     setImageLimit(nextLimit);
-    await loadSetImages(activeSet, nextLimit);
+    await loadSetImages(activeSet, nextLimit, true);
   };
 
   const isConnected = Boolean(token);
+  const modalImage =
+    modalIndex !== null && modalIndex >= 0 && modalIndex < activeImages.length
+      ? activeImages[modalIndex]
+      : null;
+
+  const openModal = (index: number) => {
+    setModalIndex(index);
+    setIsModalLoaded(false);
+  };
+
+  const closeModal = () => {
+    setModalIndex(null);
+    setIsModalLoaded(false);
+  };
+
+  const goNextImage = () => {
+    setModalIndex((current) => {
+      if (current === null || activeImages.length === 0) {
+        return current;
+      }
+      return (current + 1) % activeImages.length;
+    });
+    setIsModalLoaded(false);
+  };
+
+  const goPrevImage = () => {
+    setModalIndex((current) => {
+      if (current === null || activeImages.length === 0) {
+        return current;
+      }
+      return (current - 1 + activeImages.length) % activeImages.length;
+    });
+    setIsModalLoaded(false);
+  };
+
+  useEffect(() => {
+    if (modalIndex === null) {
+      return;
+    }
+
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeModal();
+      }
+      if (event.key === 'ArrowRight') {
+        goNextImage();
+      }
+      if (event.key === 'ArrowLeft') {
+        goPrevImage();
+      }
+    };
+
+    window.addEventListener('keydown', handleKey);
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+    };
+  }, [modalIndex, activeImages.length]);
 
 
   return (
@@ -601,6 +627,7 @@ export default function App() {
                           token={token ?? ''}
                           fileId={image.id}
                           alt={selectedFolder.name}
+                          size={PREVIEW_SIZE}
                         />
                       ))}
                     </div>
@@ -622,7 +649,6 @@ export default function App() {
       <section className="panel">
         <div className="panel-header">
           <h2>Sets overview</h2>
-          <p>Browse, filter, and open any set.</p>
         </div>
         <div className="panel-body">
           <label className="field">
@@ -647,14 +673,14 @@ export default function App() {
                       token={token}
                       fileId={set.thumbnailFileId}
                       alt={set.name}
+                      size={OVERVIEW_SIZE}
                     />
                   ) : (
                     <div className="thumb thumb--empty">No thumbnail</div>
                   )
                 ) : null}
                 <div className="card-body">
-                  <h3>{set.name}</h3>
-                  <p className="muted">{set.rootPath}</p>
+                  <p className="muted">{set.name}</p>
                   <div className="tag-row">
                     {set.tags.map((tag) => (
                       <span key={tag} className="tag">
@@ -662,6 +688,9 @@ export default function App() {
                       </span>
                     ))}
                     {set.tags.length === 0 ? <span className="tag ghost">No tags</span> : null}
+                    {typeof set.imageCount === 'number' ? (
+                      <span className="tag ghost">{set.imageCount} images</span>
+                    ) : null}
                   </div>
                 </div>
               </button>
@@ -676,7 +705,7 @@ export default function App() {
       <section className="panel">
         <div className="panel-header">
           <h2>Set viewer</h2>
-          <p>{activeSet ? activeSet.name : 'Open a set to preview its images.'}</p>
+          <p>{activeSet ? 'Edit metadata and preview images.' : 'Open a set to preview its images.'}</p>
         </div>
         <div className="panel-body">
           {activeSet ? (
@@ -684,7 +713,11 @@ export default function App() {
               <div className="viewer-header">
                 <div>
                   <h3>{activeSet.name}</h3>
-                  <p className="muted">{activeSet.rootPath}</p>
+                  <p className="muted">
+                    {typeof activeSet.imageCount === 'number'
+                      ? `${activeSet.imageCount} images`
+                      : `${activeImages.length} loaded`}
+                  </p>
                 </div>
                 <button className="ghost" onClick={() => handleOpenSet(activeSet)}>
                   Refresh images
@@ -726,36 +759,61 @@ export default function App() {
                   />
                 </label>
               </div>
-              {isLoadingImages ? (
-                <p className="empty">Loading images…</p>
-              ) : (
-                <div className="stack">
-                  <div className="image-grid">
-                    {activeImages.map((image) => (
+              <div className="stack">
+                {isLoadingImages ? <p className="empty">Loading images…</p> : null}
+                <div className="image-grid">
+                  {activeImages.map((image, index) => (
+                    <button
+                      key={image.id}
+                      type="button"
+                      className="image-button"
+                      onClick={() => openModal(index)}
+                    >
                       <ImageThumb
-                        key={image.id}
                         token={token ?? ''}
                         fileId={image.id}
                         alt={activeSet.name}
+                        size={VIEWER_SIZE}
                       />
-                    ))}
-                    {activeImages.length === 0 ? (
-                      <p className="empty">No images found in this set.</p>
-                    ) : null}
-                  </div>
-                  {activeImages.length > 0 ? (
-                    <button className="ghost" onClick={handleLoadMoreImages}>
-                      Load more images
                     </button>
+                  ))}
+                  {!isLoadingImages && activeImages.length === 0 ? (
+                    <p className="empty">No images found in this set.</p>
                   ) : null}
                 </div>
-              )}
+                {activeImages.length > 0 ? (
+                  <button className="ghost" onClick={handleLoadMoreImages} disabled={isLoadingMore}>
+                    {isLoadingMore ? 'Loading more…' : 'Load more images'}
+                  </button>
+                ) : null}
+              </div>
             </div>
           ) : (
             <p className="empty">Select a set above to view images.</p>
           )}
         </div>
       </section>
+      {modalImage ? (
+        <div className="modal" onClick={closeModal}>
+          <div className="modal-content" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={closeModal}>
+              Close
+            </button>
+            <img
+              className="modal-thumb"
+              src={createProxyThumbUrl(modalImage.id, VIEWER_SIZE)}
+              alt={modalImage.name}
+            />
+            <img
+              className={`modal-full ${isModalLoaded ? 'is-loaded' : ''}`}
+              src={createProxyMediaUrl(modalImage.id)}
+              alt={modalImage.name}
+              onLoad={() => setIsModalLoaded(true)}
+            />
+            <div className="modal-hint">Use ← → to navigate</div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

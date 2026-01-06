@@ -18,11 +18,11 @@ VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 VITE_ROOT_FOLDER_ID=1-3_0DhIrYRZQC1FhvQ_Eu-UfSRvcLaMn
 ```
 
-5. Install dependencies and run the app:
+5. Install dependencies and run the app + proxy:
 
 ```bash
 npm install
-npm run dev
+npm run dev:all
 ```
 
 ## Metadata format
@@ -48,4 +48,4 @@ npm run dev
 ## Notes
 
 - The app requests `https://www.googleapis.com/auth/drive` so it can list folders and update `metadata.txt`.
-- Image rendering uses authenticated downloads, so viewing is limited to the signed-in user.
+- Image rendering goes through a local proxy (`/api/thumb/:fileId`) that resizes and caches images.

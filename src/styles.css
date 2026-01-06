@@ -359,6 +359,18 @@ button.ghost:hover {
   width: 100%;
   color: inherit;
   font: inherit;
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.card--clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px rgba(38, 46, 24, 0.18);
+  background: rgba(250, 247, 241, 0.95);
+}
+
+.card--clickable:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 3px rgba(108, 125, 94, 0.35), 0 12px 24px rgba(38, 46, 24, 0.18);
 }
 
 .card-body {
@@ -758,10 +770,17 @@ button.ghost:hover {
   z-index: 2;
 }
 
-.back-to-top {
+.scroll-controls {
   position: fixed;
   right: 18px;
   bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 40;
+}
+
+.scroll-control {
   width: 40px;
   height: 40px;
   border-radius: 999px;
@@ -772,14 +791,21 @@ button.ghost:hover {
   background: rgba(31, 28, 23, 0.85);
   color: var(--white);
   box-shadow: var(--shadow);
-  z-index: 40;
+  border: none;
+  cursor: pointer;
 }
 
-.back-to-top:hover {
+.scroll-control:hover {
   background: rgba(31, 28, 23, 0.95);
 }
 
-.back-to-top svg {
+.scroll-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.scroll-control svg {
   display: block;
 }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  IconArrowDown,
   IconArrowUp,
   IconHeart,
   IconHeartFilled,
@@ -260,7 +261,8 @@ export default function App() {
   const [modalPulse, setModalPulse] = useState(false);
   const [modalZoom, setModalZoom] = useState(1);
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
-  const [showBackToTop, setShowBackToTop] = useState(false);
+  const [canScrollUp, setCanScrollUp] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(false);
   const isPanningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, originX: 0, originY: 0 });
   const modalPendingAdvanceRef = useRef(false);
@@ -317,6 +319,26 @@ export default function App() {
     }
     return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
   }, [metadata.sets]);
+
+  const tagUsageCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const set of metadata.sets) {
+      for (const tag of set.tags) {
+        counts[tag] = (counts[tag] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [metadata.sets]);
+
+  const sortedQuickTags = useMemo(() => {
+    return [...availableTags].sort((a, b) => {
+      const diff = (tagUsageCounts[b] ?? 0) - (tagUsageCounts[a] ?? 0);
+      if (diff !== 0) {
+        return diff;
+      }
+      return a.localeCompare(b);
+    });
+  }, [availableTags, tagUsageCounts]);
 
   const tagCounts = useMemo(() => {
     const query = setFilter.trim().toLowerCase();
@@ -991,12 +1013,20 @@ export default function App() {
 
   useEffect(() => {
     const handleScroll = () => {
-      setShowBackToTop(window.scrollY > 400);
+      const scrollY = window.scrollY;
+      const maxScroll = Math.max(
+        0,
+        document.documentElement.scrollHeight - window.innerHeight,
+      );
+      setCanScrollUp(scrollY > 20);
+      setCanScrollDown(scrollY < maxScroll - 20);
     };
     handleScroll();
     window.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('resize', handleScroll);
     return () => {
       window.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('resize', handleScroll);
     };
   }, []);
 
@@ -1197,7 +1227,14 @@ export default function App() {
           <div className="panel-body">
             {selectedFolder ? (
               <div className="stack">
-                <div className="pill">{selectedFolder.path}</div>
+                <a
+                  className="pill"
+                  href={`https://drive.google.com/drive/folders/${selectedFolder.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {selectedFolder.path}
+                </a>
                 <label className="field">
                   <span>Set name</span>
                   <input
@@ -1219,7 +1256,7 @@ export default function App() {
                   <div className="tag-suggestions">
                     <p className="muted">Quick tags</p>
                     <div className="tag-row">
-                      {availableTags.map((tag) => (
+                      {sortedQuickTags.map((tag) => (
                         <button
                           key={tag}
                           type="button"
@@ -1273,7 +1310,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel" ref={setViewerRef}>
+      <section className="panel">
         <div className="panel-header">
           <h2>Sets overview</h2>
         </div>
@@ -1365,7 +1402,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel" ref={setViewerRef}>
         <div className="panel-header">
           <h2>Set viewer</h2>
         </div>
@@ -1656,16 +1693,31 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      {showBackToTop ? (
+      <div className="scroll-controls">
         <button
           type="button"
-          className="back-to-top"
+          className="scroll-control"
           onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
           aria-label="Back to top"
+          disabled={!canScrollUp}
         >
           <IconArrowUp size={18} />
         </button>
-      ) : null}
+        <button
+          type="button"
+          className="scroll-control"
+          onClick={() =>
+            window.scrollTo({
+              top: document.documentElement.scrollHeight,
+              behavior: 'smooth',
+            })
+          }
+          aria-label="Scroll to bottom"
+          disabled={!canScrollDown}
+        >
+          <IconArrowDown size={18} />
+        </button>
+      </div>
     </div>
   );
 }

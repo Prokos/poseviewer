@@ -16,6 +16,7 @@ type FolderScanOptions = {
   ignoreIds?: Set<string>;
   ignorePaths?: string[];
   maxCount?: number;
+  maxConcurrent?: number;
   onProgress?: (count: number, currentPath: string) => void;
 };
 
@@ -30,6 +31,7 @@ export async function listFolderPaths(
   const ignoreIds = options.ignoreIds ?? new Set<string>();
   const ignorePaths = options.ignorePaths ?? [];
   const maxCount = options.maxCount ?? 50;
+  const maxConcurrent = options.maxConcurrent ?? 4;
   const onProgress = options.onProgress;
 
   const folders: FolderPath[] = [];
@@ -40,63 +42,72 @@ export async function listFolderPaths(
   };
 
   const queue: FolderPath[] = [rootPath];
+  let stop = false;
 
-  while (queue.length > 0) {
-    if (folders.length >= maxCount) {
-      break;
-    }
-    const current = queue.shift();
-    if (!current) {
-      continue;
-    }
-
-    const isRoot = current.id === root.id;
-    const isExcluded =
-      excludeIds.has(current.id) ||
-      excludePaths.some(
-        (prefix) => current.path === prefix || current.path.startsWith(`${prefix}/`)
-      );
-    const isIgnored = ignoreIds.has(current.id) || ignorePaths.includes(current.path);
-
-    if (isExcluded && !isRoot) {
-      continue;
-    }
-
-    if (!isExcluded && !isIgnored) {
-      folders.push(current);
-      if (onProgress) {
-        onProgress(folders.length, current.path);
+  const worker = async () => {
+    while (!stop) {
+      const current = queue.shift();
+      if (!current) {
+        return;
       }
-    }
 
-    if (folders.length >= maxCount) {
-      break;
-    }
+      const isRoot = current.id === root.id;
+      const isExcluded =
+        excludeIds.has(current.id) ||
+        excludePaths.some(
+          (prefix) => current.path === prefix || current.path.startsWith(`${prefix}/`)
+        );
+      const isIgnored = ignoreIds.has(current.id) || ignorePaths.includes(current.path);
 
-    if (!isExcluded || isRoot) {
-      const children = await driveList(
-        token,
-        {
-          q: `'${current.id}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
-        },
-        'nextPageToken,files(id,name,mimeType)'
-      );
+      if (isExcluded && !isRoot) {
+        continue;
+      }
 
-      for (const child of children) {
-        const childPath = {
-          id: child.id,
-          name: child.name,
-          path: `${current.path}/${child.name}`,
-          parentId: current.id,
-        };
-        if (!excludeIds.has(child.id)) {
-          queue.push(childPath);
+      if (!isExcluded && !isIgnored && !stop) {
+        if (folders.length < maxCount) {
+          folders.push(current);
+          if (onProgress) {
+            onProgress(folders.length, current.path);
+          }
+          if (folders.length >= maxCount) {
+            stop = true;
+          }
+        } else {
+          stop = true;
+        }
+      }
+
+      if (stop) {
+        continue;
+      }
+
+      if (!isExcluded || isRoot) {
+        const children = await driveList(
+          token,
+          {
+            q: `'${current.id}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+          },
+          'nextPageToken,files(id,name,mimeType)'
+        );
+
+        for (const child of children) {
+          const childPath = {
+            id: child.id,
+            name: child.name,
+            path: `${current.path}/${child.name}`,
+            parentId: current.id,
+          };
+          if (!excludeIds.has(child.id)) {
+            queue.push(childPath);
+          }
         }
       }
     }
-  }
+  };
 
-  return folders;
+  const workers = Array.from({ length: Math.max(1, maxConcurrent) }, () => worker());
+  await Promise.all(workers);
+  return folders.slice(0, maxCount);
 }
 
 export async function listImagesRecursive(
@@ -104,33 +115,43 @@ export async function listImagesRecursive(
   folderId: string,
   maxCount = Infinity
 ) {
-  const images: DriveImage[] = [];
-  const queue: string[] = [folderId];
+  const images: Array<DriveImage & { folderPath: string }> = [];
+  const queue: Array<{ id: string; path: string }> = [{ id: folderId, path: '' }];
 
   while (queue.length > 0) {
-    const currentId = queue.shift();
-    if (!currentId) {
+    const current = queue.shift();
+    if (!current) {
       continue;
     }
 
     const children = await driveList(
       token,
       {
-        q: `'${currentId}' in parents and trashed=false`,
+        q: `'${current.id}' in parents and trashed=false`,
       },
       'nextPageToken,files(id,name,mimeType)'
     );
 
     for (const child of children) {
       if (child.mimeType === FOLDER_MIME) {
-        queue.push(child.id);
+        const nextPath = current.path ? `${current.path}/${child.name}` : child.name;
+        queue.push({ id: child.id, path: nextPath });
       } else if (child.mimeType.startsWith('image/')) {
-        images.push(child as DriveImage);
+        images.push({ ...(child as DriveImage), folderPath: current.path });
       }
     }
   }
 
-  images.sort((a, b) => a.name.localeCompare(b.name));
+  images.sort((a, b) => {
+    const pathDiff = a.folderPath.localeCompare(b.folderPath, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    if (pathDiff !== 0) {
+      return pathDiff;
+    }
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  });
   if (Number.isFinite(maxCount)) {
     return images.slice(0, maxCount);
   }

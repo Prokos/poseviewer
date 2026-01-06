@@ -5,6 +5,7 @@ import path from 'node:path';
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 8787);
+const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const CACHE_DIR = process.env.CACHE_DIR
   ? path.resolve(process.env.CACHE_DIR)
   : path.resolve(process.cwd(), '.cache');
@@ -74,6 +75,41 @@ async function writeCacheWithMeta(filePath, metaPath, data, meta) {
   await fs.writeFile(metaPath, JSON.stringify(meta));
 }
 
+async function fetchDriveThumbnail(fileId, token) {
+  const metaResponse = await fetch(
+    `${DRIVE_BASE}/files/${fileId}?fields=thumbnailLink&supportsAllDrives=true`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (!metaResponse.ok) {
+    return null;
+  }
+
+  const meta = await metaResponse.json();
+  const thumbLink = meta?.thumbnailLink;
+  if (!thumbLink) {
+    return null;
+  }
+
+  const thumbUrl = new URL(thumbLink);
+  if (!thumbUrl.searchParams.get('access_token')) {
+    thumbUrl.searchParams.set('access_token', token);
+  }
+
+  const thumbResponse = await fetch(thumbUrl.toString());
+  if (!thumbResponse.ok) {
+    return null;
+  }
+
+  const arrayBuffer = await thumbResponse.arrayBuffer();
+  const contentType = thumbResponse.headers.get('content-type') ?? 'image/jpeg';
+  return { data: Buffer.from(arrayBuffer), contentType };
+}
+
 app.get('/api/thumb/:fileId', async (req, res) => {
   const sizeParam = Number(req.query.size);
   const size = clampSize(sizeParam || DEFAULT_SIZE);
@@ -87,36 +123,63 @@ app.get('/api/thumb/:fileId', async (req, res) => {
   }
 
   const cachePath = path.join(THUMB_CACHE_DIR, `${fileId}-${size}.webp`);
-  const cached = await readCache(cachePath);
+  const cacheMetaPath = path.join(THUMB_CACHE_DIR, `${fileId}-${size}.json`);
+  const cached = await readCacheWithMeta(cachePath, cacheMetaPath);
   if (cached) {
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'HIT');
-    res.type('image/webp').send(cached);
+    res.type(cached.meta.contentType || 'image/webp').send(cached.data);
+    return;
+  }
+
+  const legacyCached = await readCache(cachePath);
+  if (legacyCached) {
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.set('X-Cache', 'HIT');
+    res.type('image/webp').send(legacyCached);
     return;
   }
 
   try {
-    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      res.status(response.status).send(text);
+    const thumbResult = await fetchDriveThumbnail(fileId, token);
+    if (thumbResult) {
+      await writeCacheWithMeta(cachePath, cacheMetaPath, thumbResult.data, {
+        contentType: thumbResult.contentType,
+      });
+      res.set('Cache-Control', 'public, max-age=86400');
+      res.set('X-Cache', 'MISS');
+      res.type(thumbResult.contentType).send(thumbResult.data);
       return;
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    let buffer;
+    {
+      const response = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+        res.status(response.status).send(text);
+        return;
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+    }
     const output = await sharp(buffer)
       .resize({ width: size, withoutEnlargement: true })
       .webp({ quality: 80 })
       .toBuffer();
 
-    await fs.writeFile(cachePath, output);
+    await writeCacheWithMeta(cachePath, cacheMetaPath, output, {
+      contentType: 'image/webp',
+    });
 
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'MISS');

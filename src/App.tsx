@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { IconHeart, IconHeartFilled, IconLoader2, IconPhotoStar } from '@tabler/icons-react';
+import {
+  IconArrowUp,
+  IconHeart,
+  IconHeartFilled,
+  IconLoader2,
+  IconPhotoStar,
+} from '@tabler/icons-react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, listImagesRecursive, type FolderPath } from './drive/scan';
 import {
@@ -254,9 +260,13 @@ export default function App() {
   const [modalPulse, setModalPulse] = useState(false);
   const [modalZoom, setModalZoom] = useState(1);
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const isPanningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, originX: 0, originY: 0 });
+  const modalPendingAdvanceRef = useRef(false);
+  const modalItemsLengthRef = useRef(0);
   const modalPulseTimeout = useRef<number | null>(null);
+  const setViewerRef = useRef<HTMLDivElement | null>(null);
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
@@ -538,6 +548,25 @@ export default function App() {
     };
   }, [selectedFolder, token]);
 
+  const handleRefreshPreview = useCallback(async () => {
+    if (!token || !selectedFolder) {
+      return;
+    }
+    setIsLoadingPreview(true);
+    setError('');
+    try {
+      const index = await loadSetIndex(token, selectedFolder.id);
+      const images = index
+        ? indexItemsToImages(index.data.items)
+        : indexItemsToImages(await buildSetIndex(token, selectedFolder.id));
+      setPreviewImages(pickRandom(images, 8));
+    } catch (previewError) {
+      setError((previewError as Error).message);
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  }, [selectedFolder, token]);
+
   const handleHideFolder = (folder: FolderPath) => {
     setHiddenFolders((current) => {
       if (current.some((hidden) => hidden.id === folder.id)) {
@@ -622,6 +651,41 @@ export default function App() {
     await handleUpdateSet(setId, { thumbnailFileId: fileId });
   };
 
+  const handleDeleteSet = async (setToDelete: PoseSet) => {
+    if (!token || !rootId) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `Delete set "${setToDelete.name}"? This removes it from metadata but does not delete any Drive files.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    const updated: MetadataDocument = {
+      version: 1,
+      sets: metadata.sets.filter((set) => set.id !== setToDelete.id),
+    };
+
+    setIsSaving(true);
+    setError('');
+    try {
+      const newFileId = await saveMetadata(token, rootId, metadataFileId, updated);
+      setMetadataFileId(newFileId);
+      setMetadata(updated);
+      writeMetadataCache(rootId, newFileId, updated);
+      if (activeSet?.id === setToDelete.id) {
+        setActiveSet(null);
+        setActiveImages([]);
+        setFavoriteImages([]);
+        setImageLoadStatus('');
+      }
+    } catch (saveError) {
+      setError((saveError as Error).message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const loadSetImages = async (set: PoseSet, limit: number, append = false) => {
     if (!token) {
       return;
@@ -693,6 +757,9 @@ export default function App() {
     setActiveImages([]);
     setFavoriteImages([]);
     setImageLoadStatus('');
+    window.requestAnimationFrame(() => {
+      setViewerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
     await loadSetImages(set, IMAGE_PAGE_SIZE);
   };
 
@@ -723,9 +790,46 @@ export default function App() {
     if (!activeSet) {
       return;
     }
-    const nextLimit = imageLimit + IMAGE_PAGE_SIZE;
+    const cached = readImageListCache(activeSet.id);
+    const maxAvailable = activeSet.imageCount ?? cached?.length ?? Infinity;
+    const nextLimit = Math.min(imageLimit + IMAGE_PAGE_SIZE, maxAvailable);
+    if (nextLimit <= activeImages.length) {
+      return;
+    }
     setImageLimit(nextLimit);
     await loadSetImages(activeSet, nextLimit, true);
+  };
+
+  const handleLoadAllPreloaded = async () => {
+    if (!activeSet || !token) {
+      return;
+    }
+    setIsLoadingMore(true);
+    setImageLoadStatus('Images: loading preloaded list');
+    try {
+      const favoriteIds = activeSet.favoriteImageIds ?? [];
+      const cached = readImageListCache(activeSet.id);
+      if (cached) {
+        setFavoriteImages(filterFavorites(cached, favoriteIds));
+        setActiveImages(cached);
+        setImageLimit(cached.length);
+        return;
+      }
+      const index = await loadSetIndex(token, activeSet.rootFolderId);
+      if (index) {
+        const images = indexItemsToImages(index.data.items);
+        writeImageListCache(activeSet.id, images);
+        setFavoriteImages(filterFavorites(images, favoriteIds));
+        setActiveImages(images);
+        setImageLimit(images.length);
+        return;
+      }
+      setError('No index available yet. Use Refresh data to build it.');
+    } catch (loadError) {
+      setError((loadError as Error).message);
+    } finally {
+      setIsLoadingMore(false);
+    }
   };
 
   const isConnected = Boolean(token);
@@ -734,13 +838,16 @@ export default function App() {
     modalIndex !== null && modalIndex >= 0 && modalIndex < modalItems.length
       ? modalItems[modalIndex]
       : null;
+  const cachedCount = activeSet ? readImageListCache(activeSet.id)?.length : undefined;
   const totalImages =
-    activeSet?.imageCount ?? activeImages.length;
-  const pendingExtra = Math.max(0, Math.min(IMAGE_PAGE_SIZE, totalImages - activeImages.length));
+    activeSet?.imageCount ?? cachedCount ?? activeImages.length;
+  const remainingImages = Math.max(0, totalImages - activeImages.length);
+  const pendingExtra = Math.max(0, Math.min(IMAGE_PAGE_SIZE, remainingImages));
 
   const openModal = (imageId: string, items: DriveImage[], label: string) => {
     const index = items.findIndex((image) => image.id === imageId);
     setModalItems(items);
+    modalItemsLengthRef.current = items.length;
     setModalContextLabel(label);
     setModalImageId(imageId);
     setModalIndex(index >= 0 ? index : null);
@@ -752,6 +859,7 @@ export default function App() {
     setModalIndex(null);
     setModalImageId(null);
     setModalItems([]);
+    modalItemsLengthRef.current = 0;
     setModalContextLabel('');
     setIsModalLoaded(false);
     setModalPulse(false);
@@ -789,6 +897,10 @@ export default function App() {
     }
     const isLast = currentIndex + 1 >= modalItems.length;
     if (isLast) {
+      if (modalContextLabel === 'Set' && remainingImages > 0 && !isLoadingMore && activeSet) {
+        modalPendingAdvanceRef.current = true;
+        void handleLoadMoreImages();
+      }
       return;
     }
     const nextIndex = currentIndex + 1;
@@ -865,6 +977,51 @@ export default function App() {
       setModalPan({ x: 0, y: 0 });
     }
   }, [modalImageId]);
+
+  useEffect(() => {
+    if (!modalImageId) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [modalImageId]);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setShowBackToTop(window.scrollY > 400);
+    };
+    handleScroll();
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      modalContextLabel !== 'Set' ||
+      !modalPendingAdvanceRef.current ||
+      modalItems.length >= activeImages.length ||
+      activeImages.length === 0
+    ) {
+      return;
+    }
+    const previousLength = modalItemsLengthRef.current;
+    const nextImage = activeImages[previousLength];
+    if (!nextImage) {
+      return;
+    }
+    setModalItems(activeImages);
+    modalItemsLengthRef.current = activeImages.length;
+    modalPendingAdvanceRef.current = false;
+    setModalImageId(nextImage.id);
+    setModalIndex(previousLength);
+    setIsModalLoaded(false);
+    triggerModalPulse();
+  }, [activeImages, modalContextLabel, modalItems.length]);
 
   const handleModalWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1076,7 +1233,17 @@ export default function App() {
                   </div>
                 ) : null}
                 <div className="preview">
-                  <p className="muted">Preview sample</p>
+                  <div className="preview-header">
+                    <p className="muted">Preview sample (random 8)</p>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={handleRefreshPreview}
+                      disabled={isLoadingPreview}
+                    >
+                      {isLoadingPreview ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                  </div>
                   {isLoadingPreview ? (
                     <p className="empty">Loading preview…</p>
                   ) : previewImages.length > 0 ? (
@@ -1106,7 +1273,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel" ref={setViewerRef}>
         <div className="panel-header">
           <h2>Sets overview</h2>
         </div>
@@ -1230,6 +1397,13 @@ export default function App() {
                   disabled={isRefreshingSet}
                 >
                   {isRefreshingSet ? 'Refreshing…' : 'Refresh data'}
+                </button>
+                <button
+                  className="ghost"
+                  onClick={() => handleDeleteSet(activeSet)}
+                  disabled={isSaving}
+                >
+                  Delete set
                 </button>
               </div>
               <div key={activeSet.id} className="field-group">
@@ -1381,7 +1555,7 @@ export default function App() {
                     <p className="empty">No images found in this set.</p>
                   ) : null}
                 </div>
-                {activeImages.length > 0 ? (
+                {activeImages.length > 0 && pendingExtra > 0 ? (
                   <button
                     className="ghost load-more"
                     onClick={handleLoadMoreImages}
@@ -1390,6 +1564,17 @@ export default function App() {
                     {isLoadingMore
                       ? `Loading... (+${pendingExtra}) • ${activeImages.length}/${totalImages}`
                       : `Load more images (+${pendingExtra}) • ${activeImages.length}/${totalImages}`}
+                  </button>
+                ) : null}
+                {activeImages.length > 0 && remainingImages > 0 ? (
+                  <button
+                    className="ghost load-more"
+                    onClick={handleLoadAllPreloaded}
+                    disabled={isLoadingMore}
+                  >
+                    {isLoadingMore
+                      ? `Loading all ${totalImages}...`
+                      : `Load all remaining ${remainingImages}`}
                   </button>
                 ) : null}
               </div>
@@ -1461,6 +1646,7 @@ export default function App() {
             {modalContextLabel && modalIndex !== null ? (
               <div className="modal-counter">
                 {modalContextLabel} {modalIndex + 1}/{modalItems.length}
+                {modalContextLabel === 'Set' ? ` [${totalImages}]` : ''}
               </div>
             ) : null}
             <div className="modal-hint">
@@ -1469,6 +1655,16 @@ export default function App() {
             </div>
           </div>
         </div>
+      ) : null}
+      {showBackToTop ? (
+        <button
+          type="button"
+          className="back-to-top"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          aria-label="Back to top"
+        >
+          <IconArrowUp size={18} />
+        </button>
       ) : null}
     </div>
   );

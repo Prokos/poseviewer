@@ -373,6 +373,13 @@ button.ghost:hover {
   gap: 8px;
 }
 
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .preview-grid {
   display: grid;
   gap: 8px;
@@ -751,8 +758,37 @@ button.ghost:hover {
   z-index: 2;
 }
 
+.back-to-top {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  line-height: 0;
+  background: rgba(31, 28, 23, 0.85);
+  color: var(--white);
+  box-shadow: var(--shadow);
+  z-index: 40;
+}
+
+.back-to-top:hover {
+  background: rgba(31, 28, 23, 0.95);
+}
+
+.back-to-top svg {
+  display: block;
+}
+
 .load-more {
   margin-top: 64px;
+}
+
+.load-more + .load-more {
+  margin-top: 8px;
 }
 
 @keyframes pulse {

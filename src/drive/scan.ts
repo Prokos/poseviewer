@@ -13,6 +13,8 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder';
 type FolderScanOptions = {
   excludeIds?: Set<string>;
   excludePaths?: string[];
+  ignoreIds?: Set<string>;
+  ignorePaths?: string[];
   maxCount?: number;
   onProgress?: (count: number, currentPath: string) => void;
 };
@@ -25,6 +27,8 @@ export async function listFolderPaths(
   const root = await driveGetFile(token, rootId, 'id,name');
   const excludeIds = options.excludeIds ?? new Set<string>();
   const excludePaths = options.excludePaths ?? [];
+  const ignoreIds = options.ignoreIds ?? new Set<string>();
+  const ignorePaths = options.ignorePaths ?? [];
   const maxCount = options.maxCount ?? 50;
   const onProgress = options.onProgress;
 
@@ -46,44 +50,48 @@ export async function listFolderPaths(
       continue;
     }
 
-    if (excludeIds.has(current.id)) {
-      continue;
-    }
-
-    if (
+    const isRoot = current.id === root.id;
+    const isExcluded =
+      excludeIds.has(current.id) ||
       excludePaths.some(
         (prefix) => current.path === prefix || current.path.startsWith(`${prefix}/`)
-      )
-    ) {
+      );
+    const isIgnored = ignoreIds.has(current.id) || ignorePaths.includes(current.path);
+
+    if (isExcluded && !isRoot) {
       continue;
     }
 
-    folders.push(current);
-    if (onProgress) {
-      onProgress(folders.length, current.path);
+    if (!isExcluded && !isIgnored) {
+      folders.push(current);
+      if (onProgress) {
+        onProgress(folders.length, current.path);
+      }
     }
 
     if (folders.length >= maxCount) {
       break;
     }
 
-    const children = await driveList(
-      token,
-      {
-        q: `'${current.id}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
-      },
-      'nextPageToken,files(id,name,mimeType)'
-    );
+    if (!isExcluded || isRoot) {
+      const children = await driveList(
+        token,
+        {
+          q: `'${current.id}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+        },
+        'nextPageToken,files(id,name,mimeType)'
+      );
 
-    for (const child of children) {
-      const childPath = {
-        id: child.id,
-        name: child.name,
-        path: `${current.path}/${child.name}`,
-        parentId: current.id,
-      };
-      if (!excludeIds.has(child.id)) {
-        queue.push(childPath);
+      for (const child of children) {
+        const childPath = {
+          id: child.id,
+          name: child.name,
+          path: `${current.path}/${child.name}`,
+          parentId: current.id,
+        };
+        if (!excludeIds.has(child.id)) {
+          queue.push(childPath);
+        }
       }
     }
   }

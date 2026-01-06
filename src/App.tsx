@@ -445,16 +445,14 @@ export default function App() {
     try {
       const meta = await loadMetadata(token, rootId);
       const excludeIds = new Set(meta.data.sets.map((set) => set.rootFolderId));
-      const excludePaths = [
-        ...meta.data.sets.map((set) => set.rootPath),
-        ...hiddenFolders.map((folder) => folder.path),
-      ];
-      for (const hidden of hiddenFolders) {
-        excludeIds.add(hidden.id);
-      }
+      const excludePaths = meta.data.sets.map((set) => set.rootPath);
+      const ignoreIds = new Set(hiddenFolders.map((folder) => folder.id));
+      const ignorePaths = hiddenFolders.map((folder) => folder.path);
       const folders = await listFolderPaths(token, rootId, {
         excludeIds,
         excludePaths,
+        ignoreIds,
+        ignorePaths,
         maxCount: 50,
         onProgress: (count, path) => {
           setScanCount(count);

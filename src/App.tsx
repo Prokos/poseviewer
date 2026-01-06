@@ -224,6 +224,7 @@ export default function App() {
   );
   const [showHiddenFolders, setShowHiddenFolders] = useState(false);
   const [setFilter, setSetFilter] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<FolderPath | null>(null);
   const [setName, setSetName] = useState('');
   const [setTags, setSetTags] = useState('');
@@ -271,14 +272,22 @@ export default function App() {
 
   const filteredSets = useMemo(() => {
     const query = setFilter.trim().toLowerCase();
-    if (!query) {
-      return metadata.sets;
-    }
-    return metadata.sets.filter((set) => {
+    const selected = selectedTags.map((tag) => tag.toLowerCase());
+    const matches = metadata.sets.filter((set) => {
+      const tagMatch =
+        selected.length === 0 ||
+        selected.every((tag) => set.tags.some((value) => value.toLowerCase() === tag));
+      if (!tagMatch) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
       const combined = `${set.name} ${set.tags.join(' ')}`.toLowerCase();
       return combined.includes(query);
     });
-  }, [metadata.sets, setFilter]);
+    return [...matches].reverse();
+  }, [metadata.sets, selectedTags, setFilter]);
 
   const availableTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -289,6 +298,45 @@ export default function App() {
     }
     return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
   }, [metadata.sets]);
+
+  const tagCounts = useMemo(() => {
+    const query = setFilter.trim().toLowerCase();
+    const selected = selectedTags.map((tag) => tag.toLowerCase());
+
+    const matchesQuery = (set: PoseSet) => {
+      if (!query) {
+        return true;
+      }
+      const combined = `${set.name} ${set.tags.join(' ')}`.toLowerCase();
+      return combined.includes(query);
+    };
+
+    const matchesSelected = (set: PoseSet, tags: string[]) =>
+      tags.length === 0 ||
+      tags.every((tag) => set.tags.some((value) => value.toLowerCase() === tag));
+
+    const counts: Record<string, number> = {};
+    const baseSet = metadata.sets.filter((set) => matchesQuery(set));
+
+    for (const tag of availableTags) {
+      const lower = tag.toLowerCase();
+      const nextTags = selected.includes(lower)
+        ? selected
+        : [...selected, lower];
+      counts[tag] = baseSet.filter((set) => matchesSelected(set, nextTags)).length;
+    }
+    return counts;
+  }, [availableTags, metadata.sets, selectedTags, setFilter]);
+
+  const sortedTags = useMemo(() => {
+    return [...availableTags].sort((a, b) => {
+      const diff = (tagCounts[b] ?? 0) - (tagCounts[a] ?? 0);
+      if (diff !== 0) {
+        return diff;
+      }
+      return a.localeCompare(b);
+    });
+  }, [availableTags, tagCounts]);
 
   useEffect(() => {
     setTokenCookie(token);
@@ -416,6 +464,17 @@ export default function App() {
     }
     const next = [...current, tag];
     setSetTags(next.join(', '));
+  };
+
+  const toggleFilterTag = (tag: string) => {
+    setSelectedTags((current) =>
+      current.includes(tag) ? current.filter((value) => value !== tag) : [...current, tag]
+    );
+  };
+
+  const clearSetFilters = () => {
+    setSelectedTags([]);
+    setSetFilter('');
   };
 
   useEffect(() => {
@@ -664,6 +723,7 @@ export default function App() {
     setActiveSet(set);
     setImageLimit(IMAGE_PAGE_SIZE);
     setAllImages([]);
+    setActiveImages([]);
     setImageLoadStatus('');
     await loadSetImages(set, IMAGE_PAGE_SIZE);
   };
@@ -1098,6 +1158,37 @@ export default function App() {
           <h2>Sets overview</h2>
         </div>
         <div className="panel-body">
+          {sortedTags.length > 0 ? (
+            <div className="tag-suggestions">
+              <div className="tag-filter-header">
+                <p className="muted">Filter tags</p>
+                <button
+                  type="button"
+                  className="ghost tag-filter-clear"
+                  onClick={clearSetFilters}
+                  disabled={selectedTags.length === 0 && setFilter.trim().length === 0}
+                >
+                  Clear filters
+                </button>
+              </div>
+              <div className="tag-row">
+                {sortedTags.map((tag) => {
+                  const isActive = selectedTags.includes(tag);
+                  const count = tagCounts[tag] ?? 0;
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={`tag-button ${isActive ? 'is-active' : ''}`}
+                      onClick={() => toggleFilterTag(tag)}
+                    >
+                      {tag} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
           <label className="field">
             <span>Filter sets</span>
             <input

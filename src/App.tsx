@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { IconLoader2, IconPhotoStar } from '@tabler/icons-react';
+import { IconHeart, IconHeartFilled, IconLoader2, IconPhotoStar } from '@tabler/icons-react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, listImagesRecursive, type FolderPath } from './drive/scan';
 import {
@@ -48,6 +48,14 @@ function pickRandom<T>(items: T[], count: number) {
     [result[i], result[j]] = [result[j], result[i]];
   }
   return result.slice(0, count);
+}
+
+function filterFavorites(images: DriveImage[], favoriteIds: string[]) {
+  if (favoriteIds.length === 0) {
+    return [];
+  }
+  const favorites = new Set(favoriteIds);
+  return images.filter((image) => favorites.has(image.id));
 }
 
 function readMetadataCache(rootId: string, options?: { allowStale?: boolean }) {
@@ -236,11 +244,12 @@ export default function App() {
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [imageLoadStatus, setImageLoadStatus] = useState('');
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
-  const [allImages, setAllImages] = useState<DriveImage[]>([]);
-  const [isLoadingAllImages, setIsLoadingAllImages] = useState(false);
+  const [favoriteImages, setFavoriteImages] = useState<DriveImage[]>([]);
   const [isRefreshingSet, setIsRefreshingSet] = useState(false);
   const [modalIndex, setModalIndex] = useState<number | null>(null);
   const [modalImageId, setModalImageId] = useState<string | null>(null);
+  const [modalItems, setModalItems] = useState<DriveImage[]>([]);
+  const [modalContextLabel, setModalContextLabel] = useState('');
   const [isModalLoaded, setIsModalLoaded] = useState(false);
   const [modalPulse, setModalPulse] = useState(false);
   const [modalZoom, setModalZoom] = useState(1);
@@ -477,6 +486,21 @@ export default function App() {
     setSetFilter('');
   };
 
+  const toggleFavoriteImage = async (setId: string, imageId: string) => {
+    const set = metadata.sets.find((item) => item.id === setId);
+    if (!set) {
+      return;
+    }
+    const current = set.favoriteImageIds ?? [];
+    const next = current.includes(imageId)
+      ? current.filter((id) => id !== imageId)
+      : [...current, imageId];
+    const cached = readImageListCache(setId);
+    const source = cached ?? activeImages;
+    setFavoriteImages(filterFavorites(source, next));
+    await handleUpdateSet(setId, { favoriteImageIds: next });
+  };
+
   useEffect(() => {
     if (!token || !selectedFolder) {
       setPreviewImages([]);
@@ -612,24 +636,25 @@ export default function App() {
 
     try {
       const cached = readImageListCache(set.id);
+      const favoriteIds = set.favoriteImageIds ?? [];
       if (cached && cached.length >= limit) {
-        setImageLoadStatus('Images: using local cache');
-        const slice = cached.slice(0, limit);
-        if (append) {
-          setActiveImages((current) => {
-            const merged = [...current];
-            const existing = new Set(current.map((item) => item.id));
-            for (const image of slice) {
-              if (!existing.has(image.id)) {
-                merged.push(image);
-              }
-            }
-            return merged;
-          });
+        if (favoriteIds.length > 0) {
+          const cachedIds = new Set(cached.map((image) => image.id));
+          const missingFavorite = favoriteIds.some((id) => !cachedIds.has(id));
+          if (missingFavorite) {
+            // Fall through to index load to ensure favorites are included.
+          } else {
+            setImageLoadStatus('Images: using local cache');
+            setFavoriteImages(filterFavorites(cached, favoriteIds));
+            setActiveImages(cached.slice(0, limit));
+            return;
+          }
         } else {
-          setActiveImages(slice);
+          setImageLoadStatus('Images: using local cache');
+          setFavoriteImages([]);
+          setActiveImages(cached.slice(0, limit));
+          return;
         }
-        return;
       }
 
       const index = await loadSetIndex(token, set.rootFolderId);
@@ -637,21 +662,8 @@ export default function App() {
         setImageLoadStatus('Images: using Drive index');
         const images = indexItemsToImages(index.data.items);
         writeImageListCache(set.id, images);
-        const slice = images.slice(0, limit);
-        if (append) {
-          setActiveImages((current) => {
-            const merged = [...current];
-            const existing = new Set(current.map((item) => item.id));
-            for (const image of slice) {
-              if (!existing.has(image.id)) {
-                merged.push(image);
-              }
-            }
-            return merged;
-          });
-        } else {
-          setActiveImages(slice);
-        }
+        setFavoriteImages(filterFavorites(images, favoriteIds));
+        setActiveImages(images.slice(0, limit));
         return;
       }
 
@@ -661,21 +673,8 @@ export default function App() {
       const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
       await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
       writeImageListCache(set.id, images);
-      const slice = images.slice(0, limit);
-      if (append) {
-        setActiveImages((current) => {
-          const merged = [...current];
-          const existing = new Set(current.map((item) => item.id));
-          for (const image of slice) {
-            if (!existing.has(image.id)) {
-              merged.push(image);
-            }
-          }
-          return merged;
-        });
-      } else {
-        setActiveImages(slice);
-      }
+      setFavoriteImages(filterFavorites(images, favoriteIds));
+      setActiveImages(images.slice(0, limit));
     } catch (loadError) {
       setError((loadError as Error).message);
       setImageLoadStatus('');
@@ -688,42 +687,11 @@ export default function App() {
     }
   };
 
-  const loadAllImages = async (set: PoseSet) => {
-    if (!token) {
-      return;
-    }
-    const cached = readImageListCache(set.id);
-    if (cached) {
-      setAllImages(cached);
-      return;
-    }
-    setIsLoadingAllImages(true);
-    try {
-      const index = await loadSetIndex(token, set.rootFolderId);
-      if (index) {
-        const images = indexItemsToImages(index.data.items);
-        setAllImages(images);
-        writeImageListCache(set.id, images);
-        return;
-      }
-      const items = await buildSetIndex(token, set.rootFolderId);
-      const images = indexItemsToImages(items);
-      setAllImages(images);
-      writeImageListCache(set.id, images);
-      const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
-      await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
-    } catch (loadError) {
-      setError((loadError as Error).message);
-    } finally {
-      setIsLoadingAllImages(false);
-    }
-  };
-
   const handleOpenSet = async (set: PoseSet) => {
     setActiveSet(set);
     setImageLimit(IMAGE_PAGE_SIZE);
-    setAllImages([]);
     setActiveImages([]);
+    setFavoriteImages([]);
     setImageLoadStatus('');
     await loadSetImages(set, IMAGE_PAGE_SIZE);
   };
@@ -742,8 +710,8 @@ export default function App() {
       const updatedSet = { ...set, imageCount: refreshed.length };
       await handleUpdateSet(set.id, { imageCount: refreshed.length });
       setActiveSet(updatedSet);
+      setFavoriteImages(filterFavorites(refreshed, updatedSet.favoriteImageIds ?? []));
       setActiveImages(refreshed.slice(0, imageLimit));
-      setAllImages(refreshed);
     } catch (refreshError) {
       setError((refreshError as Error).message);
     } finally {
@@ -761,26 +729,21 @@ export default function App() {
   };
 
   const isConnected = Boolean(token);
-  const hasFullList =
-    allImages.length > 0 &&
-    (activeSet?.imageCount
-      ? allImages.length >= activeSet.imageCount
-      : allImages.length >= activeImages.length);
-  const modalList = hasFullList ? allImages : activeImages;
+  const favoriteIds = activeSet?.favoriteImageIds ?? [];
   const modalImage =
-    modalIndex !== null && modalIndex >= 0 && modalIndex < modalList.length
-      ? modalList[modalIndex]
+    modalIndex !== null && modalIndex >= 0 && modalIndex < modalItems.length
+      ? modalItems[modalIndex]
       : null;
   const totalImages =
-    activeSet?.imageCount ??
-    (allImages.length > 0 ? allImages.length : undefined) ??
-    activeImages.length;
+    activeSet?.imageCount ?? activeImages.length;
   const pendingExtra = Math.max(0, Math.min(IMAGE_PAGE_SIZE, totalImages - activeImages.length));
 
-  const openModal = (index: number) => {
-    const image = activeImages[index];
-    setModalImageId(image?.id ?? null);
-    setModalIndex(index);
+  const openModal = (imageId: string, items: DriveImage[], label: string) => {
+    const index = items.findIndex((image) => image.id === imageId);
+    setModalItems(items);
+    setModalContextLabel(label);
+    setModalImageId(imageId);
+    setModalIndex(index >= 0 ? index : null);
     setIsModalLoaded(false);
     triggerModalPulse();
   };
@@ -788,6 +751,8 @@ export default function App() {
   const closeModal = () => {
     setModalIndex(null);
     setModalImageId(null);
+    setModalItems([]);
+    setModalContextLabel('');
     setIsModalLoaded(false);
     setModalPulse(false);
     setModalZoom(1);
@@ -812,45 +777,53 @@ export default function App() {
   };
 
   const goNextImage = () => {
-    setModalIndex((current) => {
-      if (current === null || modalList.length === 0) {
-        return current;
-      }
-      const isUsingFullList = hasFullList;
-      const isLast = current + 1 >= modalList.length;
-      if (!isUsingFullList && isLast) {
-        if (!isLoadingAllImages && activeSet) {
-          void loadAllImages(activeSet);
-        }
-        return current;
-      }
-      if (isUsingFullList) {
-        return (current + 1) % modalList.length;
-      }
-      return current + 1;
-    });
+    if (modalItems.length === 0) {
+      return;
+    }
+    const currentId = modalImageId;
+    const currentIndex = currentId
+      ? modalItems.findIndex((image) => image.id === currentId)
+      : modalIndex;
+    if (currentIndex === null || currentIndex === -1) {
+      return;
+    }
+    const isLast = currentIndex + 1 >= modalItems.length;
+    if (isLast) {
+      return;
+    }
+    const nextIndex = currentIndex + 1;
+    const nextImage = modalItems[nextIndex];
+    if (!nextImage) {
+      return;
+    }
+    setModalImageId(nextImage.id);
+    setModalIndex(nextIndex);
     setIsModalLoaded(false);
     triggerModalPulse();
   };
 
   const goPrevImage = () => {
-    setModalIndex((current) => {
-      if (current === null || modalList.length === 0) {
-        return current;
-      }
-      const isUsingFullList = hasFullList;
-      const isFirst = current - 1 < 0;
-      if (!isUsingFullList && isFirst) {
-        if (!isLoadingAllImages && activeSet) {
-          void loadAllImages(activeSet);
-        }
-        return current;
-      }
-      if (isUsingFullList) {
-        return (current - 1 + modalList.length) % modalList.length;
-      }
-      return current - 1;
-    });
+    if (modalItems.length === 0) {
+      return;
+    }
+    const currentId = modalImageId;
+    const currentIndex = currentId
+      ? modalItems.findIndex((image) => image.id === currentId)
+      : modalIndex;
+    if (currentIndex === null || currentIndex === -1) {
+      return;
+    }
+    const isFirst = currentIndex - 1 < 0;
+    if (isFirst) {
+      return;
+    }
+    const nextIndex = currentIndex - 1;
+    const nextImage = modalItems[nextIndex];
+    if (!nextImage) {
+      return;
+    }
+    setModalImageId(nextImage.id);
+    setModalIndex(nextIndex);
     setIsModalLoaded(false);
     triggerModalPulse();
   };
@@ -876,7 +849,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKey);
     };
-  }, [modalIndex, modalList.length]);
+  }, [modalIndex, modalItems, modalImageId]);
 
   useEffect(() => {
     return () => {
@@ -885,26 +858,6 @@ export default function App() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!modalImageId || allImages.length === 0) {
-      return;
-    }
-    const nextIndex = allImages.findIndex((image) => image.id === modalImageId);
-    if (nextIndex >= 0) {
-      setModalIndex(nextIndex);
-    }
-  }, [allImages, modalImageId]);
-
-  useEffect(() => {
-    if (modalIndex === null) {
-      return;
-    }
-    const image = modalList[modalIndex];
-    if (image?.id && image.id !== modalImageId) {
-      setModalImageId(image.id);
-    }
-  }, [modalIndex, modalList, modalImageId]);
 
   useEffect(() => {
     if (modalImageId) {
@@ -1226,9 +1179,14 @@ export default function App() {
                       </span>
                     ))}
                     {set.tags.length === 0 ? <span className="tag ghost">No tags</span> : null}
+                  </div>
+                  <div className="tag-row tag-row--meta">
                     {typeof set.imageCount === 'number' ? (
                       <span className="tag ghost">{set.imageCount} images</span>
                     ) : null}
+                    <span className="tag ghost">
+                      {(set.favoriteImageIds ?? []).length} favorites
+                    </span>
                   </div>
                 </div>
               </button>
@@ -1317,13 +1275,68 @@ export default function App() {
                   </p>
                 ) : null}
                 {imageLoadStatus ? <p className="muted">{imageLoadStatus}</p> : null}
+                {favoriteImages.length > 0 ? (
+                  <div className="stack">
+                    <p className="muted">Favorites</p>
+                    <div className="image-grid image-grid--zoom">
+                      {favoriteImages.map((image) => (
+                        <div key={image.id} className="image-tile">
+                          <button
+                            type="button"
+                            className="image-button"
+                          onClick={() => openModal(image.id, favoriteImages, 'Favorites')}
+                          >
+                            <ImageThumb
+                              token={token ?? ''}
+                              fileId={image.id}
+                              alt={activeSet.name}
+                              size={THUMB_SIZE}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            className={`thumb-action thumb-action--favorite ${
+                              favoriteIds.includes(image.id) ? 'is-active' : ''
+                            }`}
+                            onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
+                            aria-pressed={favoriteIds.includes(image.id)}
+                            aria-label={
+                              favoriteIds.includes(image.id)
+                                ? 'Remove from favorites'
+                                : 'Add to favorites'
+                            }
+                          >
+                            {favoriteIds.includes(image.id) ? (
+                              <IconHeartFilled size={16} />
+                            ) : (
+                              <IconHeart size={16} />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className={`thumb-action ${
+                              activeSet.thumbnailFileId === image.id ? 'is-active' : ''
+                            }`}
+                            onClick={() => handleSetThumbnail(activeSet.id, image.id)}
+                            disabled={
+                              isSaving || activeSet.thumbnailFileId === image.id
+                            }
+                            aria-label="Use as thumbnail"
+                          >
+                            <IconPhotoStar size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="image-grid image-grid--zoom">
-                  {activeImages.map((image, index) => (
+                  {activeImages.map((image) => (
                     <div key={image.id} className="image-tile">
                       <button
                         type="button"
                         className="image-button"
-                        onClick={() => openModal(index)}
+                        onClick={() => openModal(image.id, activeImages, 'Set')}
                       >
                         <ImageThumb
                           token={token ?? ''}
@@ -1331,6 +1344,25 @@ export default function App() {
                           alt={activeSet.name}
                           size={THUMB_SIZE}
                         />
+                      </button>
+                      <button
+                        type="button"
+                        className={`thumb-action thumb-action--favorite ${
+                          favoriteIds.includes(image.id) ? 'is-active' : ''
+                        }`}
+                        onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
+                        aria-pressed={favoriteIds.includes(image.id)}
+                        aria-label={
+                          favoriteIds.includes(image.id)
+                            ? 'Remove from favorites'
+                            : 'Add to favorites'
+                        }
+                      >
+                        {favoriteIds.includes(image.id) ? (
+                          <IconHeartFilled size={16} />
+                        ) : (
+                          <IconHeart size={16} />
+                        )}
                       </button>
                       <button
                         type="button"
@@ -1381,6 +1413,27 @@ export default function App() {
             <button type="button" className="modal-close" onClick={closeModal}>
               Close
             </button>
+            {activeSet ? (
+              <button
+                type="button"
+                className={`modal-favorite ${
+                  favoriteIds.includes(modalImage.id) ? 'is-active' : ''
+                }`}
+                onClick={() => toggleFavoriteImage(activeSet.id, modalImage.id)}
+                aria-pressed={favoriteIds.includes(modalImage.id)}
+                aria-label={
+                  favoriteIds.includes(modalImage.id)
+                    ? 'Remove from favorites'
+                    : 'Add to favorites'
+                }
+              >
+                {favoriteIds.includes(modalImage.id) ? (
+                  <IconHeartFilled size={18} />
+                ) : (
+                  <IconHeart size={18} />
+                )}
+              </button>
+            ) : null}
             <div
               className={`modal-media ${modalZoom > 1 ? 'is-zoomed' : ''}`}
               style={{
@@ -1405,6 +1458,11 @@ export default function App() {
                 <span>Loading image</span>
               </div>
             </div>
+            {modalContextLabel && modalIndex !== null ? (
+              <div className="modal-counter">
+                {modalContextLabel} {modalIndex + 1}/{modalItems.length}
+              </div>
+            ) : null}
             <div className="modal-hint">
               {modalZoom > 1 ? 'Drag to pan • ' : ''}
               Scroll to zoom • Use ← → to navigate

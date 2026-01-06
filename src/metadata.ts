@@ -8,6 +8,7 @@ export type PoseSet = {
   tags: string[];
   thumbnailFileId?: string;
   imageCount?: number;
+  favoriteImageIds?: string[];
 };
 
 export type MetadataDocument = {
@@ -64,6 +65,7 @@ export function emptyMetadata(): MetadataDocument {
 export function createPoseSet(partial: Omit<PoseSet, 'id'>): PoseSet {
   return {
     id: crypto.randomUUID(),
+    favoriteImageIds: [],
     ...partial,
   };
 }

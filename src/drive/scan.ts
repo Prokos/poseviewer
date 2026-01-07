@@ -20,12 +20,8 @@ type FolderScanOptions = {
   onProgress?: (count: number, currentPath: string) => void;
 };
 
-export async function listFolderPaths(
-  token: string,
-  rootId: string,
-  options: FolderScanOptions = {}
-) {
-  const root = await driveGetFile(token, rootId, 'id,name');
+export async function listFolderPaths(rootId: string, options: FolderScanOptions = {}) {
+  const root = await driveGetFile(rootId, 'id,name');
   const excludeIds = options.excludeIds ?? new Set<string>();
   const excludePaths = options.excludePaths ?? [];
   const ignoreIds = options.ignoreIds ?? new Set<string>();
@@ -83,7 +79,6 @@ export async function listFolderPaths(
 
       if (!isExcluded || isRoot) {
         const children = await driveList(
-          token,
           {
             q: `'${current.id}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
           },
@@ -110,11 +105,7 @@ export async function listFolderPaths(
   return folders.slice(0, maxCount);
 }
 
-export async function listImagesRecursive(
-  token: string,
-  folderId: string,
-  maxCount = Infinity
-) {
+export async function listImagesRecursive(folderId: string, maxCount = Infinity) {
   const images: Array<DriveImage & { folderPath: string }> = [];
   const queue: Array<{ id: string; path: string }> = [{ id: folderId, path: '' }];
 
@@ -125,7 +116,6 @@ export async function listImagesRecursive(
     }
 
     const children = await driveList(
-      token,
       {
         q: `'${current.id}' in parents and trashed=false`,
       },

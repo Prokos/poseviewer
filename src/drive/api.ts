@@ -1,148 +1,66 @@
 import type { DriveFile } from './types';
 
-const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
-const DRIVE_UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
+async function ensureOk(response: Response, label: string) {
+  if (response.ok) {
+    return;
+  }
+  if (response.status === 401) {
+    throw new Error('Not connected to Google Drive. Click Connect to continue.');
+  }
+  throw new Error(`${label} failed: ${response.status}`);
+}
 
 export async function driveList(
-  token: string,
   params: Record<string, string>,
   fields = 'nextPageToken,files(id,name,mimeType,parents,thumbnailLink)'
 ): Promise<DriveFile[]> {
-  const searchParams = new URLSearchParams({
-    fields,
-    pageSize: '1000',
-    ...params,
+  const response = await fetch('/api/drive/list', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ params, fields }),
   });
 
-  const files: DriveFile[] = [];
-  let pageToken = '';
+  await ensureOk(response, 'Drive list');
 
-  do {
-    if (pageToken) {
-      searchParams.set('pageToken', pageToken);
-    } else {
-      searchParams.delete('pageToken');
-    }
-
-    const response = await fetch(`${DRIVE_BASE}/files?${searchParams.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Drive list failed: ${response.status}`);
-    }
-
-    const data = (await response.json()) as {
-      files: DriveFile[];
-      nextPageToken?: string;
-    };
-
-    files.push(...data.files);
-    pageToken = data.nextPageToken ?? '';
-  } while (pageToken);
-
-  return files;
+  const data = (await response.json()) as { files: DriveFile[] };
+  return data.files ?? [];
 }
 
-export async function driveGetFile(
-  token: string,
-  fileId: string,
-  fields: string
-): Promise<DriveFile> {
+export async function driveGetFile(fileId: string, fields: string): Promise<DriveFile> {
   const response = await fetch(
-    `${DRIVE_BASE}/files/${fileId}?fields=${encodeURIComponent(fields)}`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    }
+    `/api/drive/file/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}`
   );
-
-  if (!response.ok) {
-    throw new Error(`Drive get failed: ${response.status}`);
-  }
-
+  await ensureOk(response, 'Drive get');
   return (await response.json()) as DriveFile;
 }
 
-export async function driveDownloadText(token: string, fileId: string) {
-  const response = await fetch(`${DRIVE_BASE}/files/${fileId}?alt=media`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Drive download failed: ${response.status}`);
-  }
-
+export async function driveDownloadText(fileId: string) {
+  const response = await fetch(`/api/drive/download/${encodeURIComponent(fileId)}`);
+  await ensureOk(response, 'Drive download');
   return response.text();
 }
 
-export async function driveDownloadBlob(token: string, fileId: string) {
-  const response = await fetch(
-    `${DRIVE_BASE}/files/${fileId}?alt=media&supportsAllDrives=true`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(`Drive download failed: ${response.status}`);
-  }
-
+export async function driveDownloadBlob(fileId: string) {
+  const response = await fetch(`/api/drive/download/${encodeURIComponent(fileId)}`);
+  await ensureOk(response, 'Drive download');
   return response.blob();
 }
 
 export async function driveUploadText(
-  token: string,
   folderId: string,
   fileId: string | null,
   filename: string,
   content: string
 ) {
-  const metadata = {
-    name: filename,
-    parents: fileId ? undefined : [folderId],
-    mimeType: 'text/plain',
-  };
-
-  const boundary = 'poseviewer-boundary';
-  const body = [
-    `--${boundary}`,
-    'Content-Type: application/json; charset=UTF-8',
-    '',
-    JSON.stringify(metadata),
-    `--${boundary}`,
-    'Content-Type: text/plain; charset=UTF-8',
-    '',
-    content,
-    `--${boundary}--`,
-    '',
-  ].join('\r\n');
-
-  const url = fileId
-    ? `${DRIVE_UPLOAD_BASE}/files/${fileId}?uploadType=multipart`
-    : `${DRIVE_UPLOAD_BASE}/files?uploadType=multipart`;
-
-  const method = fileId ? 'PATCH' : 'POST';
-
-  const response = await fetch(url, {
-    method,
+  const response = await fetch('/api/drive/upload', {
+    method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': `multipart/related; boundary=${boundary}`,
+      'Content-Type': 'application/json',
     },
-    body,
+    body: JSON.stringify({ folderId, fileId, filename, content }),
   });
-
-  if (!response.ok) {
-    throw new Error(`Drive upload failed: ${response.status}`);
-  }
-
+  await ensureOk(response, 'Drive upload');
   return response.json() as Promise<{ id: string }>;
 }

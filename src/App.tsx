@@ -28,8 +28,6 @@ import {
 import type { DriveImage } from './drive/types';
 
 const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
-const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const IMAGE_PAGE_SIZE = 100;
 const THUMB_SIZE = 320;
 const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
@@ -163,29 +161,6 @@ function writeImageListCache(setId: string, images: DriveImage[]) {
   }
 }
 
-function setTokenCookie(token: string | null) {
-  if (!token) {
-    document.cookie = 'poseviewer_token=; Path=/; Max-Age=0; SameSite=Lax';
-    return;
-  }
-  document.cookie = `poseviewer_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
-}
-
-function readStoredToken() {
-  const stored = localStorage.getItem('poseviewer-token');
-  const expiresAt = localStorage.getItem('poseviewer-token-expires');
-  if (!stored || !expiresAt) {
-    return { token: null, expiresAt: null };
-  }
-  const expiry = Number(expiresAt);
-  if (Number.isNaN(expiry) || Date.now() > expiry) {
-    localStorage.removeItem('poseviewer-token');
-    localStorage.removeItem('poseviewer-token-expires');
-    return { token: null, expiresAt: null };
-  }
-  return { token: stored, expiresAt: expiry };
-}
-
 function createProxyThumbUrl(fileId: string, size: number) {
   return `/api/thumb/${encodeURIComponent(fileId)}?size=${size}`;
 }
@@ -195,12 +170,12 @@ function createProxyMediaUrl(fileId: string) {
 }
 
 function ImageThumb({
-  token,
+  isConnected,
   fileId,
   alt,
   size,
 }: {
-  token: string;
+  isConnected: boolean;
   fileId: string;
   alt: string;
   size: number;
@@ -210,7 +185,7 @@ function ImageThumb({
     return <div className="thumb thumb--empty">No thumbnail</div>;
   }
 
-  if (!token) {
+  if (!isConnected) {
     return <div className="thumb thumb--empty">Connect to load</div>;
   }
 
@@ -248,11 +223,7 @@ function ImageThumb({
 }
 
 export default function App() {
-  const initialToken = useMemo(() => readStoredToken(), []);
-  const [token, setToken] = useState<string | null>(initialToken.token);
-  const [tokenExpiresAt, setTokenExpiresAt] = useState<number | null>(
-    initialToken.expiresAt
-  );
+  const [isConnected, setIsConnected] = useState(false);
   const [tokenStatus, setTokenStatus] = useState<string>('');
   const rootId = DEFAULT_ROOT_ID ?? '';
   const [folderPaths, setFolderPaths] = useLocalStorage<FolderPath[]>(
@@ -313,6 +284,7 @@ export default function App() {
   const setViewerRef = useRef<HTMLDivElement | null>(null);
   const sampleSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const prefetchedThumbsRef = useRef<Set<string>>(new Set());
+  const prefetchedModalRef = useRef<Set<string>>(new Set());
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
@@ -424,10 +396,6 @@ export default function App() {
   }, [availableTags, tagCounts]);
 
   useEffect(() => {
-    setTokenCookie(token);
-  }, [token]);
-
-  useEffect(() => {
     if (!error || error === lastToastRef.current) {
       return;
     }
@@ -443,75 +411,52 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [error]);
 
-  const requestToken = useCallback((silent = false) => {
-    if (!CLIENT_ID) {
-      setError('Missing VITE_GOOGLE_CLIENT_ID.');
-      return;
+  const checkAuthStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/auth/status');
+      if (!response.ok) {
+        throw new Error(`Auth status failed: ${response.status}`);
+      }
+      const data = (await response.json()) as { connected?: boolean };
+      const connected = Boolean(data.connected);
+      setIsConnected(connected);
+      setTokenStatus(connected ? 'Connected.' : '');
+    } catch (statusError) {
+      setError((statusError as Error).message);
     }
+  }, []);
 
-    if (!window.google?.accounts?.oauth2) {
-      setError('Google Identity Services did not load.');
-      return;
-    }
-
-    if (!silent) {
-      setTokenStatus('Requesting access…');
-    }
-
-    const client = window.google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: DRIVE_SCOPE,
-      callback: (response: { access_token?: string; expires_in?: number; error?: string }) => {
-        if (response.error || !response.access_token || !response.expires_in) {
-          if (!silent) {
-            setTokenStatus('Access denied.');
-          }
-          if (tokenExpiresAt && Date.now() >= tokenExpiresAt) {
-            setToken(null);
-            setTokenExpiresAt(null);
-            localStorage.removeItem('poseviewer-token');
-            localStorage.removeItem('poseviewer-token-expires');
-          }
-          return;
-        }
-        setTokenStatus('Connected.');
-        setToken(response.access_token);
-        const expiresAt = Date.now() + response.expires_in * 1000;
-        setTokenExpiresAt(expiresAt);
-        localStorage.setItem('poseviewer-token', response.access_token);
-        localStorage.setItem('poseviewer-token-expires', String(expiresAt));
-        setError('');
-      },
-    });
-
-    client.requestAccessToken({ prompt: silent ? '' : 'consent' });
-  }, [tokenExpiresAt]);
+  const handleConnect = useCallback(() => {
+    window.open('/api/auth/start', '_blank', 'noopener');
+    setTokenStatus('Complete sign-in in the new window.');
+    window.setTimeout(() => {
+      void checkAuthStatus();
+    }, 1500);
+  }, [checkAuthStatus]);
 
   useEffect(() => {
-    if (!token || !tokenExpiresAt) {
-      return;
-    }
-    const refreshLeadMs = 60 * 1000;
-    const msUntilRefresh = tokenExpiresAt - Date.now() - refreshLeadMs;
-    if (msUntilRefresh <= 0) {
-      requestToken(true);
-      return;
-    }
-    const timeout = window.setTimeout(() => {
-      requestToken(true);
-    }, msUntilRefresh);
-    return () => window.clearTimeout(timeout);
-  }, [requestToken, token, tokenExpiresAt]);
+    void checkAuthStatus();
+  }, [checkAuthStatus]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      void checkAuthStatus();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [checkAuthStatus]);
 
   const handleFetchMetadata = useCallback(async () => {
-    if (!token || !rootId) {
+    if (!isConnected || !rootId) {
       return;
     }
     setIsLoadingMetadata(true);
     setError('');
 
     try {
-      const meta = await loadMetadata(token, rootId);
+      const meta = await loadMetadata(rootId);
 
       setMetadata(meta.data);
       setMetadataFileId(meta.fileId);
@@ -521,10 +466,10 @@ export default function App() {
     } finally {
       setIsLoadingMetadata(false);
     }
-  }, [rootId, token]);
+  }, [isConnected, rootId]);
 
   const handleScan = useCallback(async () => {
-    if (!token || !rootId) {
+    if (!isConnected || !rootId) {
       return;
     }
 
@@ -534,12 +479,12 @@ export default function App() {
     setError('');
 
     try {
-      const meta = await loadMetadata(token, rootId);
+      const meta = await loadMetadata(rootId);
       const excludeIds = new Set(meta.data.sets.map((set) => set.rootFolderId));
       const excludePaths = meta.data.sets.map((set) => set.rootPath);
       const ignoreIds = new Set(hiddenFolders.map((folder) => folder.id));
       const ignorePaths = hiddenFolders.map((folder) => folder.path);
-      const folders = await listFolderPaths(token, rootId, {
+      const folders = await listFolderPaths(rootId, {
         excludeIds,
         excludePaths,
         ignoreIds,
@@ -559,27 +504,27 @@ export default function App() {
     } finally {
       setIsScanning(false);
     }
-  }, [hiddenFolders, rootId, token]);
+  }, [hiddenFolders, isConnected, rootId]);
 
   useEffect(() => {
     if (!rootId) {
       return;
     }
 
-    const cached = readMetadataCache(rootId, { allowStale: !token });
+    const cached = readMetadataCache(rootId, { allowStale: !isConnected });
     if (cached) {
       setMetadata(cached.data);
       setMetadataFileId(cached.fileId);
     }
 
-    if (!token) {
+    if (!isConnected) {
       return;
     }
 
     if (!cached) {
       void handleFetchMetadata();
     }
-  }, [handleFetchMetadata, rootId, token]);
+  }, [handleFetchMetadata, isConnected, rootId]);
 
   const handleSelectFolder = (folder: FolderPath) => {
     setSelectedFolder(folder);
@@ -623,7 +568,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!token || !selectedFolder) {
+    if (!isConnected || !selectedFolder) {
       setPreviewImages([]);
       return;
     }
@@ -634,10 +579,10 @@ export default function App() {
 
     const loadPreview = async () => {
       try {
-        const index = await loadSetIndex(token, selectedFolder.id);
+        const index = await loadSetIndex(selectedFolder.id);
         const images = index
           ? indexItemsToImages(index.data.items)
-          : indexItemsToImages(await buildSetIndex(token, selectedFolder.id));
+          : indexItemsToImages(await buildSetIndex(selectedFolder.id));
         const sample = pickRandom(images, 8);
         if (isActive) {
           setPreviewImages(sample);
@@ -659,20 +604,20 @@ export default function App() {
     return () => {
       isActive = false;
     };
-  }, [selectedFolder, token]);
+  }, [isConnected, selectedFolder]);
 
   const handleRefreshPreview = useCallback(async () => {
-    if (!token || !selectedFolder) {
+    if (!isConnected || !selectedFolder) {
       return;
     }
     setIsLoadingPreview(true);
     setPreviewCount(null);
     setError('');
     try {
-      const index = await loadSetIndex(token, selectedFolder.id);
+      const index = await loadSetIndex(selectedFolder.id);
       const images = index
         ? indexItemsToImages(index.data.items)
-        : indexItemsToImages(await buildSetIndex(token, selectedFolder.id));
+        : indexItemsToImages(await buildSetIndex(selectedFolder.id));
       setPreviewImages(pickRandom(images, 8));
       setPreviewCount(images.length);
     } catch (previewError) {
@@ -680,7 +625,7 @@ export default function App() {
     } finally {
       setIsLoadingPreview(false);
     }
-  }, [selectedFolder, token]);
+  }, [isConnected, selectedFolder]);
 
   const handleHideFolder = (folder: FolderPath) => {
     setHiddenFolders((current) => {
@@ -696,7 +641,7 @@ export default function App() {
   };
 
   const handleCreateSet = async () => {
-    if (!token || !rootId || !selectedFolder) {
+    if (!isConnected || !rootId || !selectedFolder) {
       return;
     }
 
@@ -704,10 +649,10 @@ export default function App() {
     setError('');
 
     try {
-      const images = await listImagesRecursive(token, selectedFolder.id);
+      const images = await listImagesRecursive(selectedFolder.id);
       const thumbnailFileId = images[0]?.id;
       const indexItems = images.map((image) => ({ id: image.id, name: image.name }));
-      await saveSetIndex(token, selectedFolder.id, null, indexItems);
+      await saveSetIndex(selectedFolder.id, null, indexItems);
       const next = createPoseSet({
         name: setName.trim() || selectedFolder.name,
         rootFolderId: selectedFolder.id,
@@ -722,7 +667,7 @@ export default function App() {
         sets: [...metadata.sets, next],
       };
 
-      const newFileId = await saveMetadata(token, rootId, metadataFileId, updated);
+      const newFileId = await saveMetadata(rootId, metadataFileId, updated);
       setMetadataFileId(newFileId);
       setMetadata(updated);
       writeMetadataCache(rootId, newFileId, updated);
@@ -734,7 +679,7 @@ export default function App() {
   };
 
   const handleUpdateSet = async (setId: string, update: Partial<PoseSet>) => {
-    if (!token || !rootId) {
+    if (!isConnected || !rootId) {
       return;
     }
 
@@ -751,7 +696,7 @@ export default function App() {
     setError('');
 
     try {
-      const newFileId = await saveMetadata(token, rootId, metadataFileId, updated);
+      const newFileId = await saveMetadata(rootId, metadataFileId, updated);
       setMetadataFileId(newFileId);
       setMetadata(updated);
       writeMetadataCache(rootId, newFileId, updated);
@@ -792,14 +737,14 @@ export default function App() {
 
   const resolveSetImages = useCallback(
     async (set: PoseSet, buildIfMissing: boolean) => {
-      if (!token) {
+      if (!isConnected) {
         return [];
       }
       const cached = readImageListCache(set.id);
       if (cached) {
         return cached;
       }
-      const index = await loadSetIndex(token, set.rootFolderId);
+      const index = await loadSetIndex(set.rootFolderId);
       if (index) {
         const images = indexItemsToImages(index.data.items);
         if (!writeImageListCache(set.id, images)) {
@@ -810,16 +755,16 @@ export default function App() {
       if (!buildIfMissing) {
         return [];
       }
-      const items = await buildSetIndex(token, set.rootFolderId);
+      const items = await buildSetIndex(set.rootFolderId);
       const images = indexItemsToImages(items);
-      const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
-      await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
+      const existingIndexId = await findSetIndexFileId(set.rootFolderId);
+      await saveSetIndex(set.rootFolderId, existingIndexId, items);
       if (!writeImageListCache(set.id, images)) {
         setError('Image cache full. Cleared cache and continued without saving.');
       }
       return images;
     },
-    [token]
+    [isConnected]
   );
 
   const hydrateSetExtras = useCallback(
@@ -856,7 +801,7 @@ export default function App() {
   };
 
   const handleDeleteSet = async (setToDelete: PoseSet) => {
-    if (!token || !rootId) {
+    if (!isConnected || !rootId) {
       return;
     }
     const confirmed = window.confirm(
@@ -873,7 +818,7 @@ export default function App() {
     setIsSaving(true);
     setError('');
     try {
-      const newFileId = await saveMetadata(token, rootId, metadataFileId, updated);
+      const newFileId = await saveMetadata(rootId, metadataFileId, updated);
       setMetadataFileId(newFileId);
       setMetadata(updated);
       writeMetadataCache(rootId, newFileId, updated);
@@ -891,7 +836,7 @@ export default function App() {
   };
 
   const loadSetImages = async (set: PoseSet, limit: number, append = false) => {
-    if (!token) {
+    if (!isConnected) {
       return;
     }
     if (append) {
@@ -925,7 +870,7 @@ export default function App() {
         }
       }
 
-      const index = await loadSetIndex(token, set.rootFolderId);
+      const index = await loadSetIndex(set.rootFolderId);
       if (index) {
         setImageLoadStatus('Images: using Drive index');
         const images = indexItemsToImages(index.data.items);
@@ -938,10 +883,10 @@ export default function App() {
       }
 
       setImageLoadStatus('Images: building Drive index (first time)');
-      const items = await buildSetIndex(token, set.rootFolderId);
+      const items = await buildSetIndex(set.rootFolderId);
       const images = indexItemsToImages(items);
-      const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
-      await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
+      const existingIndexId = await findSetIndexFileId(set.rootFolderId);
+      await saveSetIndex(set.rootFolderId, existingIndexId, items);
       if (!writeImageListCache(set.id, images)) {
         setError('Image cache full. Cleared cache and continued without saving.');
       }
@@ -973,15 +918,15 @@ export default function App() {
   };
 
   const handleRefreshSet = async (set: PoseSet) => {
-    if (!token || !rootId) {
+    if (!isConnected || !rootId) {
       return;
     }
     setIsRefreshingSet(true);
     try {
-      const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
-      const items = await buildSetIndex(token, set.rootFolderId);
+      const existingIndexId = await findSetIndexFileId(set.rootFolderId);
+      const items = await buildSetIndex(set.rootFolderId);
       const refreshed = indexItemsToImages(items);
-      await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
+      await saveSetIndex(set.rootFolderId, existingIndexId, items);
       if (!writeImageListCache(set.id, refreshed)) {
         setError('Image cache full. Cleared cache and continued without saving.');
       }
@@ -1027,7 +972,7 @@ export default function App() {
   };
 
   const handleLoadAllPreloaded = async () => {
-    if (!activeSet || !token) {
+    if (!activeSet || !isConnected) {
       return;
     }
     setIsLoadingMore(true);
@@ -1041,7 +986,7 @@ export default function App() {
         setImageLimit(cached.length);
         return;
       }
-      const index = await loadSetIndex(token, activeSet.rootFolderId);
+      const index = await loadSetIndex(activeSet.rootFolderId);
       if (index) {
         const images = indexItemsToImages(index.data.items);
         if (!writeImageListCache(activeSet.id, images)) {
@@ -1060,7 +1005,6 @@ export default function App() {
     }
   };
 
-  const isConnected = Boolean(token);
   const favoriteIds = activeSet?.favoriteImageIds ?? [];
   const modalImage =
     modalIndex !== null && modalIndex >= 0 && modalIndex < modalItems.length
@@ -1219,6 +1163,26 @@ export default function App() {
   }, [modalImageId]);
 
   useEffect(() => {
+    if (modalIndex === null || modalIndex < 0 || modalItems.length === 0) {
+      return;
+    }
+    const preload = (imageId?: string) => {
+      if (!imageId || prefetchedModalRef.current.has(imageId)) {
+        return;
+      }
+      const full = new Image();
+      full.src = createProxyMediaUrl(imageId);
+      const thumb = new Image();
+      thumb.src = createProxyThumbUrl(imageId, THUMB_SIZE);
+      prefetchedModalRef.current.add(imageId);
+    };
+    const prev = modalItems[modalIndex - 1]?.id;
+    const next = modalItems[modalIndex + 1]?.id;
+    preload(prev);
+    preload(next);
+  }, [modalIndex, modalItems]);
+
+  useEffect(() => {
     if (!modalImageId) {
       return;
     }
@@ -1344,13 +1308,12 @@ export default function App() {
       <header className="topbar">
         <div className="title">Pose Viewer</div>
         <div className="auth-chip">
-          <button className="chip-button" onClick={requestToken} disabled={!CLIENT_ID}>
+          <button className="chip-button" onClick={handleConnect}>
             {isConnected ? 'Reconnect' : 'Connect'}
           </button>
           {isConnected ? <span className="chip-status">Connected</span> : null}
         </div>
       </header>
-      {!CLIENT_ID ? <p className="warning">Set VITE_GOOGLE_CLIENT_ID in `.env`.</p> : null}
       {tokenStatus ? <p className="status">{tokenStatus}</p> : null}
       {isLoadingMetadata ? (
         <div className="loading-overlay">
@@ -1514,7 +1477,7 @@ export default function App() {
                           onClick={() => openModal(image.id, previewImages, 'Preview')}
                         >
                           <ImageThumb
-                            token={token ?? ''}
+                            isConnected={isConnected}
                             fileId={image.id}
                             alt={selectedFolder.name}
                             size={THUMB_SIZE}
@@ -1589,38 +1552,36 @@ export default function App() {
                 className="card card--clickable"
                 onClick={() => handleOpenSet(set)}
               >
-                {token ? (
-                  <div className="card-thumb">
-                    {set.thumbnailFileId ? (
-                      <ImageThumb
-                        token={token}
-                        fileId={set.thumbnailFileId}
-                        alt={set.name}
-                        size={THUMB_SIZE}
-                      />
-                    ) : (
-                      <div className="thumb thumb--empty">No thumbnail</div>
-                    )}
-                    {typeof set.imageCount === 'number' ? (
-                      <span
-                        className="tag ghost tag--icon card-thumb-meta card-thumb-meta--left"
-                        aria-label={`${set.imageCount} images`}
-                        title={`${set.imageCount} images`}
-                      >
-                        <IconPhoto size={14} />
-                        <span>{set.imageCount}</span>
-                      </span>
-                    ) : null}
+                <div className="card-thumb">
+                  {set.thumbnailFileId ? (
+                    <ImageThumb
+                      isConnected={isConnected}
+                      fileId={set.thumbnailFileId}
+                      alt={set.name}
+                      size={THUMB_SIZE}
+                    />
+                  ) : (
+                    <div className="thumb thumb--empty">No thumbnail</div>
+                  )}
+                  {typeof set.imageCount === 'number' ? (
                     <span
-                      className="tag ghost tag--icon card-thumb-meta card-thumb-meta--right"
-                      aria-label={`${(set.favoriteImageIds ?? []).length} favorites`}
-                      title={`${(set.favoriteImageIds ?? []).length} favorites`}
+                      className="tag ghost tag--icon card-thumb-meta card-thumb-meta--left"
+                      aria-label={`${set.imageCount} images`}
+                      title={`${set.imageCount} images`}
                     >
-                      <IconHeart size={14} />
-                      <span>{(set.favoriteImageIds ?? []).length}</span>
+                      <IconPhoto size={14} />
+                      <span>{set.imageCount}</span>
                     </span>
-                  </div>
-                ) : null}
+                  ) : null}
+                  <span
+                    className="tag ghost tag--icon card-thumb-meta card-thumb-meta--right"
+                    aria-label={`${(set.favoriteImageIds ?? []).length} favorites`}
+                    title={`${(set.favoriteImageIds ?? []).length} favorites`}
+                  >
+                    <IconHeart size={14} />
+                    <span>{(set.favoriteImageIds ?? []).length}</span>
+                  </span>
+                </div>
               </button>
             ))}
             {filteredSets.length === 0 ? (
@@ -1695,7 +1656,7 @@ export default function App() {
                           onClick={() => openModal(image.id, sampleImages, 'Sample')}
                         >
                           <ImageThumb
-                            token={token ?? ''}
+                            isConnected={isConnected}
                             fileId={image.id}
                             alt={activeSet.name}
                             size={THUMB_SIZE}
@@ -1781,7 +1742,7 @@ export default function App() {
                           onClick={() => openModal(image.id, favoriteImages, 'Favorites')}
                           >
                             <ImageThumb
-                              token={token ?? ''}
+                              isConnected={isConnected}
                               fileId={image.id}
                               alt={activeSet.name}
                               size={THUMB_SIZE}
@@ -1833,7 +1794,7 @@ export default function App() {
                         onClick={() => openModal(image.id, activeImages, 'Set')}
                       >
                         <ImageThumb
-                          token={token ?? ''}
+                          isConnected={isConnected}
                           fileId={image.id}
                           alt={activeSet.name}
                           size={THUMB_SIZE}

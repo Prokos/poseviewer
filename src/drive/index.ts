@@ -16,7 +16,10 @@ export type PoseIndexDocument = {
   items: PoseIndexItem[];
 };
 
-export async function loadSetIndex(folderId: string) {
+export async function loadSetIndex(
+  folderId: string,
+  onProgress?: (progress: { loaded: number }) => void
+) {
   const files = await driveList(
     {
       q: `'${folderId}' in parents and name='${INDEX_NAME}' and trashed=false`,
@@ -30,7 +33,7 @@ export async function loadSetIndex(folderId: string) {
   }
 
   const fileId = files[0].id;
-  const text = await driveDownloadText(fileId);
+  const text = await driveDownloadText(fileId, onProgress);
 
   try {
     const parsed = JSON.parse(text) as PoseIndexDocument;
@@ -45,6 +48,26 @@ export async function loadSetIndex(folderId: string) {
     // fall through to null
   }
 
+  return null;
+}
+
+export async function loadSetIndexById(
+  fileId: string,
+  onProgress?: (progress: { loaded: number }) => void
+) {
+  const text = await driveDownloadText(fileId, onProgress);
+  try {
+    const parsed = JSON.parse(text) as PoseIndexDocument;
+    if (
+      parsed?.version === 1 &&
+      Array.isArray(parsed.items) &&
+      typeof parsed.count === 'number'
+    ) {
+      return { fileId, data: parsed };
+    }
+  } catch {
+    return null;
+  }
   return null;
 }
 
@@ -72,8 +95,11 @@ export async function saveSetIndex(folderId: string, fileId: string | null, item
   return result.id ?? fileId;
 }
 
-export async function buildSetIndex(folderId: string) {
-  const images = await listImagesRecursive(folderId);
+export async function buildSetIndex(
+  folderId: string,
+  onProgress?: (progress: { folders: number; images: number }) => void
+) {
+  const images = await listImagesRecursive(folderId, Infinity, onProgress);
   return images.map((image) => ({ id: image.id, name: image.name }));
 }
 

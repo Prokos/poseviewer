@@ -36,10 +36,34 @@ export async function driveGetFile(fileId: string, fields: string): Promise<Driv
   return (await response.json()) as DriveFile;
 }
 
-export async function driveDownloadText(fileId: string) {
+export async function driveDownloadText(
+  fileId: string,
+  onProgress?: (progress: { loaded: number }) => void
+) {
   const response = await fetch(`/api/drive/download/${encodeURIComponent(fileId)}`);
   await ensureOk(response, 'Drive download');
-  return response.text();
+  if (!response.body) {
+    return response.text();
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let result = '';
+  let loaded = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (value) {
+      loaded += value.length;
+      result += decoder.decode(value, { stream: true });
+      if (onProgress) {
+        onProgress({ loaded });
+      }
+    }
+  }
+  result += decoder.decode();
+  return result;
 }
 
 export async function driveDownloadBlob(fileId: string) {

@@ -105,10 +105,15 @@ export async function listFolderPaths(rootId: string, options: FolderScanOptions
   return folders.slice(0, maxCount);
 }
 
-export async function listImagesRecursive(folderId: string, maxCount = Infinity) {
+export async function listImagesRecursive(
+  folderId: string,
+  maxCount = Infinity,
+  onProgress?: (progress: { folders: number; images: number }) => void
+) {
   const images: Array<DriveImage & { folderPath: string }> = [];
   const queue: Array<{ id: string; path: string }> = [{ id: folderId, path: '' }];
-  const maxConcurrent = 4;
+  const maxConcurrent = 8;
+  let processed = 0;
 
   const worker = async () => {
     while (queue.length > 0) {
@@ -123,6 +128,10 @@ export async function listImagesRecursive(folderId: string, maxCount = Infinity)
         },
         'nextPageToken,files(id,name,mimeType)'
       );
+      processed += 1;
+      if (onProgress && (processed === 1 || processed % 3 === 0)) {
+        onProgress({ folders: processed, images: images.length });
+      }
 
       for (const child of children) {
         if (child.mimeType === FOLDER_MIME) {
@@ -130,6 +139,9 @@ export async function listImagesRecursive(folderId: string, maxCount = Infinity)
           queue.push({ id: child.id, path: nextPath });
         } else if (child.mimeType.startsWith('image/')) {
           images.push({ ...(child as DriveImage), folderPath: current.path });
+          if (onProgress && images.length % 50 === 0) {
+            onProgress({ folders: processed, images: images.length });
+          }
         }
       }
     }

@@ -15,6 +15,7 @@ import {
   findSetIndexFileId,
   indexItemsToImages,
   loadSetIndex,
+  loadSetIndexById,
   saveSetIndex,
 } from './drive/index';
 import {
@@ -30,6 +31,7 @@ import type { DriveImage } from './drive/types';
 const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
 const IMAGE_PAGE_SIZE = 100;
 const THUMB_SIZE = 320;
+const CARD_THUMB_SIZE = 500;
 const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
 const METADATA_CACHE_KEY = 'poseviewer-metadata-cache';
 const METADATA_CACHE_TIME_KEY = 'poseviewer-metadata-cache-ts';
@@ -54,6 +56,29 @@ function pickRandom<T>(items: T[], count: number) {
     [result[i], result[j]] = [result[j], result[i]];
   }
   return result.slice(0, count);
+}
+
+function formatIndexProgress(progress: { folders: number; images: number }) {
+  return `Indexing… ${progress.folders} folders • ${progress.images} images`;
+}
+
+function formatDownloadProgress(progress: { loaded: number }) {
+  const kb = progress.loaded / 1024;
+  if (kb < 1024) {
+    return `Loading index… ${kb.toFixed(1)} KB`;
+  }
+  const mb = kb / 1024;
+  return `Loading index… ${mb.toFixed(2)} MB`;
+}
+
+function startIndexTimer(setter: (value: string) => void) {
+  const startedAt = Date.now();
+  setter('Checking index… 0s');
+  const id = window.setInterval(() => {
+    const seconds = Math.floor((Date.now() - startedAt) / 1000);
+    setter(`Checking index… ${seconds}s`);
+  }, 1000);
+  return () => window.clearInterval(id);
 }
 
 function filterFavorites(images: DriveImage[], favoriteIds: string[]) {
@@ -261,9 +286,11 @@ export default function App() {
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [previewCount, setPreviewCount] = useState<number | null>(null);
+  const [previewIndexProgress, setPreviewIndexProgress] = useState('');
   const [sampleImages, setSampleImages] = useState<DriveImage[]>([]);
   const [isLoadingSample, setIsLoadingSample] = useState(false);
   const [imageLoadStatus, setImageLoadStatus] = useState('');
+  const [viewerIndexProgress, setViewerIndexProgress] = useState('');
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
   const [favoriteImages, setFavoriteImages] = useState<DriveImage[]>([]);
   const [isRefreshingSet, setIsRefreshingSet] = useState(false);
@@ -292,6 +319,12 @@ export default function App() {
   const oneHandZoomRef = useRef<{ startY: number; zoom: number } | null>(null);
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const touchMovedRef = useRef(false);
+  const prebuiltIndexRef = useRef<{
+    folderId: string;
+    items: { id: string; name: string }[];
+    fileId: string | null;
+  } | null>(null);
+  const viewerIndexTimerRef = useRef<(() => void) | null>(null);
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
@@ -613,20 +646,19 @@ export default function App() {
 
     const loadPreview = async () => {
       try {
-        const index = await loadSetIndex(selectedFolder.id);
-        let images: DriveImage[] = [];
-        if (index) {
-          images = indexItemsToImages(index.data.items);
-        } else {
-          const items = await buildSetIndex(selectedFolder.id);
-          const existingIndexId = await findSetIndexFileId(selectedFolder.id);
-          await saveSetIndex(selectedFolder.id, existingIndexId, items);
-          images = indexItemsToImages(items);
-        }
+        setPreviewIndexProgress('Indexing…');
+        const items = await buildSetIndex(selectedFolder.id, (progress) => {
+          setPreviewIndexProgress(formatIndexProgress(progress));
+        });
+        const existingIndexId = await findSetIndexFileId(selectedFolder.id);
+        const indexFileId = await saveSetIndex(selectedFolder.id, existingIndexId, items);
+        prebuiltIndexRef.current = { folderId: selectedFolder.id, items, fileId: indexFileId };
+        const images = indexItemsToImages(items);
         const sample = pickRandom(images, 8);
         if (isActive) {
           setPreviewImages(sample);
           setPreviewCount(images.length);
+          setPreviewIndexProgress('');
         }
       } catch (previewError) {
         if (isActive) {
@@ -635,6 +667,7 @@ export default function App() {
       } finally {
         if (isActive) {
           setIsLoadingPreview(false);
+          setPreviewIndexProgress('');
         }
       }
     };
@@ -652,11 +685,15 @@ export default function App() {
     }
     setIsLoadingPreview(true);
     setPreviewCount(null);
+    setPreviewIndexProgress('Indexing…');
     setError('');
     try {
-      const items = await buildSetIndex(selectedFolder.id);
+      const items = await buildSetIndex(selectedFolder.id, (progress) => {
+        setPreviewIndexProgress(formatIndexProgress(progress));
+      });
       const existingIndexId = await findSetIndexFileId(selectedFolder.id);
-      await saveSetIndex(selectedFolder.id, existingIndexId, items);
+      const indexFileId = await saveSetIndex(selectedFolder.id, existingIndexId, items);
+      prebuiltIndexRef.current = { folderId: selectedFolder.id, items, fileId: indexFileId };
       const images = indexItemsToImages(items);
       setPreviewImages(pickRandom(images, 8));
       setPreviewCount(images.length);
@@ -664,6 +701,7 @@ export default function App() {
       setError((previewError as Error).message);
     } finally {
       setIsLoadingPreview(false);
+      setPreviewIndexProgress('');
     }
   }, [isConnected, selectedFolder]);
 
@@ -689,10 +727,30 @@ export default function App() {
     setError('');
 
     try {
-      const images = await listImagesRecursive(selectedFolder.id);
+      let indexItems = prebuiltIndexRef.current?.folderId === selectedFolder.id
+        ? prebuiltIndexRef.current.items
+        : null;
+      let indexFileId =
+        prebuiltIndexRef.current?.folderId === selectedFolder.id
+          ? prebuiltIndexRef.current.fileId
+          : null;
+      if (!indexItems) {
+        setPreviewIndexProgress('Indexing…');
+        indexItems = await buildSetIndex(selectedFolder.id, (progress) => {
+          setPreviewIndexProgress(formatIndexProgress(progress));
+        });
+      }
+      if (!indexFileId) {
+        const existingIndexId = await findSetIndexFileId(selectedFolder.id);
+        indexFileId = await saveSetIndex(selectedFolder.id, existingIndexId, indexItems);
+      }
+      prebuiltIndexRef.current = {
+        folderId: selectedFolder.id,
+        items: indexItems,
+        fileId: indexFileId,
+      };
+      const images = indexItemsToImages(indexItems);
       const thumbnailFileId = images[0]?.id;
-      const indexItems = images.map((image) => ({ id: image.id, name: image.name }));
-      await saveSetIndex(selectedFolder.id, null, indexItems);
       const next = createPoseSet({
         name: setName.trim() || selectedFolder.name,
         rootFolderId: selectedFolder.id,
@@ -700,6 +758,7 @@ export default function App() {
         tags: normalizeTags(setTags),
         thumbnailFileId,
         imageCount: images.length,
+        indexFileId,
       });
 
       const updated: MetadataDocument = {
@@ -711,10 +770,12 @@ export default function App() {
       setMetadataFileId(newFileId);
       setMetadata(updated);
       writeMetadataCache(rootId, newFileId, updated);
+      await handleOpenSet(next);
     } catch (saveError) {
       setError((saveError as Error).message);
     } finally {
       setIsSaving(false);
+      setPreviewIndexProgress('');
     }
   };
 
@@ -780,27 +841,72 @@ export default function App() {
       if (!isConnected) {
         return [];
       }
+      const prebuilt =
+        prebuiltIndexRef.current?.folderId === set.rootFolderId
+          ? prebuiltIndexRef.current
+          : null;
+      const resolvedSet =
+        !set.indexFileId && prebuilt?.fileId
+          ? { ...set, indexFileId: prebuilt.fileId ?? undefined }
+          : set;
       const cached = readImageListCache(set.id);
       if (cached) {
         return cached;
       }
-      const index = await loadSetIndex(set.rootFolderId);
+      if (prebuilt?.items && prebuilt.items.length > 0) {
+        const images = indexItemsToImages(prebuilt.items);
+        if (!writeImageListCache(set.id, images)) {
+          setError('Image cache full. Cleared cache and continued without saving.');
+        }
+        if (prebuilt.fileId && resolvedSet.indexFileId !== prebuilt.fileId) {
+          await handleUpdateSet(set.id, { indexFileId: prebuilt.fileId });
+        }
+        return images;
+      }
+      if (viewerIndexTimerRef.current) {
+        viewerIndexTimerRef.current();
+        viewerIndexTimerRef.current = null;
+      }
+      const stopTimer = startIndexTimer(setViewerIndexProgress);
+      viewerIndexTimerRef.current = stopTimer;
+      const index = resolvedSet.indexFileId
+        ? await loadSetIndexById(resolvedSet.indexFileId, (progress) => {
+            stopTimer();
+            viewerIndexTimerRef.current = null;
+            setViewerIndexProgress(formatDownloadProgress(progress));
+          })
+        : await loadSetIndex(set.rootFolderId, (progress) => {
+            stopTimer();
+            viewerIndexTimerRef.current = null;
+            setViewerIndexProgress(formatDownloadProgress(progress));
+          });
+      stopTimer();
+      viewerIndexTimerRef.current = null;
       if (index) {
         const images = indexItemsToImages(index.data.items);
         if (!writeImageListCache(set.id, images)) {
           setError('Image cache full. Cleared cache and continued without saving.');
+        }
+        if (resolvedSet.indexFileId !== index.fileId) {
+          await handleUpdateSet(set.id, { indexFileId: index.fileId });
         }
         return images;
       }
       if (!buildIfMissing) {
         return [];
       }
-      const items = await buildSetIndex(set.rootFolderId);
+      setViewerIndexProgress('Indexing…');
+      const items = await buildSetIndex(set.rootFolderId, (progress) => {
+        setViewerIndexProgress(formatIndexProgress(progress));
+      });
       const images = indexItemsToImages(items);
       const existingIndexId = await findSetIndexFileId(set.rootFolderId);
-      await saveSetIndex(set.rootFolderId, existingIndexId, items);
+      const indexFileId = await saveSetIndex(set.rootFolderId, existingIndexId, items);
       if (!writeImageListCache(set.id, images)) {
         setError('Image cache full. Cleared cache and continued without saving.');
+      }
+      if (resolvedSet.indexFileId !== indexFileId) {
+        await handleUpdateSet(set.id, { indexFileId });
       }
       return images;
     },
@@ -810,6 +916,7 @@ export default function App() {
   const hydrateSetExtras = useCallback(
     async (set: PoseSet, buildIfMissing: boolean) => {
       setIsLoadingSample(true);
+      setViewerIndexProgress('Loading index…');
       try {
         const images = await resolveSetImages(set, buildIfMissing);
         setFavoriteImages(filterFavorites(images, set.favoriteImageIds ?? []));
@@ -820,6 +927,7 @@ export default function App() {
         setSampleImages([]);
       } finally {
         setIsLoadingSample(false);
+        setViewerIndexProgress('');
       }
     },
     [pickNextSample, resolveSetImages]
@@ -888,6 +996,10 @@ export default function App() {
     setError('');
 
     try {
+      const prebuilt =
+        prebuiltIndexRef.current?.folderId === set.rootFolderId
+          ? prebuiltIndexRef.current
+          : null;
       const cached = readImageListCache(set.id);
       const favoriteIds = set.favoriteImageIds ?? [];
       if (cached && cached.length >= limit) {
@@ -909,13 +1021,47 @@ export default function App() {
           return;
         }
       }
+      if (prebuilt?.items && prebuilt.items.length > 0) {
+        setImageLoadStatus('Images: using prebuilt index');
+        const images = indexItemsToImages(prebuilt.items);
+        if (!writeImageListCache(set.id, images)) {
+          setError('Image cache full. Cleared cache and continued without saving.');
+        }
+        if (prebuilt.fileId && set.indexFileId !== prebuilt.fileId) {
+          await handleUpdateSet(set.id, { indexFileId: prebuilt.fileId });
+        }
+        setFavoriteImages(filterFavorites(images, favoriteIds));
+        setActiveImages(images.slice(0, limit));
+        return;
+      }
 
-      const index = await loadSetIndex(set.rootFolderId);
+      if (viewerIndexTimerRef.current) {
+        viewerIndexTimerRef.current();
+        viewerIndexTimerRef.current = null;
+      }
+      const stopTimer = startIndexTimer(setViewerIndexProgress);
+      viewerIndexTimerRef.current = stopTimer;
+      const index = set.indexFileId
+        ? await loadSetIndexById(set.indexFileId, (progress) => {
+            stopTimer();
+            viewerIndexTimerRef.current = null;
+            setViewerIndexProgress(formatDownloadProgress(progress));
+          })
+        : await loadSetIndex(set.rootFolderId, (progress) => {
+            stopTimer();
+            viewerIndexTimerRef.current = null;
+            setViewerIndexProgress(formatDownloadProgress(progress));
+          });
+      stopTimer();
+      viewerIndexTimerRef.current = null;
       if (index) {
         setImageLoadStatus('Images: using Drive index');
         const images = indexItemsToImages(index.data.items);
         if (!writeImageListCache(set.id, images)) {
           setError('Image cache full. Cleared cache and continued without saving.');
+        }
+        if (set.indexFileId !== index.fileId) {
+          await handleUpdateSet(set.id, { indexFileId: index.fileId });
         }
         setFavoriteImages(filterFavorites(images, favoriteIds));
         setActiveImages(images.slice(0, limit));
@@ -923,19 +1069,27 @@ export default function App() {
       }
 
       setImageLoadStatus('Images: building Drive index (first time)');
-      const items = await buildSetIndex(set.rootFolderId);
+      setViewerIndexProgress('Indexing…');
+      const items = await buildSetIndex(set.rootFolderId, (progress) => {
+        setViewerIndexProgress(formatIndexProgress(progress));
+      });
       const images = indexItemsToImages(items);
       const existingIndexId = await findSetIndexFileId(set.rootFolderId);
-      await saveSetIndex(set.rootFolderId, existingIndexId, items);
+      const indexFileId = await saveSetIndex(set.rootFolderId, existingIndexId, items);
       if (!writeImageListCache(set.id, images)) {
         setError('Image cache full. Cleared cache and continued without saving.');
       }
       setFavoriteImages(filterFavorites(images, favoriteIds));
       setActiveImages(images.slice(0, limit));
+      if (set.indexFileId !== indexFileId) {
+        await handleUpdateSet(set.id, { indexFileId });
+      }
+      setViewerIndexProgress('');
     } catch (loadError) {
       setError((loadError as Error).message);
       setImageLoadStatus('');
     } finally {
+      setViewerIndexProgress('');
       if (append) {
         setIsLoadingMore(false);
       } else {
@@ -945,7 +1099,11 @@ export default function App() {
   };
 
   const handleOpenSet = async (set: PoseSet) => {
-    setActiveSet(set);
+    const nextSet =
+      !set.indexFileId && prebuiltIndexRef.current?.folderId === set.rootFolderId
+        ? { ...set, indexFileId: prebuiltIndexRef.current.fileId ?? undefined }
+        : set;
+    setActiveSet(nextSet);
     setImageLimit(0);
     setActiveImages([]);
     setFavoriteImages([]);
@@ -954,7 +1112,10 @@ export default function App() {
     window.requestAnimationFrame(() => {
       setViewerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
-    await hydrateSetExtras(set, true);
+    if (!set.indexFileId && nextSet.indexFileId) {
+      await handleUpdateSet(set.id, { indexFileId: nextSet.indexFileId });
+    }
+    await hydrateSetExtras(nextSet, true);
   };
 
   const handleRefreshSet = async (set: PoseSet) => {
@@ -964,14 +1125,20 @@ export default function App() {
     setIsRefreshingSet(true);
     try {
       const existingIndexId = await findSetIndexFileId(set.rootFolderId);
-      const items = await buildSetIndex(set.rootFolderId);
+      setViewerIndexProgress('Indexing…');
+      const items = await buildSetIndex(set.rootFolderId, (progress) => {
+        setViewerIndexProgress(formatIndexProgress(progress));
+      });
       const refreshed = indexItemsToImages(items);
-      await saveSetIndex(set.rootFolderId, existingIndexId, items);
+      const indexFileId = await saveSetIndex(set.rootFolderId, existingIndexId, items);
       if (!writeImageListCache(set.id, refreshed)) {
         setError('Image cache full. Cleared cache and continued without saving.');
       }
-      const updatedSet = { ...set, imageCount: refreshed.length };
-      await handleUpdateSet(set.id, { imageCount: refreshed.length });
+      const updatedSet = { ...set, imageCount: refreshed.length, indexFileId };
+      await handleUpdateSet(set.id, {
+        imageCount: refreshed.length,
+        indexFileId,
+      });
       setActiveSet(updatedSet);
       setFavoriteImages(filterFavorites(refreshed, updatedSet.favoriteImageIds ?? []));
       setSampleImages(pickNextSample(set.id, refreshed, 24));
@@ -982,6 +1149,7 @@ export default function App() {
       setError((refreshError as Error).message);
     } finally {
       setIsRefreshingSet(false);
+      setViewerIndexProgress('');
     }
   };
 
@@ -1026,7 +1194,25 @@ export default function App() {
         setImageLimit(cached.length);
         return;
       }
-      const index = await loadSetIndex(activeSet.rootFolderId);
+      if (viewerIndexTimerRef.current) {
+        viewerIndexTimerRef.current();
+        viewerIndexTimerRef.current = null;
+      }
+      const stopTimer = startIndexTimer(setViewerIndexProgress);
+      viewerIndexTimerRef.current = stopTimer;
+      const index = activeSet.indexFileId
+        ? await loadSetIndexById(activeSet.indexFileId, (progress) => {
+            stopTimer();
+            viewerIndexTimerRef.current = null;
+            setViewerIndexProgress(formatDownloadProgress(progress));
+          })
+        : await loadSetIndex(activeSet.rootFolderId, (progress) => {
+            stopTimer();
+            viewerIndexTimerRef.current = null;
+            setViewerIndexProgress(formatDownloadProgress(progress));
+          });
+      stopTimer();
+      viewerIndexTimerRef.current = null;
       if (index) {
         const images = indexItemsToImages(index.data.items);
         if (!writeImageListCache(activeSet.id, images)) {
@@ -1035,6 +1221,9 @@ export default function App() {
         setFavoriteImages(filterFavorites(images, favoriteIds));
         setActiveImages(images);
         setImageLimit(images.length);
+        if (activeSet.indexFileId !== index.fileId) {
+          await handleUpdateSet(activeSet.id, { indexFileId: index.fileId });
+        }
         return;
       }
       setError('No index available yet. Use Refresh data to build it.');
@@ -1042,6 +1231,7 @@ export default function App() {
       setError((loadError as Error).message);
     } finally {
       setIsLoadingMore(false);
+      setViewerIndexProgress('');
     }
   };
 
@@ -1495,7 +1685,6 @@ export default function App() {
           {isConnected ? <span className="chip-status">Connected</span> : null}
         </div>
       </header>
-      {tokenStatus ? <p className="status">{tokenStatus}</p> : null}
       {isLoadingMetadata ? (
         <div className="loading-overlay">
           <div className="loading-card">Loading metadata…</div>
@@ -1638,16 +1827,21 @@ export default function App() {
                     <p className="muted">{previewCount} images</p>
                   ) : null}
                   <button
-                      type="button"
-                      className="ghost"
-                      onClick={handleRefreshPreview}
-                      disabled={isLoadingPreview}
-                    >
-                      {isLoadingPreview ? 'Refreshing…' : 'Refresh'}
-                    </button>
+                    type="button"
+                    className="ghost"
+                    onClick={handleRefreshPreview}
+                    disabled={isLoadingPreview}
+                  >
+                    {isLoadingPreview ? 'Refreshing…' : 'Refresh'}
+                  </button>
                   </div>
                   {isLoadingPreview ? (
-                    <p className="empty">Loading preview…</p>
+                    <div className="stack">
+                      <p className="empty">Loading preview…</p>
+                      {previewIndexProgress ? <p className="muted">{previewIndexProgress}</p> : null}
+                    </div>
+                  ) : previewIndexProgress ? (
+                    <p className="muted">{previewIndexProgress}</p>
                   ) : previewImages.length > 0 ? (
                     <div className="preview-grid">
                       {previewImages.map((image) => (
@@ -1750,7 +1944,7 @@ export default function App() {
                       isConnected={isConnected}
                       fileId={set.thumbnailFileId}
                       alt={set.name}
-                      size={THUMB_SIZE}
+                      size={CARD_THUMB_SIZE}
                     />
                   ) : (
                     <div className="thumb thumb--empty">No thumbnail</div>
@@ -1837,7 +2031,12 @@ export default function App() {
                   </button>
                 </div>
                 {isLoadingSample ? (
-                  <p className="empty">Loading sample…</p>
+                  <div className="stack">
+                    <p className="empty">Loading sample…</p>
+                    {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+                  </div>
+                ) : viewerIndexProgress ? (
+                  <p className="muted">{viewerIndexProgress}</p>
                 ) : sampleImages.length > 0 ? (
                   <div className="image-grid image-grid--zoom">
                     {sampleImages.map((image) => (
@@ -1922,6 +2121,7 @@ export default function App() {
                   </p>
                 ) : null}
                 {imageLoadStatus ? <p className="muted">{imageLoadStatus}</p> : null}
+                {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
                 {favoriteImages.length > 0 ? (
                   <div className="stack">
                     <p className="muted">Favorites</p>

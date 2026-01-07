@@ -129,7 +129,7 @@ async function getAccessToken() {
   return data.access_token;
 }
 
-async function fetchDriveThumbnail(fileId, token) {
+async function fetchDriveThumbnail(fileId, token, size) {
   const metaResponse = await fetch(
     `${DRIVE_BASE}/files/${fileId}?fields=thumbnailLink&supportsAllDrives=true`,
     {
@@ -149,7 +149,16 @@ async function fetchDriveThumbnail(fileId, token) {
     return null;
   }
 
-  const thumbUrl = new URL(thumbLink);
+  let thumbHref = thumbLink;
+  if (Number.isFinite(size)) {
+    if (/=s\d+/.test(thumbHref)) {
+      thumbHref = thumbHref.replace(/=s\d+/, `=s${size}`);
+    } else if (/=w\d+-h\d+/.test(thumbHref)) {
+      thumbHref = thumbHref.replace(/=w\d+-h\d+/, `=w${size}-h${size}`);
+    }
+  }
+
+  const thumbUrl = new URL(thumbHref);
   if (!thumbUrl.searchParams.get('access_token')) {
     thumbUrl.searchParams.set('access_token', token);
   }
@@ -194,7 +203,7 @@ app.get('/api/thumb/:fileId', async (req, res) => {
   }
 
   try {
-    const thumbResult = await fetchDriveThumbnail(fileId, token);
+    const thumbResult = await fetchDriveThumbnail(fileId, token, size);
     if (thumbResult) {
       await writeCacheWithMeta(cachePath, cacheMetaPath, thumbResult.data, {
         contentType: thumbResult.contentType,
@@ -452,7 +461,21 @@ app.get('/api/drive/download/:fileId', async (req, res) => {
     return;
   }
   res.set('Content-Type', response.headers.get('content-type') ?? 'application/octet-stream');
-  res.send(Buffer.from(await response.arrayBuffer()));
+  if (!response.body) {
+    res.send(Buffer.from(await response.arrayBuffer()));
+    return;
+  }
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (value) {
+      res.write(Buffer.from(value));
+    }
+  }
+  res.end();
 });
 
 app.post('/api/drive/upload', async (req, res) => {

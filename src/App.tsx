@@ -105,6 +105,9 @@ function parsePathState() {
   if (path === '/create') {
     return { page: 'create', setId: undefined };
   }
+  if (path === '/slideshow') {
+    return { page: 'slideshow', setId: undefined };
+  }
   if (path.startsWith('/set/')) {
     const setId = decodeURIComponent(path.slice('/set/'.length));
     if (setId) {
@@ -114,10 +117,12 @@ function parsePathState() {
   return { page: 'overview', setId: undefined };
 }
 
-function syncPathState(page: 'overview' | 'create' | 'set', setId?: string) {
+function syncPathState(page: 'overview' | 'create' | 'set' | 'slideshow', setId?: string) {
   let next = '/';
   if (page === 'create') {
     next = '/create';
+  } else if (page === 'slideshow') {
+    next = '/slideshow';
   } else if (page === 'set' && setId) {
     next = `/set/${encodeURIComponent(setId)}`;
   }
@@ -341,7 +346,7 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [tokenStatus, setTokenStatus] = useState<string>('');
   const rootId = DEFAULT_ROOT_ID ?? '';
-  const [page, setPage] = useState<'overview' | 'create' | 'set'>('overview');
+  const [page, setPage] = useState<'overview' | 'create' | 'set' | 'slideshow'>('overview');
   const [folderPaths, setFolderPaths] = useLocalStorage<FolderPath[]>(
     'poseviewer-folder-paths',
     emptyFolders
@@ -369,6 +374,11 @@ export default function App() {
   const [setFilter, setSetFilter] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [setSort, setSetSort] = useState('favs_desc');
+  const [slideshowIncludeTags, setSlideshowIncludeTags] = useState<string[]>([]);
+  const [slideshowExcludeTags, setSlideshowExcludeTags] = useState<string[]>([]);
+  const [slideshowFavoriteFilter, setSlideshowFavoriteFilter] = useState<
+    'all' | 'favorites' | 'nonfavorites'
+  >('all');
   const [selectedFolder, setSelectedFolder] = useState<FolderPath | null>(null);
   const [setName, setSetName] = useState('');
   const [setTags, setSetTags] = useState('');
@@ -389,6 +399,9 @@ export default function App() {
   const [nonFavoriteImages, setNonFavoriteImages] = useState<DriveImage[]>([]);
   const [isLoadingSample, setIsLoadingSample] = useState(false);
   const [isLoadingNonFavorites, setIsLoadingNonFavorites] = useState(false);
+  const [slideshowImages, setSlideshowImages] = useState<DriveImage[]>([]);
+  const [isLoadingSlideshow, setIsLoadingSlideshow] = useState(false);
+  const [slideshowStarted, setSlideshowStarted] = useState(false);
   const [imageLoadStatus, setImageLoadStatus] = useState('');
   const [viewerIndexProgress, setViewerIndexProgress] = useState('');
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
@@ -408,9 +421,10 @@ export default function App() {
   const [modalZoom, setModalZoom] = useState(1);
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
   const [modalControlsVisible, setModalControlsVisible] = useState(true);
-  const [modalSwipeAction, setModalSwipeAction] = useState<null | 'close' | 'favorite'>(
-    null
-  );
+  const [modalShake, setModalShake] = useState(false);
+  const [modalSwipeAction, setModalSwipeAction] = useState<
+    null | 'close' | 'favorite' | 'prev' | 'next'
+  >(null);
   const [modalSwipeProgress, setModalSwipeProgress] = useState(0);
   const [modalHasHistory, setModalHasHistory] = useState(false);
   const [canScrollUp, setCanScrollUp] = useState(false);
@@ -422,6 +436,7 @@ export default function App() {
   const modalPulseTimeout = useRef<number | null>(null);
   const modalFavoritePulseTimeout = useRef<number | null>(null);
   const modalControlsTimeoutRef = useRef<number | null>(null);
+  const modalShakeTimeoutRef = useRef<number | null>(null);
   const modalFullAbortRef = useRef<AbortController | null>(null);
   const modalFullUrlRef = useRef<string | null>(null);
   const modalPrefetchAbortRef = useRef<Map<string, AbortController>>(new Map());
@@ -440,6 +455,10 @@ export default function App() {
   const sampleHistorySetRef = useRef<string | null>(null);
   const sampleAppendInFlightRef = useRef(false);
   const nonFavoriteAppendInFlightRef = useRef(false);
+  const slideshowSeenRef = useRef<Set<string>>(new Set());
+  const slideshowPoolRef = useRef<{ key: string; images: DriveImage[] } | null>(null);
+  const slideshowAppendInFlightRef = useRef(false);
+  const slideshowImageSetRef = useRef<Map<string, string>>(new Map());
   const nonFavoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const metadataSaveTimeoutRef = useRef<number | null>(null);
   const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
@@ -476,10 +495,12 @@ export default function App() {
 
   const samplePageSize = Math.max(1, Math.ceil(48 / sampleColumns) * sampleColumns);
   const allPageSize = Math.max(1, Math.ceil(IMAGE_PAGE_SIZE / allColumns) * allColumns);
+  const slideshowPageSize = 48;
   const metadataRef = useRef<MetadataDocument>(metadata);
   const metadataFileIdRef = useRef<string | null>(metadataFileId);
   const metadataInfoRef = useRef<MetadataInfo>(metadataInfo);
   const metadataDirtyRef = useRef(metadataDirty);
+  const slideshowImagesRef = useRef<DriveImage[]>(slideshowImages);
   const updateQueueRef = useRef(Promise.resolve());
 
   const filteredFolders = useMemo(() => {
@@ -548,6 +569,30 @@ export default function App() {
     }
     return sorted;
   }, [metadata.sets, selectedTags, setFilter, setSort]);
+
+  const setsById = useMemo(() => {
+    return new Map(metadata.sets.map((set) => [set.id, set]));
+  }, [metadata.sets]);
+
+  const slideshowTagFilters = useMemo(() => {
+    const include = slideshowIncludeTags.map((tag) => tag.toLowerCase());
+    const exclude = slideshowExcludeTags.map((tag) => tag.toLowerCase());
+    return { include, exclude };
+  }, [slideshowExcludeTags, slideshowIncludeTags]);
+
+  const slideshowSets = useMemo(() => {
+    const { include, exclude } = slideshowTagFilters;
+    return metadata.sets.filter((set) => {
+      const tags = set.tags.map((tag) => tag.toLowerCase());
+      if (include.length > 0 && !include.every((tag) => tags.includes(tag))) {
+        return false;
+      }
+      if (exclude.length > 0 && exclude.some((tag) => tags.includes(tag))) {
+        return false;
+      }
+      return true;
+    });
+  }, [metadata.sets, slideshowTagFilters]);
 
   const availableTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -913,6 +958,10 @@ export default function App() {
   }, [metadataDirty]);
 
   useEffect(() => {
+    slideshowImagesRef.current = slideshowImages;
+  }, [slideshowImages]);
+
+  useEffect(() => {
     const readColumns = (element: HTMLDivElement | null) => {
       if (!element) {
         return 1;
@@ -964,10 +1013,37 @@ export default function App() {
     );
   };
 
+  const toggleSlideshowIncludeTag = (tag: string) => {
+    setSlideshowExcludeTags((current) => current.filter((value) => value !== tag));
+    setSlideshowIncludeTags((current) =>
+      current.includes(tag) ? current.filter((value) => value !== tag) : [...current, tag]
+    );
+  };
+
+  const toggleSlideshowExcludeTag = (tag: string) => {
+    setSlideshowIncludeTags((current) => current.filter((value) => value !== tag));
+    setSlideshowExcludeTags((current) =>
+      current.includes(tag) ? current.filter((value) => value !== tag) : [...current, tag]
+    );
+  };
+
   const clearSetFilters = () => {
     setSelectedTags([]);
     setSetFilter('');
   };
+
+  const clearSlideshowTags = () => {
+    setSlideshowIncludeTags([]);
+    setSlideshowExcludeTags([]);
+  };
+
+  const resetSlideshow = useCallback(() => {
+    slideshowPoolRef.current = null;
+    slideshowSeenRef.current = new Set();
+    slideshowImageSetRef.current = new Map();
+    setSlideshowImages([]);
+    setSlideshowStarted(false);
+  }, []);
 
   const toggleFavoriteImage = async (setId: string, imageId: string) => {
     const set = metadata.sets.find((item) => item.id === setId);
@@ -979,8 +1055,17 @@ export default function App() {
       ? current.filter((id) => id !== imageId)
       : [...current, imageId];
     const cached = readImageListCache(setId);
-    const source = cached ?? activeImages;
-    setFavoriteImages(filterFavorites(source, next));
+    let source = cached;
+    if (!source) {
+      if (activeSet?.id === setId) {
+        source = activeImages;
+      } else {
+        source = await resolveSetImages(set, true);
+      }
+    }
+    if (activeSet?.id === setId) {
+      setFavoriteImages(filterFavorites(source, next));
+    }
     await handleUpdateSet(setId, { favoriteImageIds: next });
   };
 
@@ -1935,9 +2020,11 @@ export default function App() {
       if (index < 0) {
         return;
       }
-      const preload = 10;
+      const preload = 2;
       const end = Math.min(images.length, index + preload + 1);
+      const start = Math.max(0, index - preload);
       const nextLimit = Math.max(end, allPageSize);
+      prefetchThumbs(images.slice(start, end));
       setImageLimit(nextLimit);
       setActiveImages(images.slice(0, nextLimit));
       setFavoriteImages(filterFavorites(images, activeSet.favoriteImageIds ?? []));
@@ -2057,6 +2144,13 @@ export default function App() {
     modalIndex !== null && modalIndex >= 0 && modalIndex < modalItems.length
       ? modalItems[modalIndex]
       : null;
+  const modalSetId =
+    modalImage && modalContextLabel === 'Slideshow'
+      ? slideshowImageSetRef.current.get(modalImage.id) ?? null
+      : activeSet?.id ?? null;
+  const modalSet = modalSetId ? setsById.get(modalSetId) : activeSet;
+  const modalIsFavorite =
+    modalImage && modalSet ? (modalSet.favoriteImageIds ?? []).includes(modalImage.id) : false;
   const cachedCount = activeSet ? readImageListCache(activeSet.id)?.length : undefined;
   const totalImagesKnown = activeSet?.imageCount ?? cachedCount;
   const totalImages = totalImagesKnown ?? activeImages.length;
@@ -2093,7 +2187,9 @@ export default function App() {
     modalIndex !== null &&
     (modalIndex < modalItems.length - 1 ||
       (modalContextLabel === 'Set' && !!remainingImages) ||
-      (modalContextLabel === 'Sample' && !!activeSet));
+      (modalContextLabel === 'Sample' && !!activeSet) ||
+      (modalContextLabel === 'Non favorites' && !!activeSet) ||
+      modalContextLabel === 'Slideshow');
 
   const handleSetViewerTab = useCallback(
     (tab: 'samples' | 'favorites' | 'nonfavorites' | 'all') => {
@@ -2134,27 +2230,30 @@ export default function App() {
     });
   };
 
-  const openModal = (imageId: string, items: DriveImage[], label: string) => {
-    requestViewerFullscreen();
-    scheduleModalControlsHide();
-    const index = items.findIndex((image) => image.id === imageId);
-    setModalItems(items);
-    modalItemsLengthRef.current = items.length;
-    setModalContextLabel(label);
-    setModalFullSrc(null);
-    setModalFullImageId(null);
-    setModalFullAnimate(false);
-    if (label === 'Sample' && activeSet) {
-      sampleHistoryRef.current = items;
-      sampleHistorySetRef.current = activeSet.id;
-    } else {
-      sampleHistoryRef.current = [];
-      sampleHistorySetRef.current = null;
-    }
-    setModalImageId(imageId);
-    setModalIndex(index >= 0 ? index : null);
-    triggerModalPulse();
-  };
+  const openModal = useCallback(
+    (imageId: string, items: DriveImage[], label: string) => {
+      requestViewerFullscreen();
+      scheduleModalControlsHide();
+      const index = items.findIndex((image) => image.id === imageId);
+      setModalItems(items);
+      modalItemsLengthRef.current = items.length;
+      setModalContextLabel(label);
+      setModalFullSrc(null);
+      setModalFullImageId(null);
+      setModalFullAnimate(false);
+      if (label === 'Sample' && activeSet) {
+        sampleHistoryRef.current = items;
+        sampleHistorySetRef.current = activeSet.id;
+      } else {
+        sampleHistoryRef.current = [];
+        sampleHistorySetRef.current = null;
+      }
+      setModalImageId(imageId);
+      setModalIndex(index >= 0 ? index : null);
+      triggerModalPulse();
+    },
+    [activeSet, scheduleModalControlsHide]
+  );
 
   const closeModal = () => {
     setModalIndex(null);
@@ -2235,6 +2334,19 @@ export default function App() {
     }, 10);
   }, []);
 
+  const triggerModalShake = useCallback(() => {
+    setModalShake(false);
+    if (modalShakeTimeoutRef.current) {
+      window.clearTimeout(modalShakeTimeoutRef.current);
+    }
+    modalShakeTimeoutRef.current = window.setTimeout(() => {
+      setModalShake(true);
+      modalShakeTimeoutRef.current = window.setTimeout(() => {
+        setModalShake(false);
+      }, 420);
+    }, 10);
+  }, []);
+
   const storeModalFullCache = useCallback((imageId: string, url: string) => {
     const cache = modalFullCacheRef.current;
     const existing = cache.get(imageId);
@@ -2302,16 +2414,176 @@ export default function App() {
   }, [fetchImageBlob]);
 
   const toggleFavoriteFromModal = useCallback(() => {
-    if (!activeSet || !modalImage) {
+    if (!modalImage) {
       return;
     }
-    const isFavorite = favoriteIds.includes(modalImage.id);
+    const setId =
+      modalContextLabel === 'Slideshow'
+        ? slideshowImageSetRef.current.get(modalImage.id)
+        : activeSet?.id;
+    if (!setId) {
+      return;
+    }
+    const set = setsById.get(setId);
+    const isFavorite = set?.favoriteImageIds?.includes(modalImage.id) ?? false;
     triggerFavoritePulse(isFavorite ? 'remove' : 'add');
-    void toggleFavoriteImage(activeSet.id, modalImage.id);
-  }, [activeSet, favoriteIds, modalImage, toggleFavoriteImage, triggerFavoritePulse]);
+    void toggleFavoriteImage(setId, modalImage.id);
+  }, [
+    activeSet,
+    modalContextLabel,
+    modalImage,
+    setsById,
+    toggleFavoriteImage,
+    triggerFavoritePulse,
+  ]);
+
+  const buildSlideshowPool = useCallback(async () => {
+    if (!isConnected) {
+      return [];
+    }
+    const results: DriveImage[] = [];
+    const map = new Map<string, string>();
+    for (const set of slideshowSets) {
+      const images = await resolveSetImages(set, true);
+      if (images.length === 0) {
+        continue;
+      }
+      if (slideshowFavoriteFilter === 'favorites') {
+        const favorites = set.favoriteImageIds ?? [];
+        const filtered = filterFavorites(images, favorites);
+        for (const image of filtered) {
+          map.set(image.id, set.id);
+        }
+        results.push(...filtered);
+      } else if (slideshowFavoriteFilter === 'nonfavorites') {
+        const favorites = set.favoriteImageIds ?? [];
+        const filtered = filterNonFavorites(images, favorites);
+        for (const image of filtered) {
+          map.set(image.id, set.id);
+        }
+        results.push(...filtered);
+      } else {
+        for (const image of images) {
+          map.set(image.id, set.id);
+        }
+        results.push(...images);
+      }
+    }
+    slideshowImageSetRef.current = map;
+    return results;
+  }, [isConnected, resolveSetImages, slideshowFavoriteFilter, slideshowSets]);
+
+  const loadSlideshowBatch = useCallback(
+    async (count: number, options?: { openModal?: boolean }) => {
+      if (!isConnected || count <= 0) {
+        return;
+      }
+      setIsLoadingSlideshow(true);
+      setViewerIndexProgress('Loading slideshow…');
+      try {
+        const key = JSON.stringify({
+          include: slideshowTagFilters.include,
+          exclude: slideshowTagFilters.exclude,
+          favorite: slideshowFavoriteFilter,
+        });
+        if (!slideshowPoolRef.current || slideshowPoolRef.current.key !== key) {
+          slideshowPoolRef.current = {
+            key,
+            images: await buildSlideshowPool(),
+          };
+          slideshowSeenRef.current = new Set();
+          setSlideshowImages([]);
+        }
+        const pool = slideshowPoolRef.current.images;
+        if (pool.length === 0) {
+          return;
+        }
+        const seen = slideshowSeenRef.current;
+        if (seen.size >= pool.length) {
+          seen.clear();
+        }
+        const available = pool.filter((image) => !seen.has(image.id));
+        const batch = pickRandom(available, Math.min(count, available.length));
+        for (const image of batch) {
+          seen.add(image.id);
+        }
+        let mergedResult: DriveImage[] | null = null;
+        setSlideshowImages((current) => {
+          const existingIds = new Set(current.map((item) => item.id));
+          const merged = [...current];
+          for (const item of batch) {
+            if (!existingIds.has(item.id)) {
+              merged.push(item);
+            }
+          }
+          if (options?.openModal && merged.length > 0 && current.length === 0) {
+            openModal(merged[0].id, merged, 'Slideshow');
+          }
+          mergedResult = merged;
+          return merged;
+        });
+        if (mergedResult) {
+          return mergedResult;
+        }
+      } catch (loadError) {
+        setError((loadError as Error).message);
+      } finally {
+        setIsLoadingSlideshow(false);
+        setViewerIndexProgress('');
+      }
+    },
+    [
+      buildSlideshowPool,
+      isConnected,
+      openModal,
+      slideshowFavoriteFilter,
+      slideshowTagFilters.exclude,
+      slideshowTagFilters.include,
+    ]
+  );
+
+  const handleLoadMoreSlideshow = useCallback(async () => {
+    await loadSlideshowBatch(slideshowPageSize);
+  }, [loadSlideshowBatch, slideshowPageSize]);
+
+  const handleLoadMoreClick = useCallback(
+    (handler: () => void | Promise<void>) =>
+      (event: React.MouseEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.currentTarget.blur();
+        void handler();
+      },
+    []
+  );
+
+  useEffect(() => {
+    if (page !== 'slideshow') {
+      return;
+    }
+    resetSlideshow();
+  }, [page, resetSlideshow]);
+
+  useEffect(() => {
+    if (page !== 'slideshow') {
+      return;
+    }
+    resetSlideshow();
+  }, [
+    page,
+    resetSlideshow,
+    slideshowFavoriteFilter,
+    slideshowTagFilters.exclude,
+    slideshowTagFilters.include,
+  ]);
+
+  const handleStartSlideshow = useCallback(async () => {
+    setSlideshowStarted(true);
+    await loadSlideshowBatch(slideshowPageSize, { openModal: true });
+  }, [loadSlideshowBatch, slideshowPageSize]);
 
   const goNextImage = () => {
     if (modalItems.length === 0) {
+      triggerModalShake();
       return;
     }
     const currentId = modalImageId;
@@ -2319,6 +2591,7 @@ export default function App() {
       ? modalItems.findIndex((image) => image.id === currentId)
       : modalIndex;
     if (currentIndex === null || currentIndex === -1) {
+      triggerModalShake();
       return;
     }
     const isLast = currentIndex + 1 >= modalItems.length;
@@ -2440,6 +2713,35 @@ export default function App() {
           });
         return;
       }
+      if (modalContextLabel === 'Slideshow') {
+        if (slideshowAppendInFlightRef.current) {
+          return;
+        }
+        slideshowAppendInFlightRef.current = true;
+        (async () => {
+          const updated = (await loadSlideshowBatch(slideshowPageSize)) ?? slideshowImagesRef.current;
+          const nextIndex = modalItems.length;
+          const nextImage = updated[nextIndex];
+          if (!nextImage) {
+            return;
+          }
+          setModalItems(updated);
+          modalItemsLengthRef.current = updated.length;
+          setModalFullSrc(null);
+          setModalFullImageId(null);
+          setModalFullAnimate(false);
+          setModalImageId(nextImage.id);
+          setModalIndex(nextIndex);
+          triggerModalPulse();
+        })()
+          .catch((error) => {
+            setError((error as Error).message);
+          })
+          .finally(() => {
+            slideshowAppendInFlightRef.current = false;
+          });
+        return;
+      }
       if (
         modalContextLabel === 'Set' &&
         remainingImages !== undefined &&
@@ -2449,7 +2751,9 @@ export default function App() {
       ) {
         modalPendingAdvanceRef.current = true;
         void handleLoadMoreImages();
+        return;
       }
+      triggerModalShake();
       return;
     }
     const nextIndex = currentIndex + 1;
@@ -2467,6 +2771,7 @@ export default function App() {
 
   const goPrevImage = () => {
     if (modalItems.length === 0) {
+      triggerModalShake();
       return;
     }
     const currentId = modalImageId;
@@ -2474,10 +2779,12 @@ export default function App() {
       ? modalItems.findIndex((image) => image.id === currentId)
       : modalIndex;
     if (currentIndex === null || currentIndex === -1) {
+      triggerModalShake();
       return;
     }
     const isFirst = currentIndex - 1 < 0;
     if (isFirst) {
+      triggerModalShake();
       return;
     }
     const nextIndex = currentIndex - 1;
@@ -2548,6 +2855,9 @@ export default function App() {
       }
       if (modalControlsTimeoutRef.current) {
         window.clearTimeout(modalControlsTimeoutRef.current);
+      }
+      if (modalShakeTimeoutRef.current) {
+        window.clearTimeout(modalShakeTimeoutRef.current);
       }
       modalPrefetchAbortRef.current.forEach((controller) => controller.abort());
       modalPrefetchAbortRef.current.clear();
@@ -2653,6 +2963,15 @@ export default function App() {
   }, [modalIndex, modalItems, prefetchModalImage]);
 
   useEffect(() => {
+    if (modalIndex === null || modalItems.length === 0) {
+      return;
+    }
+    const start = Math.max(0, modalIndex - 2);
+    const end = Math.min(modalItems.length, modalIndex + 3);
+    prefetchThumbs(modalItems.slice(start, end));
+  }, [modalIndex, modalItems, prefetchThumbs]);
+
+  useEffect(() => {
     if (!modalImageId) {
       return;
     }
@@ -2739,7 +3058,7 @@ export default function App() {
       return;
     }
     const target = event.target as HTMLElement | null;
-    if (target?.closest('button')) {
+    if (target?.closest('button') && !target.closest('.modal-nav')) {
       return;
     }
     event.preventDefault();
@@ -2779,7 +3098,7 @@ export default function App() {
     setModalSwipeAction(null);
     setModalSwipeProgress(0);
     const target = event.target as HTMLElement | null;
-    if (target?.closest('button')) {
+    if (target?.closest('button') && !target.closest('.modal-nav')) {
       return;
     }
     if (event.touches.length === 1) {
@@ -2902,9 +3221,13 @@ export default function App() {
           const hintThreshold = 20;
           const commitThreshold = 80;
           if (absY > absX && absY > hintThreshold) {
-            const action = dy < 0 ? 'close' : 'favorite';
+            const action = dy < 0 ? 'favorite' : 'close';
             setModalSwipeAction(action);
             setModalSwipeProgress(Math.min(1, absY / commitThreshold));
+          } else if (absX > absY && absX > hintThreshold) {
+            const action = dx > 0 ? 'prev' : 'next';
+            setModalSwipeAction(action);
+            setModalSwipeProgress(Math.min(1, absX / commitThreshold));
           } else if (modalSwipeAction) {
             setModalSwipeAction(null);
             setModalSwipeProgress(0);
@@ -2961,12 +3284,33 @@ export default function App() {
         goPrevImage();
       }
     } else if (dy < -verticalThreshold && modalZoom <= 1.05) {
-      closeModal();
-    } else if (dy > verticalThreshold && modalZoom <= 1.05) {
       toggleFavoriteFromModal();
+    } else if (dy > verticalThreshold && modalZoom <= 1.05) {
+      closeModal();
     }
 
     if (!touchMovedRef.current && absX < 6 && absY < 6) {
+      const zoneWidth = 88;
+      const startX = touchStartRef.current.x;
+      const viewportWidth = window.innerWidth;
+      if (startX <= zoneWidth) {
+        goPrevImage();
+        touchStartRef.current = null;
+        touchLastRef.current = null;
+        touchMovedRef.current = false;
+        setModalSwipeAction(null);
+        setModalSwipeProgress(0);
+        return;
+      }
+      if (startX >= viewportWidth - zoneWidth) {
+        goNextImage();
+        touchStartRef.current = null;
+        touchLastRef.current = null;
+        touchMovedRef.current = false;
+        setModalSwipeAction(null);
+        setModalSwipeProgress(0);
+        return;
+      }
       lastTapRef.current = { time: Date.now(), x: touchStartRef.current.x, y: touchStartRef.current.y };
     }
     setModalSwipeAction(null);
@@ -3007,6 +3351,13 @@ export default function App() {
             onClick={() => setPage('create')}
           >
             Create
+          </button>
+          <button
+            type="button"
+            className={`nav-tab ${page === 'slideshow' ? 'is-active' : ''}`}
+            onClick={() => setPage('slideshow')}
+          >
+            Slideshow
           </button>
           {activeSet ? (
             <button
@@ -3321,6 +3672,164 @@ export default function App() {
       </section>
       ) : null}
 
+      {page === 'slideshow' ? (
+      <section className="panel">
+        <div className="panel-header panel-header--row">
+          <div className="overview-title">
+            <h2>Slideshow</h2>
+            <p className="muted">{slideshowSets.length} sets matched</p>
+          </div>
+          <div className="overview-controls">
+            <label className="field field--inline">
+              <span>Favorites</span>
+              <select
+                value={slideshowFavoriteFilter}
+                onChange={(event) =>
+                  setSlideshowFavoriteFilter(
+                    event.target.value as 'all' | 'favorites' | 'nonfavorites'
+                  )
+                }
+              >
+                <option value="all">All images</option>
+                <option value="favorites">Favorites only</option>
+                <option value="nonfavorites">Non favorites only</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="primary"
+              onClick={handleStartSlideshow}
+              disabled={isLoadingSlideshow || slideshowSets.length === 0}
+            >
+              {isLoadingSlideshow ? 'Loading…' : 'Start slideshow'}
+            </button>
+            <button
+              type="button"
+              className="ghost tag-filter-clear"
+              onClick={clearSlideshowTags}
+              disabled={
+                slideshowIncludeTags.length === 0 && slideshowExcludeTags.length === 0
+              }
+            >
+              Clear tags
+            </button>
+          </div>
+        </div>
+        <div className="panel-body">
+          {sortedTags.length > 0 ? (
+            <div className="tag-suggestions">
+              <div className="tag-filter-header">
+                <p className="muted">Include tags</p>
+              </div>
+              <div className="tag-row">
+                {sortedTags.map((tag) => {
+                  const isActive = slideshowIncludeTags.includes(tag);
+                  return (
+                    <button
+                      key={`include-${tag}`}
+                      type="button"
+                      className={`tag-button ${isActive ? 'is-active' : ''}`}
+                      onClick={() => toggleSlideshowIncludeTag(tag)}
+                    >
+                      {tag}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="tag-filter-header">
+                <p className="muted">Exclude tags</p>
+              </div>
+              <div className="tag-row">
+                {sortedTags.map((tag) => {
+                  const isActive = slideshowExcludeTags.includes(tag);
+                  return (
+                    <button
+                      key={`exclude-${tag}`}
+                      type="button"
+                      className={`tag-button tag-button--exclude ${
+                        isActive ? 'is-active' : ''
+                      }`}
+                      onClick={() => toggleSlideshowExcludeTag(tag)}
+                    >
+                      {tag}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+          {slideshowSets.length === 0 ? (
+            <p className="empty">No sets match the current filters.</p>
+          ) : !slideshowStarted ? (
+            <p className="empty">Press Start slideshow to load images.</p>
+          ) : isLoadingSlideshow && slideshowImages.length === 0 ? (
+            <div className="stack">
+              <p className="empty">Loading slideshow…</p>
+              {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+            </div>
+          ) : slideshowImages.length > 0 ? (
+            <div className="stack">
+              <div className="image-grid image-grid--zoom">
+                {slideshowImages.map((image) => {
+                  const setId = slideshowImageSetRef.current.get(image.id);
+                  const set = setId ? setsById.get(setId) : undefined;
+                  const isFavorite = set?.favoriteImageIds?.includes(image.id) ?? false;
+                  return (
+                  <div key={image.id} className="image-tile">
+                    <button
+                      type="button"
+                      className="image-button"
+                      onClick={() => openModal(image.id, slideshowImages, 'Slideshow')}
+                    >
+                      <ImageThumb
+                        isConnected={isConnected}
+                        fileId={image.id}
+                        alt="Slideshow image"
+                        size={THUMB_SIZE}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className={`thumb-action thumb-action--favorite ${
+                        isFavorite ? 'is-active' : ''
+                      }`}
+                      onClick={() => (setId ? toggleFavoriteImage(setId, image.id) : null)}
+                      aria-pressed={isFavorite}
+                      aria-label={
+                        isFavorite
+                          ? 'Remove from favorites'
+                          : 'Add to favorites'
+                      }
+                      disabled={!setId}
+                    >
+                      {isFavorite ? (
+                        <IconHeartFilled size={16} />
+                      ) : (
+                        <IconHeart size={16} />
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+              </div>
+              <button
+                type="button"
+                className="ghost load-more"
+                onClick={handleLoadMoreClick(handleLoadMoreSlideshow)}
+                disabled={isLoadingSlideshow || !slideshowStarted}
+              >
+                {isLoadingSlideshow
+                  ? `Loading... (+${slideshowPageSize})`
+                  : `Load more images (+${slideshowPageSize}) • ${slideshowImages.length}`}
+              </button>
+            </div>
+          ) : (
+            <p className="empty">No images matched the current filters.</p>
+          )}
+        </div>
+      </section>
+      ) : null}
+
       {page === 'set' ? (
       <section className="panel" ref={setViewerRef}>
         <div className="panel-header panel-header--row panel-header--viewer">
@@ -3545,8 +4054,9 @@ export default function App() {
                   <p className="empty">No sample yet. Refresh to build a preview.</p>
                 )}
                 <button
+                  type="button"
                   className="ghost load-more"
-                  onClick={handleLoadMoreSample}
+                  onClick={handleLoadMoreClick(handleLoadMoreSample)}
                   disabled={isLoadingSample}
                 >
                   {isLoadingSample
@@ -3562,8 +4072,9 @@ export default function App() {
                         : `Load images (+${samplePendingExtra})`}
                 </button>
                 <button
+                  type="button"
                   className="ghost load-more"
-                  onClick={handleLoadAllSample}
+                  onClick={handleLoadMoreClick(handleLoadAllSample)}
                   disabled={isLoadingSample}
                 >
                   {isLoadingSample
@@ -3643,8 +4154,9 @@ export default function App() {
                     <p className="empty">No non-favorites yet.</p>
                   )}
                   <button
+                    type="button"
                     className="ghost load-more"
-                    onClick={handleLoadMoreNonFavorites}
+                    onClick={handleLoadMoreClick(handleLoadMoreNonFavorites)}
                     disabled={isLoadingNonFavorites}
                   >
                     {isLoadingNonFavorites
@@ -3660,8 +4172,9 @@ export default function App() {
                           : `Load images (+${nonFavoritesPendingExtra})`}
                   </button>
                 <button
+                  type="button"
                   className="ghost load-more"
-                  onClick={handleLoadAllNonFavorites}
+                  onClick={handleLoadMoreClick(handleLoadAllNonFavorites)}
                   disabled={isLoadingNonFavorites}
                 >
                   {isLoadingNonFavorites
@@ -3797,8 +4310,9 @@ export default function App() {
                   </div>
                   {pendingExtra > 0 ? (
                     <button
+                      type="button"
                       className="ghost load-more"
-                      onClick={handleLoadMoreImages}
+                      onClick={handleLoadMoreClick(handleLoadMoreImages)}
                       disabled={isLoadingMore}
                     >
                       {isLoadingMore
@@ -3816,8 +4330,9 @@ export default function App() {
                 ) : null}
                   {remainingImages !== undefined && remainingImages > 0 ? (
                     <button
+                      type="button"
                       className="ghost load-more"
-                      onClick={handleLoadAllPreloaded}
+                      onClick={handleLoadMoreClick(handleLoadAllPreloaded)}
                       disabled={isLoadingMore}
                     >
                       {isLoadingMore
@@ -3845,10 +4360,10 @@ export default function App() {
             onPointerUp={handleModalPointerUp}
             onPointerCancel={handleModalPointerUp}
             onMouseMove={scheduleModalControlsHide}
-            onTouchStart={handleModalTouchStart}
-            onTouchMove={handleModalTouchMove}
-            onTouchEnd={handleModalTouchEnd}
-            onTouchCancel={handleModalTouchEnd}
+            onTouchStartCapture={handleModalTouchStart}
+            onTouchMoveCapture={handleModalTouchMove}
+            onTouchEndCapture={handleModalTouchEnd}
+            onTouchCancelCapture={handleModalTouchEnd}
           >
             <div className="modal-controls-right">
               {modalContextLabel === 'Set' && modalHasHistory ? (
@@ -3874,21 +4389,21 @@ export default function App() {
                 Close
               </button>
             </div>
-            {activeSet ? (
+            {modalSetId ? (
               <button
                 type="button"
                 className={`modal-favorite ${
-                  favoriteIds.includes(modalImage.id) ? 'is-active' : ''
+                  modalIsFavorite ? 'is-active' : ''
                 }`}
                 onClick={toggleFavoriteFromModal}
-                aria-pressed={favoriteIds.includes(modalImage.id)}
+                aria-pressed={modalIsFavorite}
                 aria-label={
-                  favoriteIds.includes(modalImage.id)
+                  modalIsFavorite
                     ? 'Remove from favorites'
                     : 'Add to favorites'
                 }
               >
-                {favoriteIds.includes(modalImage.id) ? (
+                {modalIsFavorite ? (
                   <IconHeartFilled size={18} />
                 ) : (
                   <IconHeart size={18} />
@@ -3909,9 +4424,15 @@ export default function App() {
               </div>
             ) : null}
             <div
-              className={`modal-media ${modalZoom > 1 ? 'is-zoomed' : ''}`}
+              className={`modal-media ${modalZoom > 1 ? 'is-zoomed' : ''} ${
+                modalShake ? 'is-shake' : ''
+              }`}
               style={{
                 transform: `translate(${modalPan.x}px, ${modalPan.y}px) scale(${modalZoom})`,
+                opacity: modalSwipeAction === 'close' ? 1 - modalSwipeProgress : 1,
+                ['--modal-pan-x' as string]: `${modalPan.x}px`,
+                ['--modal-pan-y' as string]: `${modalPan.y}px`,
+                ['--modal-zoom' as string]: String(modalZoom),
               }}
             >
               <img
@@ -3945,14 +4466,39 @@ export default function App() {
                     : ''}
               </div>
             ) : null}
-            {modalSwipeAction ? (
+            {modalSwipeAction === 'close' ? (
               <div
-                className={`modal-swipe-hint ${
-                  modalSwipeAction === 'close' ? 'is-close' : 'is-favorite'
-                }`}
-                style={{ opacity: 0.3 + modalSwipeProgress * 0.7 }}
+                className="modal-swipe-hint is-close"
+                style={{ opacity: 0.2 + modalSwipeProgress * 0.8 }}
               >
-                {modalSwipeAction === 'close' ? 'Release to close' : 'Release to favorite'}
+                Release to close
+              </div>
+            ) : null}
+            {modalSwipeAction === 'favorite' ? (
+              <div
+                className="modal-swipe-heart"
+                style={{
+                  opacity: 0.2 + modalSwipeProgress * 0.8,
+                  color: modalIsFavorite
+                    ? 'rgba(255, 255, 255, 0.85)'
+                    : 'rgba(209, 86, 71, 0.95)',
+                }}
+              >
+                {modalIsFavorite ? <IconHeart size={1} /> : <IconHeartFilled size={1} />}
+              </div>
+            ) : null}
+            {modalSwipeAction === 'prev' || modalSwipeAction === 'next' ? (
+              <div
+                className={`modal-swipe-arrow ${
+                  modalSwipeAction === 'prev' ? 'is-prev' : 'is-next'
+                }`}
+                style={{ opacity: 0.2 + modalSwipeProgress * 0.8 }}
+              >
+                {modalSwipeAction === 'prev' ? (
+                  <IconArrowLeft size={28} />
+                ) : (
+                  <IconArrowRight size={28} />
+                )}
               </div>
             ) : null}
             <button

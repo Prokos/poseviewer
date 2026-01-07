@@ -628,6 +628,12 @@ button.ghost:hover:not(:disabled) {
   font-weight: 600;
 }
 
+.tag-button--exclude.is-active {
+  background: rgba(167, 74, 63, 0.2);
+  border-color: rgba(167, 74, 63, 0.55);
+  color: #7b2f26;
+}
+
 .tag {
   background: rgba(108, 125, 94, 0.15);
   color: var(--sage);
@@ -1071,6 +1077,10 @@ button.ghost:hover:not(:disabled) {
   cursor: grabbing;
 }
 
+.modal-media.is-shake {
+  animation: modal-shake 0.38s ease;
+}
+
 .modal-thumb,
 .modal-full {
   position: absolute;
@@ -1254,6 +1264,14 @@ button.ghost:hover:not(:disabled) {
   opacity: 1;
   transition: opacity 0.5s ease;
   z-index: 1;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .modal-nav {
+    pointer-events: none;
+  }
 }
 
 .modal-nav:active:not(:disabled) {
@@ -1306,6 +1324,40 @@ button.ghost:hover:not(:disabled) {
 .modal-swipe-hint.is-favorite {
   border-color: rgba(209, 86, 71, 0.55);
   color: rgba(209, 86, 71, 0.95);
+}
+
+.modal-swipe-heart {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: rgba(209, 86, 71, 0.95);
+  z-index: 3;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.modal-swipe-heart svg {
+  width: 22vmin;
+  height: 22vmin;
+}
+
+.modal-swipe-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  color: rgba(255, 255, 255, 0.85);
+  z-index: 3;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.modal-swipe-arrow.is-prev {
+  left: calc(24px + var(--modal-safe-left));
+}
+
+.modal-swipe-arrow.is-next {
+  right: calc(24px + var(--modal-safe-right));
 }
 
 
@@ -1411,6 +1463,29 @@ button.ghost:hover:not(:disabled) {
   }
   100% {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes modal-shake {
+  0% {
+    transform: translate(var(--modal-pan-x, 0px), var(--modal-pan-y, 0px))
+      scale(var(--modal-zoom, 1));
+  }
+  25% {
+    transform: translate(calc(var(--modal-pan-x, 0px) - 6px), var(--modal-pan-y, 0px))
+      scale(var(--modal-zoom, 1));
+  }
+  50% {
+    transform: translate(calc(var(--modal-pan-x, 0px) + 6px), var(--modal-pan-y, 0px))
+      scale(var(--modal-zoom, 1));
+  }
+  75% {
+    transform: translate(calc(var(--modal-pan-x, 0px) - 4px), var(--modal-pan-y, 0px))
+      scale(var(--modal-zoom, 1));
+  }
+  100% {
+    transform: translate(var(--modal-pan-x, 0px), var(--modal-pan-y, 0px))
+      scale(var(--modal-zoom, 1));
   }
 }
 

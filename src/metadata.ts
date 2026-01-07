@@ -100,8 +100,12 @@ export function emptyMetadata(): MetadataDocument {
 }
 
 export function createPoseSet(partial: Omit<PoseSet, 'id'>): PoseSet {
+  const nextId =
+    typeof globalThis.crypto?.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID()
+      : `set_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   return {
-    id: crypto.randomUUID(),
+    id: nextId,
     favoriteImageIds: [],
     updatedAt: Date.now(),
     ...partial,

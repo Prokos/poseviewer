@@ -376,8 +376,6 @@ app.post('/api/drive/list', async (req, res) => {
   const searchParams = new URLSearchParams({
     fields: fields ?? 'nextPageToken,files(id,name,mimeType,parents,thumbnailLink)',
     pageSize: '1000',
-    supportsAllDrives: 'true',
-    includeItemsFromAllDrives: 'true',
     ...params,
   });
 

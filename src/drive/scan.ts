@@ -108,29 +108,35 @@ export async function listFolderPaths(rootId: string, options: FolderScanOptions
 export async function listImagesRecursive(folderId: string, maxCount = Infinity) {
   const images: Array<DriveImage & { folderPath: string }> = [];
   const queue: Array<{ id: string; path: string }> = [{ id: folderId, path: '' }];
+  const maxConcurrent = 4;
 
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current) {
-      continue;
-    }
+  const worker = async () => {
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        continue;
+      }
 
-    const children = await driveList(
-      {
-        q: `'${current.id}' in parents and trashed=false`,
-      },
-      'nextPageToken,files(id,name,mimeType)'
-    );
+      const children = await driveList(
+        {
+          q: `'${current.id}' in parents and trashed=false`,
+        },
+        'nextPageToken,files(id,name,mimeType)'
+      );
 
-    for (const child of children) {
-      if (child.mimeType === FOLDER_MIME) {
-        const nextPath = current.path ? `${current.path}/${child.name}` : child.name;
-        queue.push({ id: child.id, path: nextPath });
-      } else if (child.mimeType.startsWith('image/')) {
-        images.push({ ...(child as DriveImage), folderPath: current.path });
+      for (const child of children) {
+        if (child.mimeType === FOLDER_MIME) {
+          const nextPath = current.path ? `${current.path}/${child.name}` : child.name;
+          queue.push({ id: child.id, path: nextPath });
+        } else if (child.mimeType.startsWith('image/')) {
+          images.push({ ...(child as DriveImage), folderPath: current.path });
+        }
       }
     }
-  }
+  };
+
+  const workers = Array.from({ length: maxConcurrent }, () => worker());
+  await Promise.all(workers);
 
   images.sort((a, b) => {
     const pathDiff = a.folderPath.localeCompare(b.folderPath, undefined, {

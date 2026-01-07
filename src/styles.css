@@ -68,9 +68,20 @@ input {
   background: var(--white);
 }
 
-input:focus {
+input:focus,
+select:focus {
   outline: 2px solid rgba(108, 125, 94, 0.4);
   border-color: rgba(108, 125, 94, 0.6);
+}
+
+select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(31, 28, 23, 0.15);
+  background: var(--white);
+  font-family: inherit;
+  font-size: 1rem;
 }
 
 button {
@@ -706,6 +717,7 @@ button.ghost:hover:not(:disabled) {
   overflow: hidden;
   display: grid;
   place-items: center;
+  touch-action: none;
 }
 
 .modal-media {

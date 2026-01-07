@@ -250,6 +250,7 @@ export default function App() {
   const [showHiddenFolders, setShowHiddenFolders] = useState(false);
   const [setFilter, setSetFilter] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [setSort, setSetSort] = useState('added_desc');
   const [selectedFolder, setSelectedFolder] = useState<FolderPath | null>(null);
   const [setName, setSetName] = useState('');
   const [setTags, setSetTags] = useState('');
@@ -285,6 +286,12 @@ export default function App() {
   const sampleSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const prefetchedThumbsRef = useRef<Set<string>>(new Set());
   const prefetchedModalRef = useRef<Set<string>>(new Set());
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const touchLastRef = useRef<{ x: number; y: number } | null>(null);
+  const pinchStartRef = useRef<{ distance: number; zoom: number } | null>(null);
+  const oneHandZoomRef = useRef<{ startY: number; zoom: number } | null>(null);
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const touchMovedRef = useRef(false);
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
@@ -323,8 +330,35 @@ export default function App() {
       const combined = `${set.name} ${set.tags.join(' ')}`.toLowerCase();
       return combined.includes(query);
     });
-    return [...matches].reverse();
-  }, [metadata.sets, selectedTags, setFilter]);
+    const sorted = [...matches];
+    switch (setSort) {
+      case 'added_asc':
+        break;
+      case 'images_asc':
+        sorted.sort((a, b) => (a.imageCount ?? 0) - (b.imageCount ?? 0));
+        break;
+      case 'images_desc':
+        sorted.sort((a, b) => (b.imageCount ?? 0) - (a.imageCount ?? 0));
+        break;
+      case 'favs_asc':
+        sorted.sort(
+          (a, b) =>
+            (a.favoriteImageIds?.length ?? 0) - (b.favoriteImageIds?.length ?? 0)
+        );
+        break;
+      case 'favs_desc':
+        sorted.sort(
+          (a, b) =>
+            (b.favoriteImageIds?.length ?? 0) - (a.favoriteImageIds?.length ?? 0)
+        );
+        break;
+      case 'added_desc':
+      default:
+        sorted.reverse();
+        break;
+    }
+    return sorted;
+  }, [metadata.sets, selectedTags, setFilter, setSort]);
 
   const availableTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -580,9 +614,15 @@ export default function App() {
     const loadPreview = async () => {
       try {
         const index = await loadSetIndex(selectedFolder.id);
-        const images = index
-          ? indexItemsToImages(index.data.items)
-          : indexItemsToImages(await buildSetIndex(selectedFolder.id));
+        let images: DriveImage[] = [];
+        if (index) {
+          images = indexItemsToImages(index.data.items);
+        } else {
+          const items = await buildSetIndex(selectedFolder.id);
+          const existingIndexId = await findSetIndexFileId(selectedFolder.id);
+          await saveSetIndex(selectedFolder.id, existingIndexId, items);
+          images = indexItemsToImages(items);
+        }
         const sample = pickRandom(images, 8);
         if (isActive) {
           setPreviewImages(sample);
@@ -614,10 +654,10 @@ export default function App() {
     setPreviewCount(null);
     setError('');
     try {
-      const index = await loadSetIndex(selectedFolder.id);
-      const images = index
-        ? indexItemsToImages(index.data.items)
-        : indexItemsToImages(await buildSetIndex(selectedFolder.id));
+      const items = await buildSetIndex(selectedFolder.id);
+      const existingIndexId = await findSetIndexFileId(selectedFolder.id);
+      await saveSetIndex(selectedFolder.id, existingIndexId, items);
+      const images = indexItemsToImages(items);
       setPreviewImages(pickRandom(images, 8));
       setPreviewCount(images.length);
     } catch (previewError) {
@@ -1302,6 +1342,147 @@ export default function App() {
     isPanningRef.current = false;
   };
 
+  const handleModalTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length === 1) {
+      const touch = event.touches[0];
+      if (!touch) {
+        return;
+      }
+      const now = Date.now();
+      const lastTap = lastTapRef.current;
+      if (lastTap) {
+        const dt = now - lastTap.time;
+        const dx = touch.clientX - lastTap.x;
+        const dy = touch.clientY - lastTap.y;
+        if (dt < 300 && Math.hypot(dx, dy) < 24) {
+          event.preventDefault();
+          oneHandZoomRef.current = { startY: touch.clientY, zoom: modalZoom };
+          if (modalZoom <= 1) {
+            setModalZoom(1.2);
+          }
+          touchStartRef.current = null;
+          touchLastRef.current = null;
+          lastTapRef.current = null;
+          return;
+        }
+      }
+      touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+      touchLastRef.current = { x: touch.clientX, y: touch.clientY };
+      pinchStartRef.current = null;
+      touchMovedRef.current = false;
+    } else if (event.touches.length === 2) {
+      const [first, second] = Array.from(event.touches);
+      if (!first || !second) {
+        return;
+      }
+      const dx = second.clientX - first.clientX;
+      const dy = second.clientY - first.clientY;
+      pinchStartRef.current = { distance: Math.hypot(dx, dy), zoom: modalZoom };
+      touchStartRef.current = null;
+      touchLastRef.current = null;
+    }
+  };
+
+  const handleModalTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length === 1 && oneHandZoomRef.current) {
+      event.preventDefault();
+      const touch = event.touches[0];
+      if (!touch) {
+        return;
+      }
+      const deltaY = oneHandZoomRef.current.startY - touch.clientY;
+      const nextZoom = Math.min(4, Math.max(1, oneHandZoomRef.current.zoom + deltaY / 200));
+      setModalZoom(nextZoom);
+      if (nextZoom === 1) {
+        setModalPan({ x: 0, y: 0 });
+      }
+      return;
+    }
+
+    if (event.touches.length === 2 && pinchStartRef.current) {
+      event.preventDefault();
+      const [first, second] = Array.from(event.touches);
+      if (!first || !second) {
+        return;
+      }
+      const dx = second.clientX - first.clientX;
+      const dy = second.clientY - first.clientY;
+      const distance = Math.hypot(dx, dy);
+      const nextZoom = Math.min(
+        4,
+        Math.max(1, (distance / pinchStartRef.current.distance) * pinchStartRef.current.zoom)
+      );
+      setModalZoom(nextZoom);
+      if (nextZoom === 1) {
+        setModalPan({ x: 0, y: 0 });
+      }
+      return;
+    }
+
+    if (event.touches.length === 1) {
+      const touch = event.touches[0];
+      if (!touch) {
+        return;
+      }
+      if (touchStartRef.current) {
+        const dx = touch.clientX - touchStartRef.current.x;
+        const dy = touch.clientY - touchStartRef.current.y;
+        if (Math.hypot(dx, dy) > 10) {
+          touchMovedRef.current = true;
+        }
+      }
+      if (modalZoom > 1 && touchLastRef.current) {
+        event.preventDefault();
+        const deltaX = touch.clientX - touchLastRef.current.x;
+        const deltaY = touch.clientY - touchLastRef.current.y;
+        setModalPan((current) => ({
+          x: current.x + deltaX,
+          y: current.y + deltaY,
+        }));
+      }
+      touchLastRef.current = { x: touch.clientX, y: touch.clientY };
+    }
+  };
+
+  const handleModalTouchEnd = () => {
+    if (pinchStartRef.current) {
+      pinchStartRef.current = null;
+      return;
+    }
+    if (oneHandZoomRef.current) {
+      oneHandZoomRef.current = null;
+      return;
+    }
+    if (!touchStartRef.current || !touchLastRef.current) {
+      touchStartRef.current = null;
+      touchLastRef.current = null;
+      return;
+    }
+    const dx = touchLastRef.current.x - touchStartRef.current.x;
+    const dy = touchLastRef.current.y - touchStartRef.current.y;
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+    const swipeThreshold = 60;
+    const verticalThreshold = 80;
+
+    if (absX > absY && absX > swipeThreshold && modalZoom <= 1.05) {
+      if (dx < 0) {
+        goNextImage();
+      } else {
+        goPrevImage();
+      }
+    } else if (dy < -verticalThreshold && modalZoom <= 1.05) {
+      closeModal();
+    }
+
+    if (!touchMovedRef.current && absX < 6 && absY < 6) {
+      lastTapRef.current = { time: Date.now(), x: touchStartRef.current.x, y: touchStartRef.current.y };
+    }
+    touchStartRef.current = null;
+    touchLastRef.current = null;
+    touchMovedRef.current = false;
+  };
+
 
   return (
     <div className={`app ${isLoadingMetadata ? 'app--loading' : ''}`}>
@@ -1544,6 +1725,17 @@ export default function App() {
               onChange={(event) => setSetFilter(event.target.value)}
               placeholder="Search by name or tag"
             />
+          </label>
+          <label className="field">
+            <span>Sort sets</span>
+            <select value={setSort} onChange={(event) => setSetSort(event.target.value)}>
+              <option value="added_desc">Added (newest)</option>
+              <option value="added_asc">Added (oldest)</option>
+              <option value="images_desc">Images (high to low)</option>
+              <option value="images_asc">Images (low to high)</option>
+              <option value="favs_desc">Favorites (high to low)</option>
+              <option value="favs_asc">Favorites (low to high)</option>
+            </select>
           </label>
           <div className="card-grid">
             {filteredSets.map((set) => (
@@ -1889,6 +2081,10 @@ export default function App() {
             onPointerMove={handleModalPointerMove}
             onPointerUp={handleModalPointerUp}
             onPointerCancel={handleModalPointerUp}
+            onTouchStart={handleModalTouchStart}
+            onTouchMove={handleModalTouchMove}
+            onTouchEnd={handleModalTouchEnd}
+            onTouchCancel={handleModalTouchEnd}
           >
             <button type="button" className="modal-close" onClick={closeModal}>
               Close

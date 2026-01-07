@@ -7,6 +7,9 @@ import {
   IconDotsVertical,
   IconHeart,
   IconHeartFilled,
+  IconClock,
+  IconRefresh,
+  IconX,
   IconTimeline,
   IconLoader2,
   IconFolder,
@@ -411,6 +414,7 @@ export default function App() {
   const [modalImageId, setModalImageId] = useState<string | null>(null);
   const [modalItems, setModalItems] = useState<DriveImage[]>([]);
   const [modalContextLabel, setModalContextLabel] = useState('');
+  const [modalContextSetId, setModalContextSetId] = useState<string | null>(null);
   const [modalIsLoading, setModalIsLoading] = useState(false);
   const [modalPulse, setModalPulse] = useState(false);
   const [modalFavoritePulse, setModalFavoritePulse] = useState<null | 'add' | 'remove'>(null);
@@ -426,6 +430,10 @@ export default function App() {
     null | 'close' | 'favorite' | 'prev' | 'next'
   >(null);
   const [modalSwipeProgress, setModalSwipeProgress] = useState(0);
+  const [modalTimerMs, setModalTimerMs] = useState(0);
+  const [modalTimerProgress, setModalTimerProgress] = useState(0);
+  const [isModalTimerOpen, setIsModalTimerOpen] = useState(false);
+  const [modalTimerFade, setModalTimerFade] = useState(false);
   const [modalHasHistory, setModalHasHistory] = useState(false);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
@@ -443,11 +451,30 @@ export default function App() {
   const modalPrefetchCacheRef = useRef<Map<string, string>>(new Map());
   const modalFullCacheRef = useRef<Map<string, string>>(new Map());
   const modalFullCacheMax = 6;
+  const modalMediaRef = useRef<HTMLDivElement | null>(null);
+  const modalImageSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const modalImageSizeCacheRef = useRef<Map<string, { width: number; height: number }>>(
+    new Map()
+  );
+  const modalTimerFrameRef = useRef<number | null>(null);
+  const modalTimerIntervalRef = useRef<number | null>(null);
+  const modalTimerStartRef = useRef(0);
+  const modalTimerElapsedRef = useRef(0);
+  const modalTimerPausedRef = useRef(false);
+  const modalTimerResumeTimeoutRef = useRef<number | null>(null);
+  const modalTimerFadeRef = useRef(false);
+  const modalSwipeLockRef = useRef<null | 'close' | 'favorite' | 'prev' | 'next'>(null);
+  const modalSwipeOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const wakeFallbackRef = useRef<HTMLVideoElement | null>(null);
+  const modalAutoAdvanceRef = useRef(false);
+  const goNextImageRef = useRef<() => void>(() => {});
   const modalHistoryRef = useRef<{
     items: DriveImage[];
     label: string;
     imageId: string | null;
     index: number | null;
+    contextSetId?: string | null;
   } | null>(null);
   const sampleGridRef = useRef<HTMLDivElement | null>(null);
   const allGridRef = useRef<HTMLDivElement | null>(null);
@@ -481,7 +508,14 @@ export default function App() {
     panX: number;
     panY: number;
   } | null>(null);
-  const oneHandZoomRef = useRef<{ startY: number; zoom: number } | null>(null);
+  const oneHandZoomRef = useRef<{
+    startY: number;
+    zoom: number;
+    pointerX: number;
+    pointerY: number;
+    worldX: number;
+    worldY: number;
+  } | null>(null);
   const oneHandZoomMovedRef = useRef(false);
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const lastDoubleTapRef = useRef(0);
@@ -1391,10 +1425,11 @@ export default function App() {
   );
 
   const resolveSetImages = useCallback(
-    async (set: PoseSet, buildIfMissing: boolean) => {
+    async (set: PoseSet, buildIfMissing: boolean, options?: { suppressProgress?: boolean }) => {
       if (!isConnected) {
         return [];
       }
+      const suppressProgress = options?.suppressProgress ?? false;
       const prebuilt = getPrebuiltIndexForSet(set);
       const resolvedSet =
         !set.indexFileId && prebuilt?.fileId
@@ -1414,26 +1449,36 @@ export default function App() {
         }
         return images;
       }
-      if (viewerIndexTimerRef.current) {
-        viewerIndexTimerRef.current();
-        viewerIndexTimerRef.current = null;
+      if (!suppressProgress) {
+        if (viewerIndexTimerRef.current) {
+          viewerIndexTimerRef.current();
+          viewerIndexTimerRef.current = null;
+        }
+        const stopTimer = startIndexTimer(setViewerIndexProgress);
+        viewerIndexTimerRef.current = stopTimer;
       }
-      const stopTimer = startIndexTimer(setViewerIndexProgress);
-      viewerIndexTimerRef.current = stopTimer;
       const index = await loadIndexItemsForSet(
         resolvedSet,
         buildIfMissing,
         (progress) => {
-          stopTimer();
+          if (suppressProgress) {
+            return;
+          }
+          viewerIndexTimerRef.current?.();
           viewerIndexTimerRef.current = null;
           setViewerIndexProgress(formatDownloadProgress(progress));
         },
         (progress) => {
+          if (suppressProgress) {
+            return;
+          }
           setViewerIndexProgress(formatIndexProgress(progress));
         }
       );
-      stopTimer();
-      viewerIndexTimerRef.current = null;
+      if (!suppressProgress) {
+        viewerIndexTimerRef.current?.();
+        viewerIndexTimerRef.current = null;
+      }
       if (index) {
         const images = indexItemsToImages(index.items);
         if (!writeImageListCache(set.id, images)) {
@@ -1984,10 +2029,12 @@ export default function App() {
       label: string;
       imageId: string | null;
       index: number | null;
+      contextSetId?: string | null;
     }) => {
       setModalItems(snapshot.items);
       modalItemsLengthRef.current = snapshot.items.length;
       setModalContextLabel(snapshot.label);
+      setModalContextSetId(snapshot.contextSetId ?? null);
       setModalImageId(snapshot.imageId);
       setModalIndex(snapshot.index);
       setModalFullSrc(null);
@@ -2000,7 +2047,15 @@ export default function App() {
   );
 
   const openModalChronologicalContext = useCallback(async () => {
-    if (!activeSet || !modalImageId || modalContextLabel === 'Set') {
+    if (!modalImageId || modalContextLabel === 'Set') {
+      return;
+    }
+    const contextSetId =
+      modalContextLabel === 'Slideshow'
+        ? slideshowImageSetRef.current.get(modalImageId) ?? null
+        : activeSet?.id ?? null;
+    const contextSet = contextSetId ? setsById.get(contextSetId) : null;
+    if (!contextSet) {
       return;
     }
     modalHistoryRef.current = {
@@ -2008,11 +2063,12 @@ export default function App() {
       label: modalContextLabel,
       imageId: modalImageId,
       index: modalIndex,
+      contextSetId: modalContextSetId,
     };
     setModalHasHistory(true);
     setError('');
     try {
-      const images = await resolveSetImages(activeSet, true);
+      const images = await resolveSetImages(contextSet, true);
       if (images.length === 0) {
         return;
       }
@@ -2020,32 +2076,37 @@ export default function App() {
       if (index < 0) {
         return;
       }
-      const preload = 2;
+      const preload = 5;
       const end = Math.min(images.length, index + preload + 1);
       const start = Math.max(0, index - preload);
       const nextLimit = Math.max(end, allPageSize);
       prefetchThumbs(images.slice(start, end));
       setImageLimit(nextLimit);
       setActiveImages(images.slice(0, nextLimit));
-      setFavoriteImages(filterFavorites(images, activeSet.favoriteImageIds ?? []));
+      if (activeSet?.id === contextSet.id) {
+        setFavoriteImages(filterFavorites(images, contextSet.favoriteImageIds ?? []));
+      }
       applyModalContext({
         items: images.slice(0, nextLimit),
         label: 'Set',
         imageId: modalImageId,
         index,
+        contextSetId: contextSet.id,
       });
     } catch (loadError) {
       setError((loadError as Error).message);
     }
   }, [
-    activeSet,
     allPageSize,
     applyModalContext,
     modalContextLabel,
     modalImageId,
     modalIndex,
     modalItems,
+    modalContextSetId,
     resolveSetImages,
+    setsById,
+    activeSet,
   ]);
 
   const restoreModalContext = useCallback(() => {
@@ -2057,12 +2118,20 @@ export default function App() {
       label: modalContextLabel,
       imageId: modalImageId,
       index: modalIndex,
+      contextSetId: modalContextSetId,
     };
     const previous = modalHistoryRef.current;
     modalHistoryRef.current = current;
     setModalHasHistory(true);
     applyModalContext(previous);
-  }, [applyModalContext, modalContextLabel, modalImageId, modalIndex, modalItems]);
+  }, [
+    applyModalContext,
+    modalContextLabel,
+    modalContextSetId,
+    modalImageId,
+    modalIndex,
+    modalItems,
+  ]);
 
   const handleLoadMoreImages = async () => {
     if (!activeSet) {
@@ -2145,15 +2214,25 @@ export default function App() {
       ? modalItems[modalIndex]
       : null;
   const modalSetId =
-    modalImage && modalContextLabel === 'Slideshow'
-      ? slideshowImageSetRef.current.get(modalImage.id) ?? null
-      : activeSet?.id ?? null;
+    modalContextLabel === 'Set'
+      ? modalContextSetId ?? activeSet?.id ?? null
+      : modalImage && modalContextLabel === 'Slideshow'
+        ? slideshowImageSetRef.current.get(modalImage.id) ?? null
+        : activeSet?.id ?? null;
   const modalSet = modalSetId ? setsById.get(modalSetId) : activeSet;
   const modalIsFavorite =
     modalImage && modalSet ? (modalSet.favoriteImageIds ?? []).includes(modalImage.id) : false;
   const cachedCount = activeSet ? readImageListCache(activeSet.id)?.length : undefined;
   const totalImagesKnown = activeSet?.imageCount ?? cachedCount;
   const totalImages = totalImagesKnown ?? activeImages.length;
+  const modalTotalImagesKnown =
+    modalContextLabel === 'Set' && modalContextSetId
+      ? modalSet?.imageCount ?? readImageListCache(modalContextSetId)?.length
+      : totalImagesKnown;
+  const modalRemainingImages =
+    modalTotalImagesKnown !== undefined
+      ? Math.max(0, modalTotalImagesKnown - modalItems.length)
+      : undefined;
   const remainingImages =
     totalImagesKnown !== undefined
       ? Math.max(0, totalImagesKnown - activeImages.length)
@@ -2186,7 +2265,7 @@ export default function App() {
   const canGoNextModal =
     modalIndex !== null &&
     (modalIndex < modalItems.length - 1 ||
-      (modalContextLabel === 'Set' && !!remainingImages) ||
+      (modalContextLabel === 'Set' && !!modalRemainingImages) ||
       (modalContextLabel === 'Sample' && !!activeSet) ||
       (modalContextLabel === 'Non favorites' && !!activeSet) ||
       modalContextLabel === 'Slideshow');
@@ -2202,7 +2281,10 @@ export default function App() {
     [activeImages.length, activeSet, allPageSize, isLoadingImages]
   );
 
-  const scheduleModalControlsHide = useCallback(() => {
+  const scheduleModalControlsHide = useCallback((force = false) => {
+    if (!force && (modalTimerMs > 0 || isModalTimerOpen)) {
+      return;
+    }
     setModalControlsVisible(true);
     if (modalControlsTimeoutRef.current) {
       window.clearTimeout(modalControlsTimeoutRef.current);
@@ -2210,7 +2292,198 @@ export default function App() {
     modalControlsTimeoutRef.current = window.setTimeout(() => {
       setModalControlsVisible(false);
     }, 2000);
+  }, [isModalTimerOpen, modalTimerMs]);
+
+  const pauseModalTimer = useCallback(() => {
+    if (modalTimerMs <= 0 || modalTimerPausedRef.current) {
+      return;
+    }
+    modalTimerPausedRef.current = true;
+    modalTimerElapsedRef.current += performance.now() - modalTimerStartRef.current;
+    if (modalTimerFadeRef.current) {
+      modalTimerFadeRef.current = false;
+      setModalTimerFade(false);
+    }
+  }, [modalTimerMs]);
+
+  const resumeModalTimer = useCallback(() => {
+    if (modalTimerMs <= 0 || !modalTimerPausedRef.current) {
+      return;
+    }
+    modalTimerPausedRef.current = false;
+    modalTimerStartRef.current = performance.now();
+  }, [modalTimerMs]);
+
+  const scheduleModalTimerResume = useCallback(() => {
+    if (modalTimerResumeTimeoutRef.current) {
+      window.clearTimeout(modalTimerResumeTimeoutRef.current);
+    }
+    if (isModalTimerOpen) {
+      return;
+    }
+    modalTimerResumeTimeoutRef.current = window.setTimeout(() => {
+      modalTimerResumeTimeoutRef.current = null;
+      resumeModalTimer();
+    }, 300);
+  }, [isModalTimerOpen, resumeModalTimer]);
+
+  const startWakeFallback = useCallback(() => {
+    if (wakeFallbackRef.current) {
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, 1, 1);
+    }
+    const stream = canvas.captureStream(1);
+    const video = document.createElement('video');
+    video.setAttribute('playsinline', 'true');
+    video.muted = true;
+    video.loop = true;
+    video.autoplay = true;
+    video.srcObject = stream;
+    video.style.position = 'fixed';
+    video.style.width = '1px';
+    video.style.height = '1px';
+    video.style.opacity = '0';
+    video.style.pointerEvents = 'none';
+    video.style.left = '0';
+    video.style.top = '0';
+    document.body.appendChild(video);
+    wakeFallbackRef.current = video;
+    void video.play().catch(() => undefined);
   }, []);
+
+  const stopWakeFallback = useCallback(() => {
+    const video = wakeFallbackRef.current;
+    if (!video) {
+      return;
+    }
+    video.pause();
+    video.remove();
+    wakeFallbackRef.current = null;
+  }, []);
+
+  const handleSelectModalTimer = useCallback(
+    (value: number) => {
+      setModalTimerMs(value);
+      setIsModalTimerOpen(false);
+      if (value > 0) {
+        startWakeFallback();
+      } else {
+        stopWakeFallback();
+      }
+    },
+    [startWakeFallback, stopWakeFallback]
+  );
+
+  const resetModalTimer = useCallback(() => {
+    if (modalTimerMs <= 0) {
+      return;
+    }
+    modalTimerElapsedRef.current = 0;
+    modalTimerPausedRef.current = false;
+    modalTimerStartRef.current = performance.now();
+    setModalTimerProgress(0);
+    setModalTimerFade(false);
+    setIsModalTimerOpen(false);
+  }, [modalTimerMs]);
+
+  useEffect(() => {
+    if (isModalTimerOpen) {
+      if (modalControlsTimeoutRef.current) {
+        window.clearTimeout(modalControlsTimeoutRef.current);
+        modalControlsTimeoutRef.current = null;
+      }
+      setModalControlsVisible(true);
+      pauseModalTimer();
+      return;
+    }
+    scheduleModalTimerResume();
+  }, [isModalTimerOpen, pauseModalTimer, scheduleModalTimerResume]);
+
+  const getModalMaxZoom = useCallback(() => {
+    const media = modalMediaRef.current;
+    const bounds = media ? { width: media.clientWidth, height: media.clientHeight } : null;
+    const size = modalImageSizeRef.current;
+    if (!bounds || !size) {
+      return 1.5;
+    }
+    if (size.width <= 0 || size.height <= 0) {
+      return 1.5;
+    }
+    const baseScale = Math.min(bounds.width / size.width, bounds.height / size.height);
+    if (!Number.isFinite(baseScale) || baseScale <= 0) {
+      return 1.5;
+    }
+    return Math.max(1, 1.5 / baseScale);
+  }, []);
+
+  const clampModalPan = useCallback(
+    (pan: { x: number; y: number }, zoom: number) => {
+      const media = modalMediaRef.current;
+      const bounds = media ? { width: media.clientWidth, height: media.clientHeight } : null;
+      const size = modalImageSizeRef.current;
+      if (!bounds || !size) {
+        return pan;
+      }
+      if (size.width <= 0 || size.height <= 0) {
+        return pan;
+      }
+      const baseScale = Math.min(bounds.width / size.width, bounds.height / size.height);
+      if (!Number.isFinite(baseScale) || baseScale <= 0) {
+        return pan;
+      }
+      const imageWidth = size.width * baseScale * zoom;
+      const imageHeight = size.height * baseScale * zoom;
+      const minVisible = 0.1;
+      const minVisibleWidth = imageWidth * minVisible;
+      const minVisibleHeight = imageHeight * minVisible;
+      const viewLeft = -bounds.width / 2;
+      const viewRight = bounds.width / 2;
+      const viewTop = -bounds.height / 2;
+      const viewBottom = bounds.height / 2;
+      const minPanX = viewLeft + minVisibleWidth - imageWidth / 2;
+      const maxPanX = viewRight - minVisibleWidth + imageWidth / 2;
+      const minPanY = viewTop + minVisibleHeight - imageHeight / 2;
+      const maxPanY = viewBottom - minVisibleHeight + imageHeight / 2;
+      return {
+        x: Math.min(maxPanX, Math.max(minPanX, pan.x)),
+        y: Math.min(maxPanY, Math.max(minPanY, pan.y)),
+      };
+    },
+    []
+  );
+
+  const handleModalFullLoad = useCallback(
+    (event: React.SyntheticEvent<HTMLImageElement>) => {
+      const img = event.currentTarget;
+      if (!img.naturalWidth || !img.naturalHeight || !modalImageId) {
+        return;
+      }
+      const size = { width: img.naturalWidth, height: img.naturalHeight };
+      modalImageSizeRef.current = size;
+      modalImageSizeCacheRef.current.set(modalImageId, size);
+    },
+    [modalImageId]
+  );
+
+  const modalTimerOptions = useMemo(
+    () => [
+      { label: 'none', value: 0 },
+      { label: '10s', value: 10_000 },
+      { label: '30s', value: 30_000 },
+      { label: '1min', value: 60_000 },
+      { label: '2min', value: 120_000 },
+      { label: '5min', value: 300_000 },
+      { label: '10min', value: 600_000 },
+    ],
+    []
+  );
 
   const requestViewerFullscreen = () => {
     if (document.fullscreenElement) {
@@ -2233,11 +2506,12 @@ export default function App() {
   const openModal = useCallback(
     (imageId: string, items: DriveImage[], label: string) => {
       requestViewerFullscreen();
-      scheduleModalControlsHide();
+      scheduleModalControlsHide(true);
       const index = items.findIndex((image) => image.id === imageId);
       setModalItems(items);
       modalItemsLengthRef.current = items.length;
       setModalContextLabel(label);
+      setModalContextSetId(label === 'Set' && activeSet ? activeSet.id : null);
       setModalFullSrc(null);
       setModalFullImageId(null);
       setModalFullAnimate(false);
@@ -2261,6 +2535,7 @@ export default function App() {
     setModalItems([]);
     modalItemsLengthRef.current = 0;
     setModalContextLabel('');
+    setModalContextSetId(null);
     setModalIsLoading(false);
     setModalPulse(false);
     setModalFavoritePulse(null);
@@ -2269,6 +2544,10 @@ export default function App() {
     setModalFullAnimate(false);
     setModalZoom(1);
     setModalPan({ x: 0, y: 0 });
+    setModalTimerMs(0);
+    setModalTimerProgress(0);
+    setModalTimerFade(false);
+    setIsModalTimerOpen(false);
     modalHistoryRef.current = null;
     setModalHasHistory(false);
     sampleHistoryRef.current = [];
@@ -2301,10 +2580,27 @@ export default function App() {
     modalPrefetchCacheRef.current.clear();
     modalFullCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
     modalFullCacheRef.current.clear();
+    if (modalTimerFrameRef.current) {
+      window.cancelAnimationFrame(modalTimerFrameRef.current);
+      modalTimerFrameRef.current = null;
+    }
+    if (modalTimerIntervalRef.current) {
+      window.clearInterval(modalTimerIntervalRef.current);
+      modalTimerIntervalRef.current = null;
+    }
+    if (modalTimerResumeTimeoutRef.current) {
+      window.clearTimeout(modalTimerResumeTimeoutRef.current);
+      modalTimerResumeTimeoutRef.current = null;
+    }
     if (modalControlsTimeoutRef.current) {
       window.clearTimeout(modalControlsTimeoutRef.current);
       modalControlsTimeoutRef.current = null;
     }
+    if (wakeLockRef.current) {
+      void wakeLockRef.current.release().catch(() => undefined);
+      wakeLockRef.current = null;
+    }
+    stopWakeFallback();
     exitViewerFullscreen();
   };
 
@@ -2418,9 +2714,11 @@ export default function App() {
       return;
     }
     const setId =
-      modalContextLabel === 'Slideshow'
-        ? slideshowImageSetRef.current.get(modalImage.id)
-        : activeSet?.id;
+      modalContextLabel === 'Set'
+        ? modalContextSetId ?? activeSet?.id
+        : modalContextLabel === 'Slideshow'
+          ? slideshowImageSetRef.current.get(modalImage.id)
+          : activeSet?.id;
     if (!setId) {
       return;
     }
@@ -2431,6 +2729,7 @@ export default function App() {
   }, [
     activeSet,
     modalContextLabel,
+    modalContextSetId,
     modalImage,
     setsById,
     toggleFavoriteImage,
@@ -2443,8 +2742,12 @@ export default function App() {
     }
     const results: DriveImage[] = [];
     const map = new Map<string, string>();
+    const totalSets = slideshowSets.length;
+    let processed = 0;
     for (const set of slideshowSets) {
-      const images = await resolveSetImages(set, true);
+      processed += 1;
+      setViewerIndexProgress(`Loading indexes ${processed}/${totalSets}`);
+      const images = await resolveSetImages(set, true, { suppressProgress: true });
       if (images.length === 0) {
         continue;
       }
@@ -2470,6 +2773,7 @@ export default function App() {
       }
     }
     slideshowImageSetRef.current = map;
+    setViewerIndexProgress('');
     return results;
   }, [isConnected, resolveSetImages, slideshowFavoriteFilter, slideshowSets]);
 
@@ -2578,13 +2882,20 @@ export default function App() {
 
   const handleStartSlideshow = useCallback(async () => {
     setSlideshowStarted(true);
+    if (slideshowImages.length > 0) {
+      openModal(slideshowImages[0].id, slideshowImages, 'Slideshow');
+      return;
+    }
     await loadSlideshowBatch(slideshowPageSize, { openModal: true });
-  }, [loadSlideshowBatch, slideshowPageSize]);
+  }, [loadSlideshowBatch, openModal, slideshowImages, slideshowPageSize]);
 
-  const goNextImage = () => {
+  const goNextImage = (options?: { suppressControls?: boolean }) => {
     if (modalItems.length === 0) {
       triggerModalShake();
       return;
+    }
+    if (options?.suppressControls) {
+      setModalControlsVisible(false);
     }
     const currentId = modalImageId;
     const currentIndex = currentId
@@ -2642,7 +2953,11 @@ export default function App() {
           setModalFullAnimate(false);
           setModalImageId(updated[nextIndex]?.id ?? null);
           setModalIndex(updated[nextIndex]?.id ? nextIndex : null);
-          triggerModalPulse();
+          if (options?.suppressControls) {
+            setModalPulse(false);
+          } else {
+            triggerModalPulse();
+          }
         })()
           .catch((error) => {
             setError((error as Error).message);
@@ -2703,7 +3018,11 @@ export default function App() {
           setModalFullAnimate(false);
           setModalImageId(updated[nextIndex]?.id ?? null);
           setModalIndex(updated[nextIndex]?.id ? nextIndex : null);
-          triggerModalPulse();
+          if (options?.suppressControls) {
+            setModalPulse(false);
+          } else {
+            triggerModalPulse();
+          }
         })()
           .catch((error) => {
             setError((error as Error).message);
@@ -2732,7 +3051,11 @@ export default function App() {
           setModalFullAnimate(false);
           setModalImageId(nextImage.id);
           setModalIndex(nextIndex);
-          triggerModalPulse();
+          if (options?.suppressControls) {
+            setModalPulse(false);
+          } else {
+            triggerModalPulse();
+          }
         })()
           .catch((error) => {
             setError((error as Error).message);
@@ -2744,14 +3067,57 @@ export default function App() {
       }
       if (
         modalContextLabel === 'Set' &&
-        remainingImages !== undefined &&
-        remainingImages > 0 &&
-        !isLoadingMore &&
-        activeSet
+        modalRemainingImages !== undefined &&
+        modalRemainingImages > 0
       ) {
-        modalPendingAdvanceRef.current = true;
-        void handleLoadMoreImages();
-        return;
+        if (modalContextSetId && activeSet?.id !== modalContextSetId) {
+          if (modalPendingAdvanceRef.current) {
+            return;
+          }
+          modalPendingAdvanceRef.current = true;
+          const contextSet = setsById.get(modalContextSetId);
+          if (!contextSet) {
+            modalPendingAdvanceRef.current = false;
+            triggerModalShake();
+            return;
+          }
+          (async () => {
+            const images = await resolveSetImages(contextSet, true);
+            if (images.length === 0) {
+              return;
+            }
+            const nextIndex = modalItems.length;
+            const nextLimit = Math.min(images.length, nextIndex + allPageSize);
+            const nextItems = images.slice(0, nextLimit);
+            if (nextItems.length <= modalItems.length) {
+              return;
+            }
+            setModalItems(nextItems);
+            modalItemsLengthRef.current = nextItems.length;
+            setModalFullSrc(null);
+            setModalFullImageId(null);
+            setModalFullAnimate(false);
+            setModalImageId(nextItems[nextIndex]?.id ?? null);
+            setModalIndex(nextItems[nextIndex]?.id ? nextIndex : null);
+            if (options?.suppressControls) {
+              setModalPulse(false);
+            } else {
+              triggerModalPulse();
+            }
+          })()
+            .catch((error) => {
+              setError((error as Error).message);
+            })
+            .finally(() => {
+              modalPendingAdvanceRef.current = false;
+            });
+          return;
+        }
+        if (!isLoadingMore && activeSet) {
+          modalPendingAdvanceRef.current = true;
+          void handleLoadMoreImages();
+          return;
+        }
       }
       triggerModalShake();
       return;
@@ -2766,7 +3132,11 @@ export default function App() {
     setModalFullAnimate(false);
     setModalImageId(nextImage.id);
     setModalIndex(nextIndex);
-    triggerModalPulse();
+    if (options?.suppressControls) {
+      setModalPulse(false);
+    } else {
+      triggerModalPulse();
+    }
   };
 
   const goPrevImage = () => {
@@ -2799,6 +3169,10 @@ export default function App() {
     setModalIndex(nextIndex);
     triggerModalPulse();
   };
+
+  useEffect(() => {
+    goNextImageRef.current = goNextImage;
+  }, [goNextImage]);
 
   useEffect(() => {
     if (modalIndex === null) {
@@ -2846,6 +3220,120 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (!modalImageId) {
+      return;
+    }
+    if (modalTimerMs > 0 || modalAutoAdvanceRef.current) {
+      setModalControlsVisible(false);
+      modalAutoAdvanceRef.current = false;
+    }
+  }, [modalImageId, modalTimerMs]);
+
+  useEffect(() => {
+    if (!modalImageId || modalTimerMs <= 0) {
+      if (modalTimerFrameRef.current) {
+        window.cancelAnimationFrame(modalTimerFrameRef.current);
+        modalTimerFrameRef.current = null;
+      }
+      if (modalTimerIntervalRef.current) {
+        window.clearInterval(modalTimerIntervalRef.current);
+        modalTimerIntervalRef.current = null;
+      }
+      setModalTimerProgress(0);
+      setModalTimerFade(false);
+      stopWakeFallback();
+      return;
+    }
+    let isActive = true;
+    modalTimerElapsedRef.current = 0;
+    modalTimerPausedRef.current = false;
+    modalTimerStartRef.current = performance.now();
+    setModalTimerProgress(0);
+    setModalTimerFade(false);
+    const tick = (now: number) => {
+      if (!isActive) {
+        return;
+      }
+      const elapsed =
+        modalTimerElapsedRef.current +
+        (modalTimerPausedRef.current ? 0 : now - modalTimerStartRef.current);
+      const remaining = Math.max(0, modalTimerMs - elapsed);
+      const shouldFade = remaining <= 500 && !modalTimerPausedRef.current;
+      if (modalTimerFadeRef.current !== shouldFade) {
+        modalTimerFadeRef.current = shouldFade;
+        setModalTimerFade(shouldFade);
+      }
+      const progress = Math.min(1, elapsed / modalTimerMs);
+      setModalTimerProgress(progress);
+      if (progress >= 1) {
+        isActive = false;
+        setModalTimerProgress(0);
+        modalTimerElapsedRef.current = 0;
+        modalTimerStartRef.current = performance.now();
+        setModalControlsVisible(false);
+        modalAutoAdvanceRef.current = true;
+        goNextImageRef.current({ suppressControls: true });
+        return;
+      }
+    };
+    modalTimerIntervalRef.current = window.setInterval(() => {
+      tick(performance.now());
+    }, 50);
+    return () => {
+      isActive = false;
+      if (modalTimerIntervalRef.current) {
+        window.clearInterval(modalTimerIntervalRef.current);
+        modalTimerIntervalRef.current = null;
+      }
+    };
+  }, [modalImageId, modalTimerMs]);
+
+  useEffect(() => {
+    if (!modalImageId || modalTimerMs <= 0 || typeof navigator === 'undefined') {
+      return;
+    }
+    if (!('wakeLock' in navigator)) {
+      startWakeFallback();
+      return;
+    }
+    let isActive = true;
+    const requestLock = async () => {
+      try {
+        const lock = await navigator.wakeLock.request('screen');
+        if (!isActive) {
+          await lock.release();
+          return;
+        }
+        wakeLockRef.current = lock;
+        lock.addEventListener('release', () => {
+          if (wakeLockRef.current === lock) {
+            wakeLockRef.current = null;
+          }
+        });
+      } catch {
+        // Ignore wake lock failures (unsupported or user gesture blocked).
+        startWakeFallback();
+      }
+    };
+    requestLock();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !wakeLockRef.current) {
+        requestLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      isActive = false;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (wakeLockRef.current) {
+        void wakeLockRef.current.release().catch(() => undefined);
+        wakeLockRef.current = null;
+      }
+      stopWakeFallback();
+    };
+  }, [modalImageId, modalTimerMs, startWakeFallback, stopWakeFallback]);
+
+  useEffect(() => {
     return () => {
       if (modalPulseTimeout.current) {
         window.clearTimeout(modalPulseTimeout.current);
@@ -2876,9 +3364,8 @@ export default function App() {
     if (modalImageId) {
       setModalZoom(1);
       setModalPan({ x: 0, y: 0 });
-      scheduleModalControlsHide();
     }
-  }, [modalImageId, scheduleModalControlsHide, storeModalFullCache]);
+  }, [modalImageId, storeModalFullCache]);
 
   useEffect(() => {
     if (!modalImageId) {
@@ -2966,8 +3453,8 @@ export default function App() {
     if (modalIndex === null || modalItems.length === 0) {
       return;
     }
-    const start = Math.max(0, modalIndex - 2);
-    const end = Math.min(modalItems.length, modalIndex + 3);
+    const start = Math.max(0, modalIndex - 5);
+    const end = Math.min(modalItems.length, modalIndex + 6);
     prefetchThumbs(modalItems.slice(start, end));
   }, [modalIndex, modalItems, prefetchThumbs]);
 
@@ -2975,6 +3462,8 @@ export default function App() {
     if (!modalImageId) {
       return;
     }
+    modalImageSizeRef.current =
+      modalImageSizeCacheRef.current.get(modalImageId) ?? null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
@@ -3005,6 +3494,7 @@ export default function App() {
     if (
       modalContextLabel !== 'Set' ||
       !modalPendingAdvanceRef.current ||
+      (modalContextSetId && activeSet?.id !== modalContextSetId) ||
       modalItems.length >= activeImages.length ||
       activeImages.length === 0
     ) {
@@ -3021,13 +3511,15 @@ export default function App() {
     setModalImageId(nextImage.id);
     setModalIndex(previousLength);
     triggerModalPulse();
-  }, [activeImages, modalContextLabel, modalItems.length]);
+  }, [activeImages, activeSet?.id, modalContextLabel, modalContextSetId, modalItems.length]);
 
   const handleModalWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
-    scheduleModalControlsHide();
+    scheduleModalControlsHide(true);
+    pauseModalTimer();
+    scheduleModalTimerResume();
     const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
-    const nextZoom = Math.min(4, Math.max(1, modalZoom * zoomFactor));
+    const nextZoom = Math.min(getModalMaxZoom(), Math.max(1, modalZoom * zoomFactor));
     if (nextZoom === modalZoom) {
       return;
     }
@@ -3049,11 +3541,11 @@ export default function App() {
     const nextPanY = pointerY - worldY * nextZoom;
 
     setModalZoom(nextZoom);
-    setModalPan({ x: nextPanX, y: nextPanY });
+    setModalPan(clampModalPan({ x: nextPanX, y: nextPanY }, nextZoom));
   };
 
   const handleModalPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    scheduleModalControlsHide();
+    scheduleModalControlsHide(true);
     if (event.button !== 0 || modalZoom <= 1) {
       return;
     }
@@ -3064,6 +3556,7 @@ export default function App() {
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     isPanningRef.current = true;
+    pauseModalTimer();
     panStartRef.current = {
       x: event.clientX,
       y: event.clientY,
@@ -3073,16 +3566,19 @@ export default function App() {
   };
 
   const handleModalPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    scheduleModalControlsHide();
+    scheduleModalControlsHide(true);
     if (!isPanningRef.current) {
       return;
     }
+    pauseModalTimer();
+    scheduleModalTimerResume();
     const deltaX = event.clientX - panStartRef.current.x;
     const deltaY = event.clientY - panStartRef.current.y;
-    setModalPan({
+    const nextPan = {
       x: panStartRef.current.originX + deltaX,
       y: panStartRef.current.originY + deltaY,
-    });
+    };
+    setModalPan(clampModalPan(nextPan, modalZoom));
   };
 
   const handleModalPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -3091,12 +3587,21 @@ export default function App() {
     }
     event.currentTarget.releasePointerCapture(event.pointerId);
     isPanningRef.current = false;
+    scheduleModalTimerResume();
+  };
+
+  const handleModalMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.movementX === 0 && event.movementY === 0) {
+      return;
+    }
+    scheduleModalControlsHide(true);
   };
 
   const handleModalTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
-    scheduleModalControlsHide();
+    scheduleModalControlsHide(true);
     setModalSwipeAction(null);
     setModalSwipeProgress(0);
+    modalSwipeLockRef.current = null;
     const target = event.target as HTMLElement | null;
     if (target?.closest('button') && !target.closest('.modal-nav')) {
       return;
@@ -3106,6 +3611,7 @@ export default function App() {
       if (!touch) {
         return;
       }
+      modalSwipeOriginRef.current = { x: touch.clientX, y: touch.clientY };
       const now = Date.now();
       const lastTap = lastTapRef.current;
       if (lastTap) {
@@ -3113,7 +3619,21 @@ export default function App() {
         if (dt < 300) {
           event.preventDefault();
           lastDoubleTapRef.current = now;
-          oneHandZoomRef.current = { startY: touch.clientY, zoom: modalZoom };
+          const rect = event.currentTarget.getBoundingClientRect();
+          const centerX = rect.left + rect.width / 2;
+          const centerY = rect.top + rect.height / 2;
+          const pointerX = touch.clientX - centerX;
+          const pointerY = touch.clientY - centerY;
+          const worldX = (pointerX - modalPan.x) / modalZoom;
+          const worldY = (pointerY - modalPan.y) / modalZoom;
+          oneHandZoomRef.current = {
+            startY: touch.clientY,
+            zoom: modalZoom,
+            pointerX,
+            pointerY,
+            worldX,
+            worldY,
+          };
           oneHandZoomMovedRef.current = false;
           touchStartRef.current = null;
           touchLastRef.current = null;
@@ -3151,13 +3671,15 @@ export default function App() {
   };
 
   const handleModalTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
-    scheduleModalControlsHide();
+    scheduleModalControlsHide(true);
     const target = event.target as HTMLElement | null;
     if (target?.closest('button')) {
       return;
     }
     if (event.touches.length === 1 && oneHandZoomRef.current) {
       event.preventDefault();
+      pauseModalTimer();
+      scheduleModalTimerResume();
       const touch = event.touches[0];
       if (!touch) {
         return;
@@ -3166,16 +3688,28 @@ export default function App() {
       if (Math.abs(deltaY) > 2) {
         oneHandZoomMovedRef.current = true;
       }
-      const nextZoom = Math.min(4, Math.max(1, oneHandZoomRef.current.zoom + deltaY / 200));
-      setModalZoom(nextZoom);
+      const zoomFactor = Math.exp(deltaY / 200);
+      const nextZoom = Math.min(
+        getModalMaxZoom(),
+        Math.max(1, oneHandZoomRef.current.zoom * zoomFactor)
+      );
       if (nextZoom === 1) {
         setModalPan({ x: 0, y: 0 });
+        setModalZoom(1);
+        return;
       }
+      const start = oneHandZoomRef.current;
+      const nextPanX = start.pointerX - start.worldX * nextZoom;
+      const nextPanY = start.pointerY - start.worldY * nextZoom;
+      setModalZoom(nextZoom);
+      setModalPan(clampModalPan({ x: nextPanX, y: nextPanY }, nextZoom));
       return;
     }
 
     if (event.touches.length === 2 && pinchStartRef.current) {
       event.preventDefault();
+      pauseModalTimer();
+      scheduleModalTimerResume();
       const [first, second] = Array.from(event.touches);
       if (!first || !second) {
         return;
@@ -3184,7 +3718,7 @@ export default function App() {
       const dy = second.clientY - first.clientY;
       const distance = Math.hypot(dx, dy);
       const nextZoom = Math.min(
-        4,
+        getModalMaxZoom(),
         Math.max(1, (distance / pinchStartRef.current.distance) * pinchStartRef.current.zoom)
       );
       if (nextZoom === 1) {
@@ -3203,7 +3737,7 @@ export default function App() {
       const nextPanX = midX - worldX * nextZoom;
       const nextPanY = midY - worldY * nextZoom;
       setModalZoom(nextZoom);
-      setModalPan({ x: nextPanX, y: nextPanY });
+      setModalPan(clampModalPan({ x: nextPanX, y: nextPanY }, nextZoom));
       return;
     }
 
@@ -3213,24 +3747,87 @@ export default function App() {
         return;
       }
       if (touchStartRef.current) {
-        const dx = touch.clientX - touchStartRef.current.x;
-        const dy = touch.clientY - touchStartRef.current.y;
+        const origin = modalSwipeOriginRef.current ?? touchStartRef.current;
+        const dx = touch.clientX - origin.x;
+        const dy = touch.clientY - origin.y;
         if (modalZoom <= 1.05) {
           const absX = Math.abs(dx);
           const absY = Math.abs(dy);
           const hintThreshold = 20;
           const commitThreshold = 80;
-          if (absY > absX && absY > hintThreshold) {
+          if (modalSwipeAction) {
+            if (modalSwipeAction === 'favorite' || modalSwipeAction === 'close') {
+              if (absY < hintThreshold) {
+                setModalSwipeAction(null);
+                setModalSwipeProgress(0);
+                modalSwipeOriginRef.current = { x: touch.clientX, y: touch.clientY };
+              } else {
+                setModalSwipeProgress(Math.min(1, absY / commitThreshold));
+                if (absY > commitThreshold) {
+                  const shift = absY - commitThreshold;
+                  const direction = dy >= 0 ? 1 : -1;
+                  modalSwipeOriginRef.current = {
+                    x: origin.x,
+                    y: origin.y + shift * direction,
+                  };
+                }
+              }
+            } else {
+              if (absX < hintThreshold) {
+                setModalSwipeAction(null);
+                setModalSwipeProgress(0);
+                modalSwipeOriginRef.current = { x: touch.clientX, y: touch.clientY };
+              } else {
+                setModalSwipeProgress(Math.min(1, absX / commitThreshold));
+                if (absX > commitThreshold) {
+                  const shift = absX - commitThreshold;
+                  const direction = dx >= 0 ? 1 : -1;
+                  modalSwipeOriginRef.current = {
+                    x: origin.x + shift * direction,
+                    y: origin.y,
+                  };
+                }
+              }
+            }
+          } else if (modalSwipeLockRef.current) {
+            const locked = modalSwipeLockRef.current;
+            if (locked === 'favorite' || locked === 'close') {
+              const matchesDirection =
+                (locked === 'favorite' && dy < 0) || (locked === 'close' && dy > 0);
+              if (matchesDirection && absY > hintThreshold) {
+                setModalSwipeAction(locked);
+                setModalSwipeProgress(Math.min(1, absY / commitThreshold));
+              } else {
+                setModalSwipeProgress(0);
+              }
+            } else {
+              const matchesDirection =
+                (locked === 'prev' && dx > 0) || (locked === 'next' && dx < 0);
+              if (matchesDirection && absX > hintThreshold) {
+                setModalSwipeAction(locked);
+                setModalSwipeProgress(Math.min(1, absX / commitThreshold));
+              } else {
+                setModalSwipeProgress(0);
+              }
+            }
+          } else if (absY > absX && absY > hintThreshold) {
             const action = dy < 0 ? 'favorite' : 'close';
+            if (modalSwipeLockRef.current && modalSwipeLockRef.current !== action) {
+              setModalSwipeProgress(0);
+              return;
+            }
             setModalSwipeAction(action);
             setModalSwipeProgress(Math.min(1, absY / commitThreshold));
+            modalSwipeLockRef.current = action;
           } else if (absX > absY && absX > hintThreshold) {
             const action = dx > 0 ? 'prev' : 'next';
+            if (modalSwipeLockRef.current && modalSwipeLockRef.current !== action) {
+              setModalSwipeProgress(0);
+              return;
+            }
             setModalSwipeAction(action);
             setModalSwipeProgress(Math.min(1, absX / commitThreshold));
-          } else if (modalSwipeAction) {
-            setModalSwipeAction(null);
-            setModalSwipeProgress(0);
+            modalSwipeLockRef.current = action;
           }
         }
         if (Math.hypot(dx, dy) > 10) {
@@ -3239,12 +3836,13 @@ export default function App() {
       }
       if (modalZoom > 1 && touchLastRef.current) {
         event.preventDefault();
+        pauseModalTimer();
+        scheduleModalTimerResume();
         const deltaX = touch.clientX - touchLastRef.current.x;
         const deltaY = touch.clientY - touchLastRef.current.y;
-        setModalPan((current) => ({
-          x: current.x + deltaX,
-          y: current.y + deltaY,
-        }));
+        setModalPan((current) =>
+          clampModalPan({ x: current.x + deltaX, y: current.y + deltaY }, modalZoom)
+        );
       }
       touchLastRef.current = { x: touch.clientX, y: touch.clientY };
     }
@@ -3253,6 +3851,7 @@ export default function App() {
   const handleModalTouchEnd = () => {
     if (pinchStartRef.current) {
       pinchStartRef.current = null;
+      scheduleModalTimerResume();
       return;
     }
     if (oneHandZoomRef.current) {
@@ -3263,33 +3862,57 @@ export default function App() {
         setModalZoom(1);
         setModalPan({ x: 0, y: 0 });
       }
+      scheduleModalTimerResume();
       return;
     }
     if (!touchStartRef.current || !touchLastRef.current) {
       touchStartRef.current = null;
       touchLastRef.current = null;
+      modalSwipeOriginRef.current = null;
       return;
     }
-    const dx = touchLastRef.current.x - touchStartRef.current.x;
-    const dy = touchLastRef.current.y - touchStartRef.current.y;
+    const tapDx = touchLastRef.current.x - touchStartRef.current.x;
+    const tapDy = touchLastRef.current.y - touchStartRef.current.y;
+    const origin = modalSwipeOriginRef.current ?? touchStartRef.current;
+    const dx = touchLastRef.current.x - origin.x;
+    const dy = touchLastRef.current.y - origin.y;
     const absX = Math.abs(dx);
     const absY = Math.abs(dy);
+    const rawAbsX = Math.abs(tapDx);
+    const rawAbsY = Math.abs(tapDy);
     const swipeThreshold = 60;
     const verticalThreshold = 80;
 
-    if (absX > absY && absX > swipeThreshold && modalZoom <= 1.05) {
-      if (dx < 0) {
+    if (modalSwipeLockRef.current) {
+      if (modalSwipeAction && modalSwipeAction === modalSwipeLockRef.current && modalSwipeProgress >= 1 && modalZoom <= 1.05) {
+        if (modalSwipeAction === 'next') {
+          goNextImage();
+        } else if (modalSwipeAction === 'prev') {
+          goPrevImage();
+        } else if (modalSwipeAction === 'favorite') {
+          toggleFavoriteFromModal();
+        } else if (modalSwipeAction === 'close') {
+          closeModal();
+        }
+      }
+    } else if (
+      !modalSwipeAction &&
+      rawAbsX > rawAbsY &&
+      rawAbsX > swipeThreshold &&
+      modalZoom <= 1.05
+    ) {
+      if (tapDx < 0) {
         goNextImage();
       } else {
         goPrevImage();
       }
-    } else if (dy < -verticalThreshold && modalZoom <= 1.05) {
+    } else if (!modalSwipeAction && tapDy < -verticalThreshold && modalZoom <= 1.05) {
       toggleFavoriteFromModal();
-    } else if (dy > verticalThreshold && modalZoom <= 1.05) {
+    } else if (!modalSwipeAction && tapDy > verticalThreshold && modalZoom <= 1.05) {
       closeModal();
     }
 
-    if (!touchMovedRef.current && absX < 6 && absY < 6) {
+    if (!touchMovedRef.current && Math.abs(tapDx) < 6 && Math.abs(tapDy) < 6) {
       const zoneWidth = 88;
       const startX = touchStartRef.current.x;
       const viewportWidth = window.innerWidth;
@@ -3315,6 +3938,8 @@ export default function App() {
     }
     setModalSwipeAction(null);
     setModalSwipeProgress(0);
+    modalSwipeLockRef.current = null;
+    modalSwipeOriginRef.current = null;
     touchStartRef.current = null;
     touchLastRef.current = null;
     touchMovedRef.current = false;
@@ -3371,7 +3996,7 @@ export default function App() {
         </div>
       </header>
       {isLoadingMetadata ? (
-        <div className="loading-overlay">
+        <div className="loading-overlay loading-overlay--full">
           <div className="loading-card">Loading metadata…</div>
         </div>
       ) : null}
@@ -3385,9 +4010,6 @@ export default function App() {
               <p>Select any folder (including nested) to define a set. Limited to 50 paths.</p>
             </div>
             <div className="panel-actions">
-              <button className="ghost" onClick={handleFetchMetadata} disabled={!isConnected}>
-                Fetch metadata
-              </button>
               <button className="primary" onClick={handleScan} disabled={!isConnected || !rootId}>
                 {isScanning ? 'Scanning…' : 'Scan folders'}
               </button>
@@ -3673,7 +4295,7 @@ export default function App() {
       ) : null}
 
       {page === 'slideshow' ? (
-      <section className="panel">
+      <section className="panel panel--slideshow">
         <div className="panel-header panel-header--row">
           <div className="overview-title">
             <h2>Slideshow</h2>
@@ -4359,14 +4981,14 @@ export default function App() {
             onPointerMove={handleModalPointerMove}
             onPointerUp={handleModalPointerUp}
             onPointerCancel={handleModalPointerUp}
-            onMouseMove={scheduleModalControlsHide}
+            onMouseMove={handleModalMouseMove}
             onTouchStartCapture={handleModalTouchStart}
             onTouchMoveCapture={handleModalTouchMove}
             onTouchEndCapture={handleModalTouchEnd}
             onTouchCancelCapture={handleModalTouchEnd}
           >
             <div className="modal-controls-right">
-              {modalContextLabel === 'Set' && modalHasHistory ? (
+              {modalHasHistory && modalContextLabel === 'Set' ? (
                 <button
                   type="button"
                   className="modal-context"
@@ -4375,7 +4997,7 @@ export default function App() {
                 >
                   <IconArrowLeft size={18} />
                 </button>
-              ) : activeSet ? (
+              ) : modalSetId ? (
                 <button
                   type="button"
                   className="modal-context"
@@ -4385,8 +5007,52 @@ export default function App() {
                   <IconTimeline size={18} />
                 </button>
               ) : null}
-              <button type="button" className="modal-close" onClick={closeModal}>
-                Close
+              <div className="modal-timer">
+                <button
+                  type="button"
+                  className="modal-timer-button"
+                  onClick={() => {
+                    setModalControlsVisible(true);
+                    setIsModalTimerOpen((current) => !current);
+                  }}
+                  aria-label="Set auto-advance timer"
+                  aria-pressed={isModalTimerOpen}
+                >
+                  <IconClock size={18} />
+                </button>
+                {isModalTimerOpen ? (
+                  <div className="modal-timer-menu">
+                    {modalTimerOptions.map((option) => (
+                      <button
+                        key={option.label}
+                        type="button"
+                        className={`modal-timer-option ${
+                          option.value === modalTimerMs ? 'is-active' : ''
+                        }`}
+                        onClick={() => handleSelectModalTimer(option.value)}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="modal-timer-reset"
+                      onClick={resetModalTimer}
+                      aria-label="Reset timer for this image"
+                      disabled={modalTimerMs <= 0}
+                    >
+                      <IconRefresh size={16} />
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={closeModal}
+                aria-label="Close"
+              >
+                <IconX size={18} />
               </button>
             </div>
             {modalSetId ? (
@@ -4427,9 +5093,12 @@ export default function App() {
               className={`modal-media ${modalZoom > 1 ? 'is-zoomed' : ''} ${
                 modalShake ? 'is-shake' : ''
               }`}
+              ref={modalMediaRef}
               style={{
                 transform: `translate(${modalPan.x}px, ${modalPan.y}px) scale(${modalZoom})`,
-                opacity: modalSwipeAction === 'close' ? 1 - modalSwipeProgress : 1,
+                opacity:
+                  (modalSwipeAction === 'close' ? 1 - modalSwipeProgress * 0.8 : 1) *
+                  (modalTimerFade ? 0 : 1),
                 ['--modal-pan-x' as string]: `${modalPan.x}px`,
                 ['--modal-pan-y' as string]: `${modalPan.y}px`,
                 ['--modal-zoom' as string]: String(modalZoom),
@@ -4448,6 +5117,7 @@ export default function App() {
                 key={`full-${modalImage.id}`}
                 src={modalFullSrc ?? undefined}
                 alt={modalImage.name}
+                onLoad={handleModalFullLoad}
               />
             </div>
             <div className={`modal-status ${modalIsLoading ? 'is-visible' : ''}`}>
@@ -4459,19 +5129,32 @@ export default function App() {
             {modalContextLabel && modalIndex !== null ? (
               <div className="modal-counter">
                 {modalContextLabel} {modalIndex + 1}/{modalItems.length}
-                {modalContextLabel === 'Set' || modalContextLabel === 'Sample'
-                  ? ` [${totalImages}]`
+                {modalContextLabel === 'Set'
+                  ? ` [${modalTotalImagesKnown ?? totalImages}]`
+                  : modalContextLabel === 'Sample'
+                    ? ` [${totalImages}]`
                   : modalContextLabel === 'Non favorites' && nonFavoritesCount !== undefined
                     ? ` [${nonFavoritesCount}]`
                     : ''}
               </div>
             ) : null}
+            {modalTimerMs > 0 ? (
+              <div className="modal-timer-bar" aria-hidden="true">
+                <div
+                  className="modal-timer-bar-fill"
+                  style={{ width: `${Math.min(100, modalTimerProgress * 100)}%` }}
+                />
+              </div>
+            ) : null}
             {modalSwipeAction === 'close' ? (
               <div
-                className="modal-swipe-hint is-close"
-                style={{ opacity: 0.2 + modalSwipeProgress * 0.8 }}
+                className="modal-swipe-close"
+                style={{
+                  opacity: 0.2 + modalSwipeProgress * 0.8,
+                  transform: `translate(-50%, calc(-50% - ${(1 - modalSwipeProgress) * 48}px))`,
+                }}
               >
-                Release to close
+                <IconX size={36} />
               </div>
             ) : null}
             {modalSwipeAction === 'favorite' ? (
@@ -4479,6 +5162,7 @@ export default function App() {
                 className="modal-swipe-heart"
                 style={{
                   opacity: 0.2 + modalSwipeProgress * 0.8,
+                  transform: `translate(-50%, calc(-50% + ${(1 - modalSwipeProgress) * 48}px))`,
                   color: modalIsFavorite
                     ? 'rgba(255, 255, 255, 0.85)'
                     : 'rgba(209, 86, 71, 0.95)',
@@ -4492,7 +5176,13 @@ export default function App() {
                 className={`modal-swipe-arrow ${
                   modalSwipeAction === 'prev' ? 'is-prev' : 'is-next'
                 }`}
-                style={{ opacity: 0.2 + modalSwipeProgress * 0.8 }}
+                style={{
+                  opacity: 0.2 + modalSwipeProgress * 0.8,
+                  transform:
+                    modalSwipeAction === 'prev'
+                      ? `translate(${(1 - modalSwipeProgress) * -48}px, -50%)`
+                      : `translate(${(1 - modalSwipeProgress) * 48}px, -50%)`,
+                }}
               >
                 {modalSwipeAction === 'prev' ? (
                   <IconArrowLeft size={28} />

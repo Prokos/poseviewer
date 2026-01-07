@@ -263,6 +263,10 @@ button.ghost:hover:not(:disabled) {
   z-index: 10;
 }
 
+.loading-overlay--full {
+  z-index: 200;
+}
+
 .loading-card {
   background: var(--white);
   padding: 16px 24px;
@@ -277,6 +281,10 @@ button.ghost:hover:not(:disabled) {
   border-radius: 24px;
   padding: 20px;
   box-shadow: var(--shadow);
+}
+
+.panel--slideshow {
+  background: #000;
 }
 
 .panel-header {
@@ -1067,6 +1075,7 @@ button.ghost:hover:not(:disabled) {
   display: grid;
   place-items: center;
   transform-origin: center;
+  transition: opacity 0.5s linear;
 }
 
 .modal-media.is-zoomed {
@@ -1152,6 +1161,10 @@ button.ghost:hover:not(:disabled) {
   z-index: 2;
 }
 
+.modal-timer {
+  position: relative;
+}
+
 .modal-close {
   background: transparent;
   border: 1px solid rgba(255, 255, 255, 0.7);
@@ -1180,7 +1193,26 @@ button.ghost:hover:not(:disabled) {
   place-items: center;
 }
 
+.modal-timer-button {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.7);
+  opacity: 0.85;
+  transition: opacity 0.5s ease;
+  display: grid;
+  place-items: center;
+}
+
 .modal-context:hover {
+  border-color: rgba(255, 255, 255, 0.9);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.modal-timer-button:hover {
   border-color: rgba(255, 255, 255, 0.9);
   color: rgba(255, 255, 255, 0.9);
 }
@@ -1292,9 +1324,82 @@ button.ghost:hover:not(:disabled) {
   pointer-events: none;
 }
 
-.modal-content.is-controls-hidden .modal-context {
+.modal-content.is-controls-hidden .modal-context,
+.modal-content.is-controls-hidden .modal-timer-button,
+.modal-content.is-controls-hidden .modal-timer-menu {
   opacity: 0;
   pointer-events: none;
+}
+
+.modal-content.is-controls-hidden {
+  cursor: none;
+}
+
+.modal-timer-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 120px;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(17, 15, 12, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: grid;
+  gap: 6px;
+  z-index: 3;
+  backdrop-filter: blur(8px);
+}
+
+.modal-timer-reset {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  line-height: 0;
+  justify-self: center;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.modal-timer-reset:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.modal-timer-option {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.75);
+  text-align: center;
+}
+
+.modal-timer-option.is-active {
+  border-color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.modal-timer-bar {
+  position: absolute;
+  left: var(--modal-safe-left);
+  right: var(--modal-safe-right);
+  bottom: var(--modal-safe-bottom);
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  z-index: 2;
+}
+
+.modal-timer-bar-fill {
+  height: 100%;
+  background: rgba(255, 255, 255, 0.7);
+  transition: width 0.08s linear;
 }
 
 .modal-nav--prev {
@@ -1305,32 +1410,20 @@ button.ghost:hover:not(:disabled) {
   right: var(--modal-safe-right);
 }
 
-.modal-swipe-hint {
+.modal-swipe-close {
   position: absolute;
   left: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
-  padding: 8px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(17, 15, 12, 0.4);
-  font-size: 0.85rem;
-  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.9);
   z-index: 3;
   pointer-events: none;
-}
-
-.modal-swipe-hint.is-favorite {
-  border-color: rgba(209, 86, 71, 0.55);
-  color: rgba(209, 86, 71, 0.95);
+  transition: opacity 0.2s ease;
 }
 
 .modal-swipe-heart {
   position: absolute;
   left: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
   color: rgba(209, 86, 71, 0.95);
   z-index: 3;
   pointer-events: none;
@@ -1345,7 +1438,6 @@ button.ghost:hover:not(:disabled) {
 .modal-swipe-arrow {
   position: absolute;
   top: 50%;
-  transform: translateY(-50%);
   color: rgba(255, 255, 255, 0.85);
   z-index: 3;
   pointer-events: none;

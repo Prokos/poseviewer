@@ -127,10 +127,40 @@ function readImageListCache(setId: string) {
   }
 }
 
+function clearImageListCache() {
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (
+      key &&
+      (key.startsWith(IMAGE_LIST_CACHE_PREFIX) || key.startsWith(IMAGE_LIST_CACHE_TIME_PREFIX))
+    ) {
+      keysToRemove.push(key);
+    }
+  }
+  for (const key of keysToRemove) {
+    localStorage.removeItem(key);
+  }
+}
+
 function writeImageListCache(setId: string, images: DriveImage[]) {
   const payload = images.map((image) => ({ id: image.id, name: image.name }));
-  localStorage.setItem(`${IMAGE_LIST_CACHE_PREFIX}${setId}`, JSON.stringify(payload));
-  localStorage.setItem(`${IMAGE_LIST_CACHE_TIME_PREFIX}${setId}`, String(Date.now()));
+  const dataKey = `${IMAGE_LIST_CACHE_PREFIX}${setId}`;
+  const timeKey = `${IMAGE_LIST_CACHE_TIME_PREFIX}${setId}`;
+  try {
+    localStorage.setItem(dataKey, JSON.stringify(payload));
+    localStorage.setItem(timeKey, String(Date.now()));
+    return true;
+  } catch {
+    clearImageListCache();
+    try {
+      localStorage.setItem(dataKey, JSON.stringify(payload));
+      localStorage.setItem(timeKey, String(Date.now()));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 function setTokenCookie(token: string | null) {
@@ -237,6 +267,8 @@ export default function App() {
   const [scanPath, setScanPath] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string>('');
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([]);
+  const lastToastRef = useRef<string | null>(null);
   const [folderFilter, setFolderFilter] = useState('');
   const [hiddenFolders, setHiddenFolders] = useLocalStorage<
     Array<{ id: string; path: string }>
@@ -280,6 +312,7 @@ export default function App() {
   const modalPulseTimeout = useRef<number | null>(null);
   const setViewerRef = useRef<HTMLDivElement | null>(null);
   const sampleSeenRef = useRef<Map<string, Set<string>>>(new Map());
+  const prefetchedThumbsRef = useRef<Set<string>>(new Set());
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
@@ -393,6 +426,22 @@ export default function App() {
   useEffect(() => {
     setTokenCookie(token);
   }, [token]);
+
+  useEffect(() => {
+    if (!error || error === lastToastRef.current) {
+      return;
+    }
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    lastToastRef.current = error;
+    setToasts((current) => [...current, { id, message: error }]);
+    const timeout = window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+      if (lastToastRef.current === error) {
+        lastToastRef.current = null;
+      }
+    }, 6000);
+    return () => window.clearTimeout(timeout);
+  }, [error]);
 
   const requestToken = useCallback((silent = false) => {
     if (!CLIENT_ID) {
@@ -753,7 +802,9 @@ export default function App() {
       const index = await loadSetIndex(token, set.rootFolderId);
       if (index) {
         const images = indexItemsToImages(index.data.items);
-        writeImageListCache(set.id, images);
+        if (!writeImageListCache(set.id, images)) {
+          setError('Image cache full. Cleared cache and continued without saving.');
+        }
         return images;
       }
       if (!buildIfMissing) {
@@ -763,7 +814,9 @@ export default function App() {
       const images = indexItemsToImages(items);
       const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
       await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
-      writeImageListCache(set.id, images);
+      if (!writeImageListCache(set.id, images)) {
+        setError('Image cache full. Cleared cache and continued without saving.');
+      }
       return images;
     },
     [token]
@@ -786,6 +839,17 @@ export default function App() {
     },
     [pickNextSample, resolveSetImages]
   );
+
+  const prefetchThumbs = useCallback((images: DriveImage[]) => {
+    for (const image of images) {
+      if (prefetchedThumbsRef.current.has(image.id)) {
+        continue;
+      }
+      const preload = new Image();
+      preload.src = createProxyThumbUrl(image.id, THUMB_SIZE);
+      prefetchedThumbsRef.current.add(image.id);
+    }
+  }, []);
 
   const handleSetThumbnail = async (setId: string, fileId: string) => {
     await handleUpdateSet(setId, { thumbnailFileId: fileId });
@@ -865,7 +929,9 @@ export default function App() {
       if (index) {
         setImageLoadStatus('Images: using Drive index');
         const images = indexItemsToImages(index.data.items);
-        writeImageListCache(set.id, images);
+        if (!writeImageListCache(set.id, images)) {
+          setError('Image cache full. Cleared cache and continued without saving.');
+        }
         setFavoriteImages(filterFavorites(images, favoriteIds));
         setActiveImages(images.slice(0, limit));
         return;
@@ -876,7 +942,9 @@ export default function App() {
       const images = indexItemsToImages(items);
       const existingIndexId = await findSetIndexFileId(token, set.rootFolderId);
       await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
-      writeImageListCache(set.id, images);
+      if (!writeImageListCache(set.id, images)) {
+        setError('Image cache full. Cleared cache and continued without saving.');
+      }
       setFavoriteImages(filterFavorites(images, favoriteIds));
       setActiveImages(images.slice(0, limit));
     } catch (loadError) {
@@ -914,7 +982,9 @@ export default function App() {
       const items = await buildSetIndex(token, set.rootFolderId);
       const refreshed = indexItemsToImages(items);
       await saveSetIndex(token, set.rootFolderId, existingIndexId, items);
-      writeImageListCache(set.id, refreshed);
+      if (!writeImageListCache(set.id, refreshed)) {
+        setError('Image cache full. Cleared cache and continued without saving.');
+      }
       const updatedSet = { ...set, imageCount: refreshed.length };
       await handleUpdateSet(set.id, { imageCount: refreshed.length });
       setActiveSet(updatedSet);
@@ -941,6 +1011,7 @@ export default function App() {
     if (!activeSet) {
       return;
     }
+    const previousCount = activeImages.length;
     const cached = readImageListCache(activeSet.id);
     const maxAvailable = activeSet.imageCount ?? cached?.length ?? Infinity;
     const nextLimit = Math.min(imageLimit + IMAGE_PAGE_SIZE, maxAvailable);
@@ -949,6 +1020,10 @@ export default function App() {
     }
     setImageLimit(nextLimit);
     await loadSetImages(activeSet, nextLimit, true);
+    const nextCached = readImageListCache(activeSet.id);
+    if (nextCached) {
+      prefetchThumbs(nextCached.slice(previousCount, nextLimit));
+    }
   };
 
   const handleLoadAllPreloaded = async () => {
@@ -969,7 +1044,9 @@ export default function App() {
       const index = await loadSetIndex(token, activeSet.rootFolderId);
       if (index) {
         const images = indexItemsToImages(index.data.items);
-        writeImageListCache(activeSet.id, images);
+        if (!writeImageListCache(activeSet.id, images)) {
+          setError('Image cache full. Cleared cache and continued without saving.');
+        }
         setFavoriteImages(filterFavorites(images, favoriteIds));
         setActiveImages(images);
         setImageLimit(images.length);
@@ -1450,7 +1527,7 @@ export default function App() {
                   )}
                 </div>
                 <button className="primary" onClick={handleCreateSet} disabled={isSaving}>
-                  {isSaving ? 'Saving…' : 'Create set & pick first thumbnail'}
+                  {isSaving ? 'Saving…' : 'Create set'}
                 </button>
               </div>
             ) : (
@@ -1815,7 +1892,9 @@ export default function App() {
                         ? `Loading... (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
                         : 'Loading images...'
                       : totalImagesKnown !== undefined
-                        ? `Load more images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
+                        ? activeImages.length > 0
+                          ? `Load more images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
+                          : `Load images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
                         : activeImages.length > 0
                           ? `Load more images (+${IMAGE_PAGE_SIZE})`
                           : `Load images (+${IMAGE_PAGE_SIZE})`}
@@ -1909,6 +1988,15 @@ export default function App() {
               Scroll to zoom • Use ← → to navigate
             </div>
           </div>
+        </div>
+      ) : null}
+      {toasts.length > 0 ? (
+        <div className="toast-stack">
+          {toasts.map((toast) => (
+            <div key={toast.id} className="toast">
+              {toast.message}
+            </div>
+          ))}
         </div>
       ) : null}
       <div className="scroll-controls">

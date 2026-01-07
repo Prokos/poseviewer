@@ -401,6 +401,7 @@ export default function App() {
   const [sampleImages, setSampleImages] = useState<DriveImage[]>([]);
   const [nonFavoriteImages, setNonFavoriteImages] = useState<DriveImage[]>([]);
   const [isLoadingSample, setIsLoadingSample] = useState(false);
+  const [isLoadingFavorites, setIsLoadingFavorites] = useState(false);
   const [isLoadingNonFavorites, setIsLoadingNonFavorites] = useState(false);
   const [slideshowImages, setSlideshowImages] = useState<DriveImage[]>([]);
   const [isLoadingSlideshow, setIsLoadingSlideshow] = useState(false);
@@ -481,12 +482,14 @@ export default function App() {
   const sampleHistoryRef = useRef<DriveImage[]>([]);
   const sampleHistorySetRef = useRef<string | null>(null);
   const sampleAppendInFlightRef = useRef(false);
+  const favoriteAppendInFlightRef = useRef(false);
   const nonFavoriteAppendInFlightRef = useRef(false);
   const slideshowSeenRef = useRef<Set<string>>(new Set());
   const slideshowPoolRef = useRef<{ key: string; images: DriveImage[] } | null>(null);
   const slideshowAppendInFlightRef = useRef(false);
   const slideshowImageSetRef = useRef<Map<string, string>>(new Map());
   const nonFavoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
+  const favoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const metadataSaveTimeoutRef = useRef<number | null>(null);
   const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
   const pendingSaveResolveRef = useRef<(() => void) | null>(null);
@@ -1098,7 +1101,7 @@ export default function App() {
       }
     }
     if (activeSet?.id === setId) {
-      setFavoriteImages(filterFavorites(source, next));
+      updateFavoriteImagesFromSource(setId, source, next, { keepLength: true });
     }
     await handleUpdateSet(setId, { favoriteImageIds: next });
   };
@@ -1389,6 +1392,34 @@ export default function App() {
     []
   );
 
+  const pickNextFavorites = useCallback(
+    (setId: string, images: DriveImage[], count: number) => {
+      if (images.length === 0) {
+        favoriteSeenRef.current.set(setId, new Set());
+        return [];
+      }
+      const seen = favoriteSeenRef.current.get(setId) ?? new Set<string>();
+      const availableIds = new Set(images.map((image) => image.id));
+      for (const id of seen) {
+        if (!availableIds.has(id)) {
+          seen.delete(id);
+        }
+      }
+      if (seen.size >= images.length) {
+        seen.clear();
+      }
+      const unseen = images.filter((image) => !seen.has(image.id));
+      const pool = unseen.length > 0 ? unseen : images;
+      const sample = pickRandom(pool, Math.min(count, pool.length));
+      for (const image of sample) {
+        seen.add(image.id);
+      }
+      favoriteSeenRef.current.set(setId, seen);
+      return sample;
+    },
+    []
+  );
+
   type IndexItems = Awaited<ReturnType<typeof buildSetIndex>>;
 
   const getPrebuiltIndexForSet = useCallback((set: PoseSet) => {
@@ -1494,13 +1525,37 @@ export default function App() {
     [getPrebuiltIndexForSet, isConnected, loadIndexItemsForSet]
   );
 
+  const updateFavoriteImagesFromSource = useCallback(
+    (
+      setId: string,
+      images: DriveImage[],
+      favoriteIds: string[],
+      options?: { keepLength?: boolean }
+    ) => {
+      const favorites = filterFavorites(images, favoriteIds);
+      if (favorites.length === 0) {
+        setFavoriteImages([]);
+        favoriteSeenRef.current.set(setId, new Set());
+        return;
+      }
+      const targetLength =
+        options?.keepLength && favoriteImages.length > 0
+          ? Math.min(favoriteImages.length, favorites.length)
+          : Math.min(samplePageSize, favorites.length);
+      favoriteSeenRef.current.set(setId, new Set());
+      const next = pickNextFavorites(setId, favorites, targetLength);
+      setFavoriteImages(next);
+    },
+    [favoriteImages.length, pickNextFavorites, samplePageSize]
+  );
+
   const hydrateSetExtras = useCallback(
     async (set: PoseSet, buildIfMissing: boolean) => {
       setIsLoadingSample(true);
       setViewerIndexProgress('Loading index…');
       try {
         const images = await resolveSetImages(set, buildIfMissing);
-        setFavoriteImages(filterFavorites(images, set.favoriteImageIds ?? []));
+        updateFavoriteImagesFromSource(set.id, images, set.favoriteImageIds ?? []);
         setSampleImages(pickNextSample(set.id, images, samplePageSize));
       } catch (loadError) {
         setError((loadError as Error).message);
@@ -1511,7 +1566,7 @@ export default function App() {
         setViewerIndexProgress('');
       }
     },
-    [pickNextSample, resolveSetImages, samplePageSize]
+    [pickNextSample, resolveSetImages, samplePageSize, updateFavoriteImagesFromSource]
   );
 
   const hydratedSetIdRef = useRef<string | null>(null);
@@ -1606,7 +1661,7 @@ export default function App() {
             // Fall through to index load to ensure favorites are included.
           } else {
             setImageLoadStatus('Images: using local cache');
-            setFavoriteImages(filterFavorites(cached, favoriteIds));
+            updateFavoriteImagesFromSource(set.id, cached, favoriteIds, { keepLength: true });
             setActiveImages(cached.slice(0, limit));
             return;
           }
@@ -1626,7 +1681,7 @@ export default function App() {
         if (prebuilt.fileId && set.indexFileId !== prebuilt.fileId) {
           await handleUpdateSet(set.id, { indexFileId: prebuilt.fileId });
         }
-        setFavoriteImages(filterFavorites(images, favoriteIds));
+        updateFavoriteImagesFromSource(set.id, images, favoriteIds, { keepLength: true });
         setActiveImages(images.slice(0, limit));
         return;
       }
@@ -1666,7 +1721,7 @@ export default function App() {
         if (index.fileId && set.indexFileId !== index.fileId) {
           await handleUpdateSet(set.id, { indexFileId: index.fileId });
         }
-        setFavoriteImages(filterFavorites(images, favoriteIds));
+        updateFavoriteImagesFromSource(set.id, images, favoriteIds, { keepLength: true });
         setActiveImages(images.slice(0, limit));
         return;
       }
@@ -1812,7 +1867,12 @@ export default function App() {
         indexFileId,
       });
       setActiveSet(updatedSet);
-      setFavoriteImages(filterFavorites(refreshed, updatedSet.favoriteImageIds ?? []));
+      updateFavoriteImagesFromSource(
+        set.id,
+        refreshed,
+        updatedSet.favoriteImageIds ?? [],
+        { keepLength: true }
+      );
       setSampleImages(pickNextSample(set.id, refreshed, samplePageSize));
       if (activeImages.length > 0) {
         setActiveImages(refreshed.slice(0, imageLimit));
@@ -1903,6 +1963,44 @@ export default function App() {
     [activeSet, isConnected, pickNextNonFavorites, resolveSetImages]
   );
 
+  const loadFavoriteBatch = useCallback(
+    async (count: number) => {
+      if (!activeSet || !isConnected || count <= 0) {
+        return;
+      }
+      setIsLoadingFavorites(true);
+      setViewerIndexProgress('Loading favorites…');
+      try {
+        const images = await resolveSetImages(activeSet, true);
+        const favorites = filterFavorites(images, activeSet.favoriteImageIds ?? []);
+        if (favorites.length === 0) {
+          setFavoriteImages([]);
+          return;
+        }
+        const nextBatch = pickNextFavorites(activeSet.id, favorites, count);
+        if (nextBatch.length === 0) {
+          return;
+        }
+        setFavoriteImages((current) => {
+          const existingIds = new Set(current.map((item) => item.id));
+          const merged = [...current];
+          for (const item of nextBatch) {
+            if (!existingIds.has(item.id)) {
+              merged.push(item);
+            }
+          }
+          return merged;
+        });
+      } catch (loadError) {
+        setError((loadError as Error).message);
+      } finally {
+        setIsLoadingFavorites(false);
+        setViewerIndexProgress('');
+      }
+    },
+    [activeSet, isConnected, pickNextFavorites, resolveSetImages]
+  );
+
   const handleLoadMoreSample = useCallback(async () => {
     await loadSampleBatch(samplePageSize);
   }, [loadSampleBatch, samplePageSize]);
@@ -1910,6 +2008,10 @@ export default function App() {
   const handleLoadMoreNonFavorites = useCallback(async () => {
     await loadNonFavoriteBatch(samplePageSize);
   }, [loadNonFavoriteBatch, samplePageSize]);
+
+  const handleLoadMoreFavorites = useCallback(async () => {
+    await loadFavoriteBatch(samplePageSize);
+  }, [loadFavoriteBatch, samplePageSize]);
 
   useEffect(() => {
     if (setViewerTab !== 'samples' || !activeSet || isLoadingSample) {
@@ -1930,6 +2032,32 @@ export default function App() {
     loadSampleBatch,
     sampleColumns,
     sampleImages.length,
+    setViewerTab,
+  ]);
+
+  useEffect(() => {
+    if (setViewerTab !== 'favorites' || !activeSet || isLoadingFavorites) {
+      return;
+    }
+    if (favoriteImages.length === 0) {
+      void loadFavoriteBatch(samplePageSize);
+      return;
+    }
+    if (sampleColumns <= 1 || favoriteImages.length === 0) {
+      return;
+    }
+    const remainder = favoriteImages.length % sampleColumns;
+    if (remainder === 0) {
+      return;
+    }
+    const fill = sampleColumns - remainder;
+    void loadFavoriteBatch(fill);
+  }, [
+    activeSet,
+    favoriteImages.length,
+    isLoadingFavorites,
+    loadFavoriteBatch,
+    sampleColumns,
     setViewerTab,
   ]);
 
@@ -1958,6 +2086,14 @@ export default function App() {
     sampleColumns,
     setViewerTab,
   ]);
+
+  useEffect(() => {
+    if (setViewerTab !== 'favorites' || !activeSet) {
+      return;
+    }
+    favoriteSeenRef.current.set(activeSet.id, new Set());
+    setFavoriteImages([]);
+  }, [activeSet?.id, setViewerTab]);
 
   useEffect(() => {
     if (setViewerTab !== 'nonfavorites' || !activeSet) {
@@ -1989,6 +2125,33 @@ export default function App() {
       setError((loadError as Error).message);
     } finally {
       setIsLoadingSample(false);
+      setViewerIndexProgress('');
+    }
+  }, [activeSet, isConnected, resolveSetImages]);
+
+  const handleLoadAllFavorites = useCallback(async () => {
+    if (!activeSet || !isConnected) {
+      return;
+    }
+    setIsLoadingFavorites(true);
+    setViewerIndexProgress('Loading favorites…');
+    try {
+      const images = await resolveSetImages(activeSet, true);
+      const favorites = filterFavorites(images, activeSet.favoriteImageIds ?? []);
+      if (favorites.length === 0) {
+        setFavoriteImages([]);
+        return;
+      }
+      const shuffled = shuffleItems(favorites);
+      setFavoriteImages(shuffled);
+      favoriteSeenRef.current.set(
+        activeSet.id,
+        new Set(shuffled.map((image) => image.id))
+      );
+    } catch (loadError) {
+      setError((loadError as Error).message);
+    } finally {
+      setIsLoadingFavorites(false);
       setViewerIndexProgress('');
     }
   }, [activeSet, isConnected, resolveSetImages]);
@@ -2084,7 +2247,12 @@ export default function App() {
       setImageLimit(nextLimit);
       setActiveImages(images.slice(0, nextLimit));
       if (activeSet?.id === contextSet.id) {
-        setFavoriteImages(filterFavorites(images, contextSet.favoriteImageIds ?? []));
+        updateFavoriteImagesFromSource(
+          contextSet.id,
+          images,
+          contextSet.favoriteImageIds ?? [],
+          { keepLength: true }
+        );
       }
       applyModalContext({
         items: images.slice(0, nextLimit),
@@ -2162,7 +2330,7 @@ export default function App() {
       const favoriteIds = activeSet.favoriteImageIds ?? [];
       const cached = readImageListCache(activeSet.id);
       if (cached) {
-        setFavoriteImages(filterFavorites(cached, favoriteIds));
+        updateFavoriteImagesFromSource(activeSet.id, cached, favoriteIds, { keepLength: true });
         setActiveImages(cached);
         setImageLimit(cached.length);
         return;
@@ -2191,7 +2359,7 @@ export default function App() {
         if (!writeImageListCache(activeSet.id, images)) {
           setError('Image cache full. Cleared cache and continued without saving.');
         }
-        setFavoriteImages(filterFavorites(images, favoriteIds));
+        updateFavoriteImagesFromSource(activeSet.id, images, favoriteIds, { keepLength: true });
         setActiveImages(images);
         setImageLimit(images.length);
         if (activeSet.indexFileId !== index.fileId) {
@@ -2245,6 +2413,11 @@ export default function App() {
   const allImagesCount = totalImagesKnown ?? activeImages.length;
   const nonFavoritesCount =
     totalImagesKnown !== undefined ? Math.max(0, totalImagesKnown - favoritesCount) : undefined;
+  const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
+  const favoritesPendingExtra = Math.max(
+    0,
+    Math.min(samplePageSize, favoritesRemaining)
+  );
   const sampleRemaining =
     totalImagesKnown !== undefined
       ? Math.max(0, totalImagesKnown - sampleImages.length)
@@ -2267,6 +2440,7 @@ export default function App() {
     (modalIndex < modalItems.length - 1 ||
       (modalContextLabel === 'Set' && !!modalRemainingImages) ||
       (modalContextLabel === 'Sample' && !!activeSet) ||
+      (modalContextLabel === 'Favorites' && !!activeSet) ||
       (modalContextLabel === 'Non favorites' && !!activeSet) ||
       modalContextLabel === 'Slideshow');
 
@@ -3029,6 +3203,64 @@ export default function App() {
           })
           .finally(() => {
             nonFavoriteAppendInFlightRef.current = false;
+          });
+        return;
+      }
+      if (modalContextLabel === 'Favorites' && activeSet) {
+        if (favoriteAppendInFlightRef.current) {
+          return;
+        }
+        favoriteAppendInFlightRef.current = true;
+        (async () => {
+          const source =
+            readImageListCache(activeSet.id) ??
+            (await resolveSetImages(activeSet, true));
+          if (!source || source.length === 0) {
+            return;
+          }
+          const favorites = filterFavorites(source, activeSet.favoriteImageIds ?? []);
+          if (favorites.length === 0) {
+            return;
+          }
+          const nextBatch = pickNextFavorites(activeSet.id, favorites, samplePageSize);
+          if (nextBatch.length === 0) {
+            return;
+          }
+          const existingIds = new Set(modalItems.map((item) => item.id));
+          const deduped = nextBatch.filter((item) => !existingIds.has(item.id));
+          if (deduped.length === 0) {
+            return;
+          }
+          const updated = [...modalItems, ...deduped];
+          setModalItems(updated);
+          modalItemsLengthRef.current = updated.length;
+          setFavoriteImages((current) => {
+            const existingIds = new Set(current.map((item) => item.id));
+            const merged = [...current];
+            for (const item of deduped) {
+              if (!existingIds.has(item.id)) {
+                merged.push(item);
+              }
+            }
+            return merged;
+          });
+          const nextIndex = updated.length - deduped.length;
+          setModalFullSrc(null);
+          setModalFullImageId(null);
+          setModalFullAnimate(false);
+          setModalImageId(updated[nextIndex]?.id ?? null);
+          setModalIndex(updated[nextIndex]?.id ? nextIndex : null);
+          if (options?.suppressControls) {
+            setModalPulse(false);
+          } else {
+            triggerModalPulse();
+          }
+        })()
+          .catch((error) => {
+            setError((error as Error).message);
+          })
+          .finally(() => {
+            favoriteAppendInFlightRef.current = false;
           });
         return;
       }
@@ -4813,11 +5045,15 @@ export default function App() {
               </div>
             ) : null}
               {setViewerTab === 'favorites' ? (
-                <div className="stack">
-                  {isLoadingSample && favoriteImages.length === 0 ? (
-                    <p className="empty">Loading favorites…</p>
-                  ) : null}
-                  {favoriteImages.length > 0 ? (
+                <div className="preview">
+                  {isLoadingFavorites ? (
+                    <div className="stack">
+                      <p className="empty">Loading favorites…</p>
+                      {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+                    </div>
+                  ) : viewerIndexProgress ? (
+                    <p className="muted">{viewerIndexProgress}</p>
+                  ) : favoriteImages.length > 0 ? (
                     <div className="image-grid image-grid--zoom image-grid--filled">
                       {favoriteImages.map((image) => (
                         <div key={image.id} className="image-tile">
@@ -4869,6 +5105,28 @@ export default function App() {
                   ) : (
                     <p className="empty">No favorites yet.</p>
                   )}
+                  <button
+                    type="button"
+                    className="ghost load-more"
+                    onClick={handleLoadMoreClick(handleLoadMoreFavorites)}
+                    disabled={isLoadingFavorites || favoritesRemaining === 0}
+                  >
+                    {isLoadingFavorites
+                      ? `Loading... (+${favoritesPendingExtra}) • ${favoriteImages.length}/${favoritesCount}`
+                      : favoritesRemaining > 0
+                        ? `Load more favorites (+${favoritesPendingExtra}) • ${favoriteImages.length}/${favoritesCount}`
+                        : `All favorites loaded (${favoriteImages.length})`}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost load-more"
+                    onClick={handleLoadMoreClick(handleLoadAllFavorites)}
+                    disabled={isLoadingFavorites || favoritesRemaining === 0}
+                  >
+                    {isLoadingFavorites
+                      ? `Loading all ${favoritesCount}...`
+                      : `Load all remaining ${favoritesRemaining}`}
+                  </button>
                 </div>
               ) : null}
               {setViewerTab === 'all' ? (
@@ -5133,6 +5391,8 @@ export default function App() {
                   ? ` [${modalTotalImagesKnown ?? totalImages}]`
                   : modalContextLabel === 'Sample'
                     ? ` [${totalImages}]`
+                  : modalContextLabel === 'Favorites'
+                    ? ` [${favoritesCount}]`
                   : modalContextLabel === 'Non favorites' && nonFavoritesCount !== undefined
                     ? ` [${nonFavoritesCount}]`
                     : ''}

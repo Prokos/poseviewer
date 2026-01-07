@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   IconArrowDown,
   IconArrowUp,
+  IconDotsVertical,
   IconHeart,
   IconHeartFilled,
   IconLoader2,
+  IconFolder,
   IconPhoto,
   IconPhotoStar,
 } from '@tabler/icons-react';
@@ -32,6 +34,7 @@ const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefine
 const IMAGE_PAGE_SIZE = 96;
 const THUMB_SIZE = 320;
 const CARD_THUMB_SIZE = 500;
+const VIEWER_THUMB_SIZE = CARD_THUMB_SIZE;
 const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
 const METADATA_CACHE_KEY = 'poseviewer-metadata-cache';
 const METADATA_CACHE_TIME_KEY = 'poseviewer-metadata-cache-ts';
@@ -318,7 +321,6 @@ export default function App() {
   const [activeImages, setActiveImages] = useState<DriveImage[]>([]);
   const [isLoadingImages, setIsLoadingImages] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [activeTagInput, setActiveTagInput] = useState('');
   const [setViewerTab, setSetViewerTab] = useState<'samples' | 'favorites' | 'all'>('samples');
   const [sampleColumns, setSampleColumns] = useState(1);
   const [allColumns, setAllColumns] = useState(1);
@@ -493,6 +495,16 @@ export default function App() {
 
   const selectedCreateTags = useMemo(() => normalizeTags(setTags), [setTags]);
 
+  const viewerQuickTags = useMemo(() => {
+    if (!activeSet) {
+      return { active: [] as string[], inactive: [] as string[] };
+    }
+    const activeLower = new Set(activeSet.tags.map((tag) => tag.toLowerCase()));
+    const active = sortedQuickTags.filter((tag) => activeLower.has(tag.toLowerCase()));
+    const inactive = sortedQuickTags.filter((tag) => !activeLower.has(tag.toLowerCase()));
+    return { active, inactive };
+  }, [activeSet, sortedQuickTags]);
+
   const tagCounts = useMemo(() => {
     const query = setFilter.trim().toLowerCase();
     const selected = selectedTags.map((tag) => tag.toLowerCase());
@@ -664,14 +676,6 @@ export default function App() {
       void handleFetchMetadata();
     }
   }, [handleFetchMetadata, isConnected, rootId]);
-
-  useEffect(() => {
-    if (!activeSet) {
-      setActiveTagInput('');
-      return;
-    }
-    setActiveTagInput(activeSet.tags.join(', '));
-  }, [activeSet?.id, activeSet?.tags]);
 
   useEffect(() => {
     if (activeSet) {
@@ -1002,7 +1006,6 @@ export default function App() {
         existingIndex >= 0
           ? current.filter((_, index) => index !== existingIndex)
           : [...current, tag];
-      setActiveTagInput(next.join(', '));
       void handleUpdateSet(activeSet.id, { tags: next });
     },
     [activeSet, handleUpdateSet]
@@ -1331,9 +1334,6 @@ export default function App() {
     setFavoriteImages([]);
     setSampleImages([]);
     setImageLoadStatus('');
-    window.requestAnimationFrame(() => {
-      setViewerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
     if (!set.indexFileId && nextSet.indexFileId) {
       await handleUpdateSet(set.id, { indexFileId: nextSet.indexFileId });
     }
@@ -2519,7 +2519,6 @@ export default function App() {
                 </label>
                 {availableTags.length > 0 ? (
                   <div className="tag-suggestions">
-                    <p className="muted">Quick tags</p>
                     <div className="tag-row">
                       {sortedQuickTags.map((tag) => (
                         <button
@@ -2594,8 +2593,33 @@ export default function App() {
 
       {page === 'overview' ? (
       <section className="panel">
-        <div className="panel-header">
-          <h2>Sets overview</h2>
+        <div className="panel-header panel-header--row panel-header--overview">
+          <div className="overview-title">
+            <h2>Sets</h2>
+            <p className="muted">{metadata.sets.length} total</p>
+          </div>
+          <div className="overview-controls">
+            <label className="field field--inline">
+              <span>Filter sets</span>
+              <input
+                type="search"
+                value={setFilter}
+                onChange={(event) => setSetFilter(event.target.value)}
+                placeholder="Search by name or tag"
+              />
+            </label>
+            <label className="field field--inline">
+              <span>Sort sets</span>
+              <select value={setSort} onChange={(event) => setSetSort(event.target.value)}>
+                <option value="added_desc">Added (newest)</option>
+                <option value="added_asc">Added (oldest)</option>
+                <option value="images_desc">Images (high to low)</option>
+                <option value="images_asc">Images (low to high)</option>
+                <option value="favs_desc">Favorites (high to low)</option>
+                <option value="favs_asc">Favorites (low to high)</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div className="panel-body">
           {sortedTags.length > 0 ? (
@@ -2629,27 +2653,6 @@ export default function App() {
               </div>
             </div>
           ) : null}
-          <label className="field">
-            <span>Filter sets</span>
-            <input
-              type="search"
-              value={setFilter}
-              onChange={(event) => setSetFilter(event.target.value)}
-              placeholder="Search by name or tag"
-            />
-          </label>
-          <label className="field">
-            <span>Sort sets</span>
-            <select value={setSort} onChange={(event) => setSetSort(event.target.value)}>
-              <option value="added_desc">Added (newest)</option>
-              <option value="added_asc">Added (oldest)</option>
-              <option value="images_desc">Images (high to low)</option>
-              <option value="images_asc">Images (low to high)</option>
-              <option value="favs_desc">Favorites (high to low)</option>
-              <option value="favs_asc">Favorites (low to high)</option>
-            </select>
-          </label>
-          <p className="muted">Total sets: {metadata.sets.length}</p>
           <div className="card-grid">
             {filteredSets.map((set) => (
               <button
@@ -2699,51 +2702,45 @@ export default function App() {
 
       {page === 'set' ? (
       <section className="panel" ref={setViewerRef}>
-        <div className="panel-header">
-          <h2>Set viewer</h2>
-        </div>
-        <div className="panel-body">
-          {activeSet ? (
-            <div className="stack">
-              <div className="viewer-header">
-                <div>
-                  <h3>{activeSet.name}</h3>
-                  <p className="muted">
-                    <a
-                      className="link"
-                      href={`https://drive.google.com/drive/folders/${activeSet.rootFolderId}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {activeSet.rootPath}
-                    </a>
-                  </p>
-                  <p className="muted">
-                    {typeof activeSet.imageCount === 'number'
-                      ? `${activeSet.imageCount} images`
-                      : `${activeImages.length} loaded`}
-                  </p>
+        <div className="panel-header panel-header--row panel-header--viewer">
+          <div className="viewer-title">
+            {activeSet ? (
+              <div className="viewer-title-row">
+                <div className="viewer-thumb">
+                  {activeSet.thumbnailFileId ? (
+                    <ImageThumb
+                      isConnected={isConnected}
+                      fileId={activeSet.thumbnailFileId}
+                      alt={activeSet.name}
+                      size={VIEWER_THUMB_SIZE}
+                    />
+                  ) : (
+                    <div className="thumb thumb--empty">No thumbnail</div>
+                  )}
+                  <span
+                    className="tag ghost tag--icon viewer-thumb-meta viewer-thumb-meta--left"
+                    aria-label="Image count"
+                  >
+                    <IconPhoto size={14} />
+                    <span>
+                      {typeof activeSet.imageCount === 'number'
+                        ? activeSet.imageCount
+                        : activeImages.length}
+                    </span>
+                  </span>
+                  <span
+                    className="tag ghost tag--icon viewer-thumb-meta viewer-thumb-meta--right"
+                    aria-label="Favorite count"
+                  >
+                    <IconHeart size={14} />
+                    <span>{(activeSet.favoriteImageIds ?? []).length}</span>
+                  </span>
                 </div>
-                <button
-                  className="ghost"
-                  onClick={() => handleRefreshSet(activeSet)}
-                  disabled={isRefreshingSet}
-                >
-                  {isRefreshingSet ? 'Refreshing…' : 'Refresh data'}
-                </button>
-                <button
-                  className="ghost"
-                  onClick={() => handleDeleteSet(activeSet)}
-                  disabled={isSaving}
-                >
-                  Delete set
-                </button>
-              </div>
-              <div key={activeSet.id} className="field-group">
-                <label className="field">
-                  <span>Name</span>
+                <div className="viewer-title-stack">
                   <input
+                    className="viewer-title-input"
                     type="text"
+                    key={activeSet.id}
                     defaultValue={activeSet.name}
                     onBlur={(event) =>
                       handleUpdateSet(activeSet.id, {
@@ -2751,41 +2748,86 @@ export default function App() {
                       })
                     }
                   />
-                </label>
-                <label className="field">
-                  <span>Tags</span>
-                  <input
-                    type="text"
-                    value={activeTagInput}
-                    onChange={(event) => setActiveTagInput(event.target.value)}
-                    onBlur={(event) => {
-                      const normalized = normalizeTags(event.target.value);
-                      setActiveTagInput(normalized.join(', '));
-                      void handleUpdateSet(activeSet.id, { tags: normalized });
-                    }}
-                  />
-                </label>
-              </div>
-              {sortedQuickTags.length > 0 ? (
-                <div className="tag-suggestions">
-                  <p className="muted">Quick tags</p>
-                  <div className="tag-row">
-                    {sortedQuickTags.map((tag) => {
-                      const isActive = activeSet.tags.includes(tag);
-                      return (
-                        <button
-                          key={tag}
-                          type="button"
-                          className={`tag-button ${isActive ? 'is-active' : ''}`}
-                          onClick={() => toggleActiveSetTag(tag)}
-                        >
-                          {tag}
-                        </button>
-                      );
-                    })}
+                  <div className="viewer-meta-inline">
+                    <IconFolder size={16} />
+                    <a
+                      className="link viewer-path"
+                      href={`https://drive.google.com/drive/folders/${activeSet.rootFolderId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {activeSet.rootPath}
+                    </a>
+                  </div>
+                  <div key={activeSet.id} className="field-group field-group--viewer">
+                    {viewerQuickTags.active.length > 0 || viewerQuickTags.inactive.length > 0 ? (
+                      <div className="tag-split">
+                        {viewerQuickTags.active.length > 0 ? (
+                          <div className="tag-row tag-row--inline tag-row--active">
+                            {viewerQuickTags.active.map((tag) => (
+                              <button
+                                key={tag}
+                                type="button"
+                                className="tag-button is-active"
+                                onClick={() => toggleActiveSetTag(tag)}
+                              >
+                                {tag}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        {viewerQuickTags.inactive.length > 0 ? (
+                          <div className="tag-row tag-row--inline tag-row--inactive">
+                            {viewerQuickTags.inactive.map((tag) => (
+                              <button
+                                key={tag}
+                                type="button"
+                                className="tag-button"
+                                onClick={() => toggleActiveSetTag(tag)}
+                              >
+                                {tag}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-              ) : null}
+              </div>
+            ) : (
+              <h2>Set viewer</h2>
+            )}
+          </div>
+          {activeSet ? (
+            <div className="viewer-actions">
+              <div className="viewer-menu">
+                <button type="button" className="ghost viewer-menu-trigger" aria-label="Set actions">
+                  <IconDotsVertical size={18} />
+                </button>
+                <div className="viewer-menu-panel">
+                  <button
+                    className="ghost"
+                    onClick={() => handleRefreshSet(activeSet)}
+                    disabled={isRefreshingSet}
+                  >
+                    {isRefreshingSet ? 'Refreshing…' : 'Refresh data'}
+                  </button>
+                  <button
+                    className="ghost ghost--danger"
+                    onClick={() => handleDeleteSet(activeSet)}
+                    disabled={isSaving}
+                  >
+                    Delete set
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <div className="panel-body">
+          {activeSet ? (
+            <div className="stack">
               <div className="subtabs">
                 <button
                   type="button"

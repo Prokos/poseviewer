@@ -325,6 +325,9 @@ export default function App() {
     fileId: string | null;
   } | null>(null);
   const viewerIndexTimerRef = useRef<(() => void) | null>(null);
+  const metadataRef = useRef<MetadataDocument>(metadata);
+  const metadataFileIdRef = useRef<string | null>(metadataFileId);
+  const updateQueueRef = useRef(Promise.resolve());
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
@@ -593,6 +596,14 @@ export default function App() {
     }
   }, [handleFetchMetadata, isConnected, rootId]);
 
+  useEffect(() => {
+    metadataRef.current = metadata;
+  }, [metadata]);
+
+  useEffect(() => {
+    metadataFileIdRef.current = metadataFileId;
+  }, [metadataFileId]);
+
   const handleSelectFolder = (folder: FolderPath) => {
     setSelectedFolder(folder);
     setSetName(folder.name);
@@ -788,24 +799,30 @@ export default function App() {
       setActiveSet((current) => (current ? { ...current, ...update } : current));
     }
 
-    const updated: MetadataDocument = {
-      version: 1,
-      sets: metadata.sets.map((set) => (set.id === setId ? { ...set, ...update } : set)),
-    };
+    updateQueueRef.current = updateQueueRef.current.then(async () => {
+      const base = metadataRef.current;
+      const updated: MetadataDocument = {
+        version: 1,
+        sets: base.sets.map((set) => (set.id === setId ? { ...set, ...update } : set)),
+      };
 
-    setIsSaving(true);
-    setError('');
-
-    try {
-      const newFileId = await saveMetadata(rootId, metadataFileId, updated);
-      setMetadataFileId(newFileId);
+      metadataRef.current = updated;
       setMetadata(updated);
-      writeMetadataCache(rootId, newFileId, updated);
-    } catch (saveError) {
-      setError((saveError as Error).message);
-    } finally {
-      setIsSaving(false);
-    }
+      setIsSaving(true);
+      setError('');
+
+      try {
+        const newFileId = await saveMetadata(rootId, metadataFileIdRef.current, updated);
+        metadataFileIdRef.current = newFileId;
+        setMetadataFileId(newFileId);
+        writeMetadataCache(rootId, newFileId, updated);
+      } catch (saveError) {
+        setError((saveError as Error).message);
+      } finally {
+        setIsSaving(false);
+      }
+    });
+    return updateQueueRef.current;
   };
 
   const pickNextSample = useCallback(
@@ -836,15 +853,47 @@ export default function App() {
     []
   );
 
+  type IndexItems = Awaited<ReturnType<typeof buildSetIndex>>;
+
+  const getPrebuiltIndexForSet = useCallback((set: PoseSet) => {
+    return prebuiltIndexRef.current?.folderId === set.rootFolderId
+      ? prebuiltIndexRef.current
+      : null;
+  }, []);
+
+  const loadIndexItemsForSet = useCallback(
+    async (
+      set: PoseSet,
+      buildIfMissing: boolean,
+      onDownloadProgress?: (progress: { loaded: number }) => void,
+      onIndexProgress?: (progress: { folders: number; images: number }) => void
+    ): Promise<{ items: IndexItems; fileId: string | null; source: 'download' | 'build' } | null> => {
+      const index = set.indexFileId
+        ? await loadSetIndexById(set.indexFileId, onDownloadProgress)
+        : await loadSetIndex(set.rootFolderId, onDownloadProgress);
+      if (index) {
+        return { items: index.data.items as IndexItems, fileId: index.fileId, source: 'download' };
+      }
+      if (!buildIfMissing) {
+        return null;
+      }
+      if (onIndexProgress) {
+        onIndexProgress({ folders: 0, images: 0 });
+      }
+      const items = await buildSetIndex(set.rootFolderId, onIndexProgress);
+      const existingIndexId = await findSetIndexFileId(set.rootFolderId);
+      const fileId = await saveSetIndex(set.rootFolderId, existingIndexId, items);
+      return { items, fileId, source: 'build' };
+    },
+    []
+  );
+
   const resolveSetImages = useCallback(
     async (set: PoseSet, buildIfMissing: boolean) => {
       if (!isConnected) {
         return [];
       }
-      const prebuilt =
-        prebuiltIndexRef.current?.folderId === set.rootFolderId
-          ? prebuiltIndexRef.current
-          : null;
+      const prebuilt = getPrebuiltIndexForSet(set);
       const resolvedSet =
         !set.indexFileId && prebuilt?.fileId
           ? { ...set, indexFileId: prebuilt.fileId ?? undefined }
@@ -869,48 +918,33 @@ export default function App() {
       }
       const stopTimer = startIndexTimer(setViewerIndexProgress);
       viewerIndexTimerRef.current = stopTimer;
-      const index = resolvedSet.indexFileId
-        ? await loadSetIndexById(resolvedSet.indexFileId, (progress) => {
-            stopTimer();
-            viewerIndexTimerRef.current = null;
-            setViewerIndexProgress(formatDownloadProgress(progress));
-          })
-        : await loadSetIndex(set.rootFolderId, (progress) => {
-            stopTimer();
-            viewerIndexTimerRef.current = null;
-            setViewerIndexProgress(formatDownloadProgress(progress));
-          });
+      const index = await loadIndexItemsForSet(
+        resolvedSet,
+        buildIfMissing,
+        (progress) => {
+          stopTimer();
+          viewerIndexTimerRef.current = null;
+          setViewerIndexProgress(formatDownloadProgress(progress));
+        },
+        (progress) => {
+          setViewerIndexProgress(formatIndexProgress(progress));
+        }
+      );
       stopTimer();
       viewerIndexTimerRef.current = null;
       if (index) {
-        const images = indexItemsToImages(index.data.items);
+        const images = indexItemsToImages(index.items);
         if (!writeImageListCache(set.id, images)) {
           setError('Image cache full. Cleared cache and continued without saving.');
         }
-        if (resolvedSet.indexFileId !== index.fileId) {
+        if (index.fileId && resolvedSet.indexFileId !== index.fileId) {
           await handleUpdateSet(set.id, { indexFileId: index.fileId });
         }
         return images;
       }
-      if (!buildIfMissing) {
-        return [];
-      }
-      setViewerIndexProgress('Indexing…');
-      const items = await buildSetIndex(set.rootFolderId, (progress) => {
-        setViewerIndexProgress(formatIndexProgress(progress));
-      });
-      const images = indexItemsToImages(items);
-      const existingIndexId = await findSetIndexFileId(set.rootFolderId);
-      const indexFileId = await saveSetIndex(set.rootFolderId, existingIndexId, items);
-      if (!writeImageListCache(set.id, images)) {
-        setError('Image cache full. Cleared cache and continued without saving.');
-      }
-      if (resolvedSet.indexFileId !== indexFileId) {
-        await handleUpdateSet(set.id, { indexFileId });
-      }
-      return images;
+      return [];
     },
-    [isConnected]
+    [getPrebuiltIndexForSet, isConnected, loadIndexItemsForSet]
   );
 
   const hydrateSetExtras = useCallback(
@@ -996,10 +1030,7 @@ export default function App() {
     setError('');
 
     try {
-      const prebuilt =
-        prebuiltIndexRef.current?.folderId === set.rootFolderId
-          ? prebuiltIndexRef.current
-          : null;
+      const prebuilt = getPrebuiltIndexForSet(set);
       const cached = readImageListCache(set.id);
       const favoriteIds = set.favoriteImageIds ?? [];
       if (cached && cached.length >= limit) {
@@ -1041,50 +1072,39 @@ export default function App() {
       }
       const stopTimer = startIndexTimer(setViewerIndexProgress);
       viewerIndexTimerRef.current = stopTimer;
-      const index = set.indexFileId
-        ? await loadSetIndexById(set.indexFileId, (progress) => {
-            stopTimer();
-            viewerIndexTimerRef.current = null;
-            setViewerIndexProgress(formatDownloadProgress(progress));
-          })
-        : await loadSetIndex(set.rootFolderId, (progress) => {
-            stopTimer();
-            viewerIndexTimerRef.current = null;
-            setViewerIndexProgress(formatDownloadProgress(progress));
-          });
+      const index = await loadIndexItemsForSet(
+        set,
+        true,
+        (progress) => {
+          stopTimer();
+          viewerIndexTimerRef.current = null;
+          setViewerIndexProgress(formatDownloadProgress(progress));
+        },
+        (progress) => {
+          setViewerIndexProgress(formatIndexProgress(progress));
+        }
+      );
       stopTimer();
       viewerIndexTimerRef.current = null;
       if (index) {
-        setImageLoadStatus('Images: using Drive index');
-        const images = indexItemsToImages(index.data.items);
+        const images = indexItemsToImages(index.items);
+        if (index.source === 'build') {
+          setImageLoadStatus('Images: building Drive index (first time)');
+        } else {
+          setImageLoadStatus(
+            set.indexFileId ? 'Images: using Drive index' : 'Images: using Drive index (found)'
+          );
+        }
         if (!writeImageListCache(set.id, images)) {
           setError('Image cache full. Cleared cache and continued without saving.');
         }
-        if (set.indexFileId !== index.fileId) {
+        if (index.fileId && set.indexFileId !== index.fileId) {
           await handleUpdateSet(set.id, { indexFileId: index.fileId });
         }
         setFavoriteImages(filterFavorites(images, favoriteIds));
         setActiveImages(images.slice(0, limit));
         return;
       }
-
-      setImageLoadStatus('Images: building Drive index (first time)');
-      setViewerIndexProgress('Indexing…');
-      const items = await buildSetIndex(set.rootFolderId, (progress) => {
-        setViewerIndexProgress(formatIndexProgress(progress));
-      });
-      const images = indexItemsToImages(items);
-      const existingIndexId = await findSetIndexFileId(set.rootFolderId);
-      const indexFileId = await saveSetIndex(set.rootFolderId, existingIndexId, items);
-      if (!writeImageListCache(set.id, images)) {
-        setError('Image cache full. Cleared cache and continued without saving.');
-      }
-      setFavoriteImages(filterFavorites(images, favoriteIds));
-      setActiveImages(images.slice(0, limit));
-      if (set.indexFileId !== indexFileId) {
-        await handleUpdateSet(set.id, { indexFileId });
-      }
-      setViewerIndexProgress('');
     } catch (loadError) {
       setError((loadError as Error).message);
       setImageLoadStatus('');

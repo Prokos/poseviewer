@@ -460,6 +460,10 @@ app.get('/api/drive/download/:fileId', async (req, res) => {
     res.status(response.status).send(text);
     return;
   }
+  const contentLength = response.headers.get('content-length');
+  if (contentLength) {
+    res.set('Content-Length', contentLength);
+  }
   res.set('Content-Type', response.headers.get('content-type') ?? 'application/octet-stream');
   if (!response.body) {
     res.send(Buffer.from(await response.arrayBuffer()));

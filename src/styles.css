@@ -135,6 +135,69 @@ button.ghost:hover:not(:disabled) {
   gap: 16px;
 }
 
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.nav-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-tab {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  background: rgba(31, 28, 23, 0.08);
+  color: var(--muted);
+  border: 1px solid transparent;
+}
+
+.nav-tab:hover {
+  background: rgba(31, 28, 23, 0.14);
+  color: var(--ink);
+}
+
+.nav-tab.is-active {
+  background: rgba(108, 125, 94, 0.25);
+  color: var(--ink);
+  border-color: rgba(108, 125, 94, 0.6);
+  font-weight: 600;
+}
+
+.subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border-bottom: 1px solid rgba(31, 28, 23, 0.16);
+}
+
+.subtab {
+  border-radius: 10px 10px 0 0;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-bottom: none;
+  margin-right: 6px;
+}
+
+.subtab:hover {
+  background: rgba(31, 28, 23, 0.08);
+  color: var(--ink);
+}
+
+.subtab.is-active {
+  background: rgba(248, 243, 232, 0.9);
+  color: var(--ink);
+  border-color: rgba(31, 28, 23, 0.18);
+  font-weight: 600;
+}
+
 .title {
   font-family: 'Fraunces', serif;
   font-size: 1.6rem;
@@ -444,6 +507,7 @@ button.ghost:hover:not(:disabled) {
   gap: 12px;
 }
 
+
 .preview-grid {
   display: grid;
   gap: 8px;
@@ -747,11 +811,15 @@ button.ghost:hover:not(:disabled) {
 
 .modal-full {
   opacity: 0;
-  transition: opacity 0.3s ease;
 }
 
 .modal-full.is-loaded {
   opacity: 1;
+}
+
+.modal-full.is-loaded.is-animate {
+  opacity: 1;
+  transition: opacity 0.3s ease;
 }
 
 .modal-status {
@@ -829,6 +897,29 @@ button.ghost:hover:not(:disabled) {
 
 .modal-favorite.is-active {
   color: #a74a3f;
+}
+
+.modal-favorite-pop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 3;
+  animation: favorite-pop 0.52s ease;
+}
+
+.modal-favorite-pop.is-add {
+  color: #d15647;
+}
+
+.modal-favorite-pop.is-remove {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.modal-favorite-pop svg {
+  width: 30vmin;
+  height: 30vmin;
 }
 
 .modal-counter {
@@ -927,6 +1018,21 @@ button.ghost:hover:not(:disabled) {
   }
   100% {
     transform: scale(1);
+  }
+}
+
+@keyframes favorite-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.2);
   }
 }
 

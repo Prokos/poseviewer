@@ -29,7 +29,7 @@ import {
 import type { DriveImage } from './drive/types';
 
 const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
-const IMAGE_PAGE_SIZE = 100;
+const IMAGE_PAGE_SIZE = 96;
 const THUMB_SIZE = 320;
 const CARD_THUMB_SIZE = 500;
 const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
@@ -58,6 +58,15 @@ function pickRandom<T>(items: T[], count: number) {
   return result.slice(0, count);
 }
 
+function shuffleItems<T>(items: T[]) {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
 function formatIndexProgress(progress: { folders: number; images: number }) {
   return `Indexing… ${progress.folders} folders • ${progress.images} images`;
 }
@@ -79,6 +88,31 @@ function startIndexTimer(setter: (value: string) => void) {
     setter(`Checking index… ${seconds}s`);
   }, 1000);
   return () => window.clearInterval(id);
+}
+
+function parsePathState() {
+  const raw = window.location.pathname;
+  const path = raw.endsWith('/') && raw.length > 1 ? raw.slice(0, -1) : raw;
+  if (path === '/create') {
+    return { page: 'create', setId: undefined };
+  }
+  if (path.startsWith('/set/')) {
+    const setId = decodeURIComponent(path.slice('/set/'.length));
+    if (setId) {
+      return { page: 'set', setId };
+    }
+  }
+  return { page: 'overview', setId: undefined };
+}
+
+function syncPathState(page: 'overview' | 'create' | 'set', setId?: string) {
+  let next = '/';
+  if (page === 'create') {
+    next = '/create';
+  } else if (page === 'set' && setId) {
+    next = `/set/${encodeURIComponent(setId)}`;
+  }
+  window.history.replaceState(null, '', next);
 }
 
 function filterFavorites(images: DriveImage[], favoriteIds: string[]) {
@@ -251,6 +285,7 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [tokenStatus, setTokenStatus] = useState<string>('');
   const rootId = DEFAULT_ROOT_ID ?? '';
+  const [page, setPage] = useState<'overview' | 'create' | 'set'>('overview');
   const [folderPaths, setFolderPaths] = useLocalStorage<FolderPath[]>(
     'poseviewer-folder-paths',
     emptyFolders
@@ -275,7 +310,7 @@ export default function App() {
   const [showHiddenFolders, setShowHiddenFolders] = useState(false);
   const [setFilter, setSetFilter] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [setSort, setSetSort] = useState('added_desc');
+  const [setSort, setSetSort] = useState('favs_desc');
   const [selectedFolder, setSelectedFolder] = useState<FolderPath | null>(null);
   const [setName, setSetName] = useState('');
   const [setTags, setSetTags] = useState('');
@@ -283,6 +318,10 @@ export default function App() {
   const [activeImages, setActiveImages] = useState<DriveImage[]>([]);
   const [isLoadingImages, setIsLoadingImages] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [activeTagInput, setActiveTagInput] = useState('');
+  const [setViewerTab, setSetViewerTab] = useState<'samples' | 'favorites' | 'all'>('samples');
+  const [sampleColumns, setSampleColumns] = useState(1);
+  const [allColumns, setAllColumns] = useState(1);
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [previewCount, setPreviewCount] = useState<number | null>(null);
@@ -298,8 +337,12 @@ export default function App() {
   const [modalImageId, setModalImageId] = useState<string | null>(null);
   const [modalItems, setModalItems] = useState<DriveImage[]>([]);
   const [modalContextLabel, setModalContextLabel] = useState('');
-  const [isModalLoaded, setIsModalLoaded] = useState(false);
+  const [modalIsLoading, setModalIsLoading] = useState(false);
   const [modalPulse, setModalPulse] = useState(false);
+  const [modalFavoritePulse, setModalFavoritePulse] = useState<null | 'add' | 'remove'>(null);
+  const [modalFullSrc, setModalFullSrc] = useState<string | null>(null);
+  const [modalFullImageId, setModalFullImageId] = useState<string | null>(null);
+  const [modalFullAnimate, setModalFullAnimate] = useState(false);
   const [modalZoom, setModalZoom] = useState(1);
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
   const [canScrollUp, setCanScrollUp] = useState(false);
@@ -309,10 +352,29 @@ export default function App() {
   const modalPendingAdvanceRef = useRef(false);
   const modalItemsLengthRef = useRef(0);
   const modalPulseTimeout = useRef<number | null>(null);
+  const modalFavoritePulseTimeout = useRef<number | null>(null);
+  const modalFullAbortRef = useRef<AbortController | null>(null);
+  const modalFullUrlRef = useRef<string | null>(null);
+  const modalPrefetchAbortRef = useRef<Map<string, AbortController>>(new Map());
+  const modalPrefetchCacheRef = useRef<Map<string, string>>(new Map());
+  const modalFullCacheRef = useRef<Map<string, string>>(new Map());
+  const modalFullCacheMax = 6;
+  const sampleGridRef = useRef<HTMLDivElement | null>(null);
+  const allGridRef = useRef<HTMLDivElement | null>(null);
+  const sampleHistoryRef = useRef<DriveImage[]>([]);
+  const sampleHistorySetRef = useRef<string | null>(null);
+  const sampleAppendInFlightRef = useRef(false);
+  const metadataSaveTimeoutRef = useRef<number | null>(null);
+  const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
+  const pendingSaveResolveRef = useRef<(() => void) | null>(null);
+  const initialNavRef = useRef(parsePathState());
+  const appliedNavRef = useRef(false);
+  const metadataLoadedRef = useRef(false);
+  const pendingSetIdRef = useRef<string | null>(null);
+  const pendingSetFetchAttemptedRef = useRef(false);
   const setViewerRef = useRef<HTMLDivElement | null>(null);
   const sampleSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const prefetchedThumbsRef = useRef<Set<string>>(new Set());
-  const prefetchedModalRef = useRef<Set<string>>(new Set());
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const touchLastRef = useRef<{ x: number; y: number } | null>(null);
   const pinchStartRef = useRef<{ distance: number; zoom: number } | null>(null);
@@ -325,6 +387,9 @@ export default function App() {
     fileId: string | null;
   } | null>(null);
   const viewerIndexTimerRef = useRef<(() => void) | null>(null);
+
+  const samplePageSize = Math.max(1, Math.ceil(48 / sampleColumns) * sampleColumns);
+  const allPageSize = Math.max(1, Math.ceil(IMAGE_PAGE_SIZE / allColumns) * allColumns);
   const metadataRef = useRef<MetadataDocument>(metadata);
   const metadataFileIdRef = useRef<string | null>(metadataFileId);
   const updateQueueRef = useRef(Promise.resolve());
@@ -425,6 +490,8 @@ export default function App() {
       return a.localeCompare(b);
     });
   }, [availableTags, tagUsageCounts]);
+
+  const selectedCreateTags = useMemo(() => normalizeTags(setTags), [setTags]);
 
   const tagCounts = useMemo(() => {
     const query = setFilter.trim().toLowerCase();
@@ -530,6 +597,7 @@ export default function App() {
 
       setMetadata(meta.data);
       setMetadataFileId(meta.fileId);
+      metadataLoadedRef.current = true;
       writeMetadataCache(rootId, meta.fileId, meta.data);
     } catch (loadError) {
       setError((loadError as Error).message);
@@ -585,6 +653,7 @@ export default function App() {
     if (cached) {
       setMetadata(cached.data);
       setMetadataFileId(cached.fileId);
+      metadataLoadedRef.current = true;
     }
 
     if (!isConnected) {
@@ -597,6 +666,47 @@ export default function App() {
   }, [handleFetchMetadata, isConnected, rootId]);
 
   useEffect(() => {
+    if (!activeSet) {
+      setActiveTagInput('');
+      return;
+    }
+    setActiveTagInput(activeSet.tags.join(', '));
+  }, [activeSet?.id, activeSet?.tags]);
+
+  useEffect(() => {
+    if (activeSet) {
+      setSetViewerTab('samples');
+    }
+  }, [activeSet?.id]);
+
+  useEffect(() => {
+    if (setViewerTab !== 'all' || !activeSet || isLoadingImages || isLoadingMore) {
+      return;
+    }
+    if (allColumns <= 1 || activeImages.length === 0) {
+      return;
+    }
+    const remainder = activeImages.length % allColumns;
+    if (remainder === 0) {
+      return;
+    }
+    const fill = allColumns - remainder;
+    const maxAvailable = activeSet.imageCount ?? readImageListCache(activeSet.id)?.length ?? Infinity;
+    if (!Number.isFinite(maxAvailable) || activeImages.length >= maxAvailable) {
+      return;
+    }
+    const nextLimit = Math.min(activeImages.length + fill, maxAvailable);
+    void loadSetImages(activeSet, nextLimit, true);
+  }, [
+    activeImages.length,
+    activeSet,
+    allColumns,
+    isLoadingImages,
+    isLoadingMore,
+    setViewerTab,
+  ]);
+
+  useEffect(() => {
     metadataRef.current = metadata;
   }, [metadata]);
 
@@ -604,20 +714,51 @@ export default function App() {
     metadataFileIdRef.current = metadataFileId;
   }, [metadataFileId]);
 
+  useEffect(() => {
+    const readColumns = (element: HTMLDivElement | null) => {
+      if (!element) {
+        return 1;
+      }
+      const value = window.getComputedStyle(element).gridTemplateColumns;
+      if (!value || value === 'none') {
+        return 1;
+      }
+      const count = value.split(' ').filter(Boolean).length;
+      return Math.max(1, count);
+    };
+    const updateSample = () => setSampleColumns(readColumns(sampleGridRef.current));
+    const updateAll = () => setAllColumns(readColumns(allGridRef.current));
+    updateSample();
+    updateAll();
+    const observer = new ResizeObserver(() => {
+      updateSample();
+      updateAll();
+    });
+    if (sampleGridRef.current) {
+      observer.observe(sampleGridRef.current);
+    }
+    if (allGridRef.current) {
+      observer.observe(allGridRef.current);
+    }
+    return () => observer.disconnect();
+  }, []);
+
   const handleSelectFolder = (folder: FolderPath) => {
     setSelectedFolder(folder);
     setSetName(folder.name);
     setSetTags('');
   };
 
-  const handleAddTag = (tag: string) => {
+  const toggleCreateTag = (tag: string) => {
     const current = normalizeTags(setTags);
     if (current.includes(tag)) {
+      const next = current.filter((value) => value !== tag);
+      setSetTags(next.join(', '));
       return;
     }
-    const next = [...current, tag];
-    setSetTags(next.join(', '));
+    setSetTags([...current, tag].join(', '));
   };
+
 
   const toggleFilterTag = (tag: string) => {
     setSelectedTags((current) =>
@@ -799,31 +940,73 @@ export default function App() {
       setActiveSet((current) => (current ? { ...current, ...update } : current));
     }
 
-    updateQueueRef.current = updateQueueRef.current.then(async () => {
-      const base = metadataRef.current;
-      const updated: MetadataDocument = {
-        version: 1,
-        sets: base.sets.map((set) => (set.id === setId ? { ...set, ...update } : set)),
-      };
+    const base = metadataRef.current;
+    const updated: MetadataDocument = {
+      version: 1,
+      sets: base.sets.map((set) => (set.id === setId ? { ...set, ...update } : set)),
+    };
 
-      metadataRef.current = updated;
-      setMetadata(updated);
-      setIsSaving(true);
-      setError('');
+    metadataRef.current = updated;
+    setMetadata(updated);
 
-      try {
-        const newFileId = await saveMetadata(rootId, metadataFileIdRef.current, updated);
-        metadataFileIdRef.current = newFileId;
-        setMetadataFileId(newFileId);
-        writeMetadataCache(rootId, newFileId, updated);
-      } catch (saveError) {
-        setError((saveError as Error).message);
-      } finally {
-        setIsSaving(false);
-      }
-    });
-    return updateQueueRef.current;
+    if (!pendingSavePromiseRef.current) {
+      pendingSavePromiseRef.current = new Promise<void>((resolve) => {
+        pendingSaveResolveRef.current = resolve;
+      });
+    }
+
+    if (metadataSaveTimeoutRef.current) {
+      window.clearTimeout(metadataSaveTimeoutRef.current);
+    }
+
+    metadataSaveTimeoutRef.current = window.setTimeout(() => {
+      metadataSaveTimeoutRef.current = null;
+      updateQueueRef.current = updateQueueRef.current.then(async () => {
+        setIsSaving(true);
+        setError('');
+        try {
+          const newFileId = await saveMetadata(
+            rootId,
+            metadataFileIdRef.current,
+            metadataRef.current
+          );
+          metadataFileIdRef.current = newFileId;
+          setMetadataFileId(newFileId);
+          writeMetadataCache(rootId, newFileId, metadataRef.current);
+        } catch (saveError) {
+          setError((saveError as Error).message);
+        } finally {
+          setIsSaving(false);
+        }
+      });
+
+      updateQueueRef.current.finally(() => {
+        pendingSaveResolveRef.current?.();
+        pendingSaveResolveRef.current = null;
+        pendingSavePromiseRef.current = null;
+      });
+    }, 350);
+
+    return pendingSavePromiseRef.current;
   };
+
+  const toggleActiveSetTag = useCallback(
+    (tag: string) => {
+      if (!activeSet) {
+        return;
+      }
+      const current = activeSet.tags ?? [];
+      const lower = tag.toLowerCase();
+      const existingIndex = current.findIndex((value) => value.toLowerCase() === lower);
+      const next =
+        existingIndex >= 0
+          ? current.filter((_, index) => index !== existingIndex)
+          : [...current, tag];
+      setActiveTagInput(next.join(', '));
+      void handleUpdateSet(activeSet.id, { tags: next });
+    },
+    [activeSet, handleUpdateSet]
+  );
 
   const pickNextSample = useCallback(
     (setId: string, images: DriveImage[], count: number) => {
@@ -954,7 +1137,7 @@ export default function App() {
       try {
         const images = await resolveSetImages(set, buildIfMissing);
         setFavoriteImages(filterFavorites(images, set.favoriteImageIds ?? []));
-        setSampleImages(pickNextSample(set.id, images, 24));
+        setSampleImages(pickNextSample(set.id, images, samplePageSize));
       } catch (loadError) {
         setError((loadError as Error).message);
         setFavoriteImages([]);
@@ -964,8 +1147,25 @@ export default function App() {
         setViewerIndexProgress('');
       }
     },
-    [pickNextSample, resolveSetImages]
+    [pickNextSample, resolveSetImages, samplePageSize]
   );
+
+  const hydratedSetIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!isConnected) {
+      hydratedSetIdRef.current = null;
+      return;
+    }
+    if (!activeSet) {
+      return;
+    }
+    if (hydratedSetIdRef.current === activeSet.id) {
+      return;
+    }
+    hydratedSetIdRef.current = activeSet.id;
+    void hydrateSetExtras(activeSet, true);
+  }, [activeSet, hydrateSetExtras, isConnected]);
 
   const prefetchThumbs = useCallback((images: DriveImage[]) => {
     for (const image of images) {
@@ -1009,6 +1209,7 @@ export default function App() {
         setActiveImages([]);
         setFavoriteImages([]);
         setImageLoadStatus('');
+        setPage('overview');
       }
     } catch (saveError) {
       setError((saveError as Error).message);
@@ -1124,6 +1325,7 @@ export default function App() {
         ? { ...set, indexFileId: prebuiltIndexRef.current.fileId ?? undefined }
         : set;
     setActiveSet(nextSet);
+    setPage('set');
     setImageLimit(0);
     setActiveImages([]);
     setFavoriteImages([]);
@@ -1137,6 +1339,95 @@ export default function App() {
     }
     await hydrateSetExtras(nextSet, true);
   };
+
+  useEffect(() => {
+    if (appliedNavRef.current) {
+      return;
+    }
+    const initial = initialNavRef.current;
+    if (initial.page === 'set' && initial.setId) {
+      pendingSetIdRef.current = initial.setId;
+      pendingSetFetchAttemptedRef.current = false;
+      appliedNavRef.current = true;
+      setPage('set');
+      return;
+    }
+    appliedNavRef.current = true;
+    setPage(initial.page);
+  }, [handleOpenSet, isLoadingMetadata, metadata.sets]);
+
+  useEffect(() => {
+    const handlePop = () => {
+      const next = parsePathState();
+      if (next.page === 'set' && next.setId) {
+        pendingSetIdRef.current = next.setId;
+        pendingSetFetchAttemptedRef.current = false;
+        setPage('set');
+        return;
+      }
+      pendingSetIdRef.current = null;
+      pendingSetFetchAttemptedRef.current = false;
+      setPage(next.page);
+    };
+    window.addEventListener('popstate', handlePop);
+    return () => window.removeEventListener('popstate', handlePop);
+  }, [handleOpenSet, metadata.sets]);
+
+  useEffect(() => {
+    if (!appliedNavRef.current) {
+      return;
+    }
+    if (page === 'set') {
+      if (!activeSet) {
+        return;
+      }
+      syncPathState('set', activeSet.id);
+      return;
+    }
+    syncPathState(page);
+  }, [activeSet, page]);
+
+  useEffect(() => {
+    if (page !== 'set') {
+      return;
+    }
+    const pendingId = pendingSetIdRef.current;
+    if (!pendingId) {
+      return;
+    }
+    if (activeSet?.id === pendingId) {
+      pendingSetIdRef.current = null;
+      return;
+    }
+    const match = metadata.sets.find((item) => item.id === pendingId);
+    if (match) {
+      pendingSetIdRef.current = null;
+      void handleOpenSet(match);
+      return;
+    }
+    if (!pendingSetFetchAttemptedRef.current && isConnected && !isLoadingMetadata) {
+      pendingSetFetchAttemptedRef.current = true;
+      void handleFetchMetadata();
+      return;
+    }
+    if (
+      pendingSetFetchAttemptedRef.current &&
+      metadataLoadedRef.current &&
+      !isLoadingMetadata
+    ) {
+      pendingSetIdRef.current = null;
+      setPage('overview');
+    }
+  }, [
+    activeSet?.id,
+    handleFetchMetadata,
+    handleOpenSet,
+    isConnected,
+    isLoadingMetadata,
+    metadata.sets,
+    page,
+  ]);
+
 
   const handleRefreshSet = async (set: PoseSet) => {
     if (!isConnected || !rootId) {
@@ -1161,7 +1452,7 @@ export default function App() {
       });
       setActiveSet(updatedSet);
       setFavoriteImages(filterFavorites(refreshed, updatedSet.favoriteImageIds ?? []));
-      setSampleImages(pickNextSample(set.id, refreshed, 24));
+      setSampleImages(pickNextSample(set.id, refreshed, samplePageSize));
       if (activeImages.length > 0) {
         setActiveImages(refreshed.slice(0, imageLimit));
       }
@@ -1173,12 +1464,94 @@ export default function App() {
     }
   };
 
-  const handleRefreshSample = async () => {
-    if (!activeSet) {
+  const loadSampleBatch = useCallback(
+    async (count: number) => {
+      if (!activeSet || !isConnected || count <= 0) {
+        return;
+      }
+      setIsLoadingSample(true);
+      setViewerIndexProgress('Loading sample…');
+      try {
+        const images = await resolveSetImages(activeSet, true);
+        if (images.length === 0) {
+          setSampleImages([]);
+          return;
+        }
+        const nextSample = pickNextSample(activeSet.id, images, count);
+        if (nextSample.length === 0) {
+          return;
+        }
+        setSampleImages((current) => {
+          const existingIds = new Set(current.map((item) => item.id));
+          const merged = [...current];
+          for (const item of nextSample) {
+            if (!existingIds.has(item.id)) {
+              merged.push(item);
+            }
+          }
+          return merged;
+        });
+      } catch (loadError) {
+        setError((loadError as Error).message);
+      } finally {
+        setIsLoadingSample(false);
+        setViewerIndexProgress('');
+      }
+    },
+    [activeSet, isConnected, pickNextSample, resolveSetImages]
+  );
+
+  const handleLoadMoreSample = useCallback(async () => {
+    await loadSampleBatch(samplePageSize);
+  }, [loadSampleBatch, samplePageSize]);
+
+  useEffect(() => {
+    if (setViewerTab !== 'samples' || !activeSet || isLoadingSample) {
       return;
     }
-    await hydrateSetExtras(activeSet, true);
-  };
+    if (sampleColumns <= 1 || sampleImages.length === 0) {
+      return;
+    }
+    const remainder = sampleImages.length % sampleColumns;
+    if (remainder === 0) {
+      return;
+    }
+    const fill = sampleColumns - remainder;
+    void loadSampleBatch(fill);
+  }, [
+    activeSet,
+    isLoadingSample,
+    loadSampleBatch,
+    sampleColumns,
+    sampleImages.length,
+    setViewerTab,
+  ]);
+
+  const handleLoadAllSample = useCallback(async () => {
+    if (!activeSet || !isConnected) {
+      return;
+    }
+    setIsLoadingSample(true);
+    setViewerIndexProgress('Loading sample…');
+    try {
+      const images = await resolveSetImages(activeSet, true);
+      if (images.length === 0) {
+        setSampleImages([]);
+        return;
+      }
+      const shuffled = shuffleItems(images);
+      setSampleImages(shuffled);
+      sampleSeenRef.current.set(
+        activeSet.id,
+        new Set(shuffled.map((image) => image.id))
+      );
+    } catch (loadError) {
+      setError((loadError as Error).message);
+    } finally {
+      setIsLoadingSample(false);
+      setViewerIndexProgress('');
+    }
+  }, [activeSet, isConnected, resolveSetImages]);
 
   const handleLoadMoreImages = async () => {
     if (!activeSet) {
@@ -1187,7 +1560,7 @@ export default function App() {
     const previousCount = activeImages.length;
     const cached = readImageListCache(activeSet.id);
     const maxAvailable = activeSet.imageCount ?? cached?.length ?? Infinity;
-    const nextLimit = Math.min(imageLimit + IMAGE_PAGE_SIZE, maxAvailable);
+    const nextLimit = Math.min(imageLimit + allPageSize, maxAvailable);
     if (nextLimit <= activeImages.length) {
       return;
     }
@@ -1269,17 +1642,47 @@ export default function App() {
       : undefined;
   const pendingExtra =
     totalImagesKnown !== undefined
-      ? Math.max(0, Math.min(IMAGE_PAGE_SIZE, remainingImages))
-      : IMAGE_PAGE_SIZE;
+      ? Math.max(0, Math.min(allPageSize, remainingImages))
+      : allPageSize;
+  const favoritesCount = activeSet?.favoriteImageIds?.length ?? 0;
+  const allImagesCount = totalImagesKnown ?? activeImages.length;
+  const sampleRemaining =
+    totalImagesKnown !== undefined
+      ? Math.max(0, totalImagesKnown - sampleImages.length)
+      : undefined;
+  const samplePendingExtra =
+    sampleRemaining !== undefined
+      ? Math.max(0, Math.min(samplePageSize, sampleRemaining))
+      : samplePageSize;
+
+  const handleSetViewerTab = useCallback(
+    (tab: 'samples' | 'favorites' | 'all') => {
+      setSetViewerTab(tab);
+      if (tab === 'all' && activeSet && activeImages.length === 0 && !isLoadingImages) {
+        setImageLimit(allPageSize);
+        void loadSetImages(activeSet, allPageSize, false);
+      }
+    },
+    [activeImages.length, activeSet, allPageSize, isLoadingImages]
+  );
 
   const openModal = (imageId: string, items: DriveImage[], label: string) => {
     const index = items.findIndex((image) => image.id === imageId);
     setModalItems(items);
     modalItemsLengthRef.current = items.length;
     setModalContextLabel(label);
+    setModalFullSrc(null);
+    setModalFullImageId(null);
+    setModalFullAnimate(false);
+    if (label === 'Sample' && activeSet) {
+      sampleHistoryRef.current = items;
+      sampleHistorySetRef.current = activeSet.id;
+    } else {
+      sampleHistoryRef.current = [];
+      sampleHistorySetRef.current = null;
+    }
     setModalImageId(imageId);
     setModalIndex(index >= 0 ? index : null);
-    setIsModalLoaded(false);
     triggerModalPulse();
   };
 
@@ -1289,14 +1692,44 @@ export default function App() {
     setModalItems([]);
     modalItemsLengthRef.current = 0;
     setModalContextLabel('');
-    setIsModalLoaded(false);
+    setModalIsLoading(false);
     setModalPulse(false);
+    setModalFavoritePulse(null);
+    setModalFullSrc(null);
+    setModalFullImageId(null);
+    setModalFullAnimate(false);
     setModalZoom(1);
     setModalPan({ x: 0, y: 0 });
+    sampleHistoryRef.current = [];
+    sampleHistorySetRef.current = null;
+    sampleAppendInFlightRef.current = false;
     if (modalPulseTimeout.current) {
       window.clearTimeout(modalPulseTimeout.current);
       modalPulseTimeout.current = null;
     }
+    if (modalFavoritePulseTimeout.current) {
+      window.clearTimeout(modalFavoritePulseTimeout.current);
+      modalFavoritePulseTimeout.current = null;
+    }
+    if (modalFullAbortRef.current) {
+      modalFullAbortRef.current.abort();
+      modalFullAbortRef.current = null;
+    }
+    if (modalFullUrlRef.current) {
+      const cached = Array.from(modalFullCacheRef.current.values()).includes(
+        modalFullUrlRef.current
+      );
+      if (!cached) {
+        URL.revokeObjectURL(modalFullUrlRef.current);
+      }
+      modalFullUrlRef.current = null;
+    }
+    modalPrefetchAbortRef.current.forEach((controller) => controller.abort());
+    modalPrefetchAbortRef.current.clear();
+    modalPrefetchCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+    modalPrefetchCacheRef.current.clear();
+    modalFullCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+    modalFullCacheRef.current.clear();
   };
 
   const triggerModalPulse = () => {
@@ -1312,6 +1745,94 @@ export default function App() {
     }, 10);
   };
 
+  const triggerFavoritePulse = useCallback((mode: 'add' | 'remove') => {
+    setModalFavoritePulse(null);
+    if (modalFavoritePulseTimeout.current) {
+      window.clearTimeout(modalFavoritePulseTimeout.current);
+    }
+    modalFavoritePulseTimeout.current = window.setTimeout(() => {
+      setModalFavoritePulse(mode);
+      modalFavoritePulseTimeout.current = window.setTimeout(() => {
+        setModalFavoritePulse(null);
+      }, 520);
+    }, 10);
+  }, []);
+
+  const storeModalFullCache = useCallback((imageId: string, url: string) => {
+    const cache = modalFullCacheRef.current;
+    const existing = cache.get(imageId);
+    if (existing && existing !== url) {
+      URL.revokeObjectURL(existing);
+    }
+    cache.delete(imageId);
+    cache.set(imageId, url);
+    while (cache.size > modalFullCacheMax) {
+      const oldest = cache.entries().next().value as [string, string] | undefined;
+      if (!oldest) {
+        break;
+      }
+      cache.delete(oldest[0]);
+      URL.revokeObjectURL(oldest[1]);
+    }
+  }, []);
+
+  const fetchImageBlob = useCallback(async (url: string, signal: AbortSignal) => {
+    const response = await fetch(url, { signal, cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`Image load failed: ${response.status}`);
+    }
+    const contentLength = response.headers.get('content-length');
+    const blob = await response.blob();
+    if (contentLength) {
+      const expected = Number(contentLength);
+      if (Number.isFinite(expected) && expected > 0 && blob.size !== expected) {
+        throw new Error('Image load incomplete');
+      }
+    }
+    return blob;
+  }, []);
+
+  const prefetchModalImage = useCallback((imageId?: string) => {
+    if (!imageId) {
+      return;
+    }
+    if (modalPrefetchCacheRef.current.has(imageId)) {
+      return;
+    }
+    if (modalPrefetchAbortRef.current.has(imageId)) {
+      return;
+    }
+    const controller = new AbortController();
+    modalPrefetchAbortRef.current.set(imageId, controller);
+    const url = createProxyMediaUrl(imageId);
+    fetchImageBlob(url, controller.signal)
+      .then((blob) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        modalPrefetchCacheRef.current.set(imageId, objectUrl);
+      })
+      .catch((prefetchError) => {
+        if ((prefetchError as Error).name === 'AbortError') {
+          return;
+        }
+        setError((prefetchError as Error).message);
+      })
+      .finally(() => {
+        modalPrefetchAbortRef.current.delete(imageId);
+      });
+  }, [fetchImageBlob]);
+
+  const toggleFavoriteFromModal = useCallback(() => {
+    if (!activeSet || !modalImage) {
+      return;
+    }
+    const isFavorite = favoriteIds.includes(modalImage.id);
+    triggerFavoritePulse(isFavorite ? 'remove' : 'add');
+    void toggleFavoriteImage(activeSet.id, modalImage.id);
+  }, [activeSet, favoriteIds, modalImage, toggleFavoriteImage, triggerFavoritePulse]);
+
   const goNextImage = () => {
     if (modalItems.length === 0) {
       return;
@@ -1325,6 +1846,62 @@ export default function App() {
     }
     const isLast = currentIndex + 1 >= modalItems.length;
     if (isLast) {
+      if (modalContextLabel === 'Sample' && activeSet) {
+        if (sampleAppendInFlightRef.current) {
+          return;
+        }
+        sampleAppendInFlightRef.current = true;
+        const setId = activeSet.id;
+        (async () => {
+          const source =
+            readImageListCache(activeSet.id) ??
+            (await resolveSetImages(activeSet, true));
+          if (!source || source.length === 0) {
+            return;
+          }
+          const nextSample = pickNextSample(activeSet.id, source, samplePageSize);
+          if (nextSample.length === 0) {
+            return;
+          }
+          const existingIds = new Set(modalItems.map((item) => item.id));
+          const deduped = nextSample.filter((item) => !existingIds.has(item.id));
+          if (deduped.length === 0) {
+            return;
+          }
+          if (sampleHistorySetRef.current && sampleHistorySetRef.current !== setId) {
+            return;
+          }
+          const updated = [...modalItems, ...deduped];
+          sampleHistoryRef.current = updated;
+          sampleHistorySetRef.current = setId;
+          setModalItems(updated);
+          modalItemsLengthRef.current = updated.length;
+          setSampleImages((current) => {
+            const existingIds = new Set(current.map((item) => item.id));
+            const merged = [...current];
+            for (const item of deduped) {
+              if (!existingIds.has(item.id)) {
+                merged.push(item);
+              }
+            }
+            return merged;
+          });
+          const nextIndex = updated.length - deduped.length;
+          setModalFullSrc(null);
+          setModalFullImageId(null);
+          setModalFullAnimate(false);
+          setModalImageId(updated[nextIndex]?.id ?? null);
+          setModalIndex(updated[nextIndex]?.id ? nextIndex : null);
+          triggerModalPulse();
+        })()
+          .catch((error) => {
+            setError((error as Error).message);
+          })
+          .finally(() => {
+            sampleAppendInFlightRef.current = false;
+          });
+        return;
+      }
       if (
         modalContextLabel === 'Set' &&
         remainingImages !== undefined &&
@@ -1342,9 +1919,11 @@ export default function App() {
     if (!nextImage) {
       return;
     }
+    setModalFullSrc(null);
+    setModalFullImageId(null);
+    setModalFullAnimate(false);
     setModalImageId(nextImage.id);
     setModalIndex(nextIndex);
-    setIsModalLoaded(false);
     triggerModalPulse();
   };
 
@@ -1368,9 +1947,11 @@ export default function App() {
     if (!nextImage) {
       return;
     }
+    setModalFullSrc(null);
+    setModalFullImageId(null);
+    setModalFullAnimate(false);
     setModalImageId(nextImage.id);
     setModalIndex(nextIndex);
-    setIsModalLoaded(false);
     triggerModalPulse();
   };
 
@@ -1380,6 +1961,9 @@ export default function App() {
     }
 
     const handleKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === 'f') {
+        toggleFavoriteFromModal();
+      }
       if (event.key === 'Escape') {
         closeModal();
       }
@@ -1395,12 +1979,32 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKey);
     };
-  }, [modalIndex, modalItems, modalImageId]);
+  }, [
+    closeModal,
+    goNextImage,
+    goPrevImage,
+    modalImageId,
+    modalIndex,
+    toggleFavoriteFromModal,
+  ]);
 
   useEffect(() => {
     return () => {
       if (modalPulseTimeout.current) {
         window.clearTimeout(modalPulseTimeout.current);
+      }
+      if (modalFavoritePulseTimeout.current) {
+        window.clearTimeout(modalFavoritePulseTimeout.current);
+      }
+      modalPrefetchAbortRef.current.forEach((controller) => controller.abort());
+      modalPrefetchAbortRef.current.clear();
+      modalPrefetchCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+      modalPrefetchCacheRef.current.clear();
+      modalFullCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+      modalFullCacheRef.current.clear();
+      if (modalFullUrlRef.current) {
+        URL.revokeObjectURL(modalFullUrlRef.current);
+        modalFullUrlRef.current = null;
       }
     };
   }, []);
@@ -1410,27 +2014,89 @@ export default function App() {
       setModalZoom(1);
       setModalPan({ x: 0, y: 0 });
     }
-  }, [modalImageId]);
+  }, [modalImageId, storeModalFullCache]);
+
+  useEffect(() => {
+    if (!modalImageId) {
+      return;
+    }
+    setModalIsLoading(true);
+    setModalFullAnimate(false);
+    setModalFullImageId(null);
+    setModalFullSrc(null);
+    if (modalFullAbortRef.current) {
+      modalFullAbortRef.current.abort();
+    }
+    modalFullUrlRef.current = null;
+    const cacheHit = modalFullCacheRef.current.get(modalImageId);
+    if (cacheHit) {
+      modalFullCacheRef.current.delete(modalImageId);
+      modalFullCacheRef.current.set(modalImageId, cacheHit);
+      modalFullUrlRef.current = cacheHit;
+      setModalFullSrc(cacheHit);
+      setModalFullImageId(modalImageId);
+      setModalFullAnimate(false);
+      setModalIsLoading(false);
+      return;
+    }
+    const cachedUrl = modalPrefetchCacheRef.current.get(modalImageId);
+    if (cachedUrl) {
+      modalPrefetchCacheRef.current.delete(modalImageId);
+      modalFullUrlRef.current = cachedUrl;
+      setModalFullSrc(cachedUrl);
+      setModalFullImageId(modalImageId);
+      setModalFullAnimate(false);
+      storeModalFullCache(modalImageId, cachedUrl);
+      setModalIsLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    modalFullAbortRef.current = controller;
+    const url = createProxyMediaUrl(modalImageId);
+    fetchImageBlob(url, controller.signal)
+      .then((blob) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        modalFullUrlRef.current = objectUrl;
+        setModalFullSrc(objectUrl);
+        setModalFullImageId(modalImageId);
+        setModalFullAnimate(true);
+        storeModalFullCache(modalImageId, objectUrl);
+        setModalIsLoading(false);
+      })
+      .catch((loadError) => {
+        if ((loadError as Error).name === 'AbortError') {
+          return;
+        }
+        setError((loadError as Error).message);
+        setModalIsLoading(false);
+      });
+  }, [fetchImageBlob, modalImageId, storeModalFullCache]);
 
   useEffect(() => {
     if (modalIndex === null || modalIndex < 0 || modalItems.length === 0) {
       return;
     }
-    const preload = (imageId?: string) => {
-      if (!imageId || prefetchedModalRef.current.has(imageId)) {
-        return;
-      }
-      const full = new Image();
-      full.src = createProxyMediaUrl(imageId);
-      const thumb = new Image();
-      thumb.src = createProxyThumbUrl(imageId, THUMB_SIZE);
-      prefetchedModalRef.current.add(imageId);
-    };
     const prev = modalItems[modalIndex - 1]?.id;
     const next = modalItems[modalIndex + 1]?.id;
-    preload(prev);
-    preload(next);
-  }, [modalIndex, modalItems]);
+    const allowed = new Set([prev, next].filter(Boolean) as string[]);
+    modalPrefetchAbortRef.current.forEach((controller, id) => {
+      if (!allowed.has(id)) {
+        controller.abort();
+        modalPrefetchAbortRef.current.delete(id);
+      }
+    });
+    modalPrefetchCacheRef.current.forEach((url, id) => {
+      if (!allowed.has(id)) {
+        URL.revokeObjectURL(url);
+        modalPrefetchCacheRef.current.delete(id);
+      }
+    });
+    prefetchModalImage(prev);
+    prefetchModalImage(next);
+  }, [modalIndex, modalItems, prefetchModalImage]);
 
   useEffect(() => {
     if (!modalImageId) {
@@ -1697,7 +2363,34 @@ export default function App() {
   return (
     <div className={`app ${isLoadingMetadata ? 'app--loading' : ''}`}>
       <header className="topbar">
-        <div className="title">Pose Viewer</div>
+        <div className="topbar-left">
+          <div className="title">Pose Viewer</div>
+          <div className="nav-tabs">
+            <button
+              type="button"
+              className={`nav-tab ${page === 'overview' ? 'is-active' : ''}`}
+              onClick={() => setPage('overview')}
+            >
+              Sets
+            </button>
+            <button
+              type="button"
+              className={`nav-tab ${page === 'create' ? 'is-active' : ''}`}
+              onClick={() => setPage('create')}
+            >
+              Create
+            </button>
+            {activeSet ? (
+              <button
+                type="button"
+                className={`nav-tab ${page === 'set' ? 'is-active' : ''}`}
+                onClick={() => setPage('set')}
+              >
+                Viewer
+              </button>
+            ) : null}
+          </div>
+        </div>
         <div className="auth-chip">
           <button className="chip-button" onClick={handleConnect}>
             {isConnected ? 'Reconnect' : 'Connect'}
@@ -1711,6 +2404,7 @@ export default function App() {
         </div>
       ) : null}
 
+      {page === 'create' ? (
       <section className="columns">
         <div className="panel">
           <div className="panel-header panel-header--row">
@@ -1831,8 +2525,10 @@ export default function App() {
                         <button
                           key={tag}
                           type="button"
-                          className="tag-button"
-                          onClick={() => handleAddTag(tag)}
+                          className={`tag-button ${
+                            selectedCreateTags.includes(tag) ? 'is-active' : ''
+                          }`}
+                          onClick={() => toggleCreateTag(tag)}
                         >
                           {tag}
                         </button>
@@ -1894,7 +2590,9 @@ export default function App() {
           </div>
         </div>
       </section>
+      ) : null}
 
+      {page === 'overview' ? (
       <section className="panel">
         <div className="panel-header">
           <h2>Sets overview</h2>
@@ -1951,6 +2649,7 @@ export default function App() {
               <option value="favs_asc">Favorites (low to high)</option>
             </select>
           </label>
+          <p className="muted">Total sets: {metadata.sets.length}</p>
           <div className="card-grid">
             {filteredSets.map((set) => (
               <button
@@ -1996,7 +2695,9 @@ export default function App() {
           </div>
         </div>
       </section>
+      ) : null}
 
+      {page === 'set' ? (
       <section className="panel" ref={setViewerRef}>
         <div className="panel-header">
           <h2>Set viewer</h2>
@@ -2038,33 +2739,240 @@ export default function App() {
                   Delete set
                 </button>
               </div>
-              <div className="preview">
-                <div className="preview-header">
-                  <p className="muted">Sample preview (24)</p>
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={handleRefreshSample}
-                    disabled={isLoadingSample}
-                  >
-                    {isLoadingSample ? 'Refreshing…' : 'Refresh sample'}
-                  </button>
-                </div>
-                {isLoadingSample ? (
-                  <div className="stack">
-                    <p className="empty">Loading sample…</p>
-                    {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+              <div key={activeSet.id} className="field-group">
+                <label className="field">
+                  <span>Name</span>
+                  <input
+                    type="text"
+                    defaultValue={activeSet.name}
+                    onBlur={(event) =>
+                      handleUpdateSet(activeSet.id, {
+                        name: event.target.value.trim() || activeSet.name,
+                      })
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span>Tags</span>
+                  <input
+                    type="text"
+                    value={activeTagInput}
+                    onChange={(event) => setActiveTagInput(event.target.value)}
+                    onBlur={(event) => {
+                      const normalized = normalizeTags(event.target.value);
+                      setActiveTagInput(normalized.join(', '));
+                      void handleUpdateSet(activeSet.id, { tags: normalized });
+                    }}
+                  />
+                </label>
+              </div>
+              {sortedQuickTags.length > 0 ? (
+                <div className="tag-suggestions">
+                  <p className="muted">Quick tags</p>
+                  <div className="tag-row">
+                    {sortedQuickTags.map((tag) => {
+                      const isActive = activeSet.tags.includes(tag);
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          className={`tag-button ${isActive ? 'is-active' : ''}`}
+                          onClick={() => toggleActiveSetTag(tag)}
+                        >
+                          {tag}
+                        </button>
+                      );
+                    })}
                   </div>
-                ) : viewerIndexProgress ? (
-                  <p className="muted">{viewerIndexProgress}</p>
-                ) : sampleImages.length > 0 ? (
-                  <div className="image-grid image-grid--zoom">
-                    {sampleImages.map((image) => (
+                </div>
+              ) : null}
+              <div className="subtabs">
+                <button
+                  type="button"
+                  className={`subtab ${setViewerTab === 'samples' ? 'is-active' : ''}`}
+                  onClick={() => handleSetViewerTab('samples')}
+                >
+                  Sample
+                </button>
+                <button
+                  type="button"
+                  className={`subtab ${setViewerTab === 'favorites' ? 'is-active' : ''}`}
+                  onClick={() => handleSetViewerTab('favorites')}
+                >
+                  Favorites ({favoritesCount})
+                </button>
+                <button
+                  type="button"
+                  className={`subtab ${setViewerTab === 'all' ? 'is-active' : ''}`}
+                  onClick={() => handleSetViewerTab('all')}
+                >
+                  All images ({allImagesCount})
+                </button>
+              </div>
+              {setViewerTab === 'samples' ? (
+                <div className="preview">
+                  {isLoadingSample ? (
+                    <div className="stack">
+                      <p className="empty">Loading sample…</p>
+                      {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+                    </div>
+                  ) : viewerIndexProgress ? (
+                    <p className="muted">{viewerIndexProgress}</p>
+                  ) : sampleImages.length > 0 ? (
+                    <div className="image-grid image-grid--zoom" ref={sampleGridRef}>
+                      {sampleImages.map((image) => (
+                        <div key={image.id} className="image-tile">
+                          <button
+                            type="button"
+                            className="image-button"
+                            onClick={() => openModal(image.id, sampleImages, 'Sample')}
+                          >
+                            <ImageThumb
+                              isConnected={isConnected}
+                              fileId={image.id}
+                              alt={activeSet.name}
+                              size={THUMB_SIZE}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            className={`thumb-action thumb-action--favorite ${
+                              favoriteIds.includes(image.id) ? 'is-active' : ''
+                            }`}
+                            onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
+                            aria-pressed={favoriteIds.includes(image.id)}
+                            aria-label={
+                              favoriteIds.includes(image.id)
+                                ? 'Remove from favorites'
+                                : 'Add to favorites'
+                            }
+                          >
+                            {favoriteIds.includes(image.id) ? (
+                              <IconHeartFilled size={16} />
+                            ) : (
+                              <IconHeart size={16} />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className={`thumb-action ${
+                              activeSet.thumbnailFileId === image.id ? 'is-active' : ''
+                            }`}
+                            onClick={() => handleSetThumbnail(activeSet.id, image.id)}
+                            disabled={isSaving || activeSet.thumbnailFileId === image.id}
+                            aria-label="Use as thumbnail"
+                          >
+                            <IconPhotoStar size={16} />
+                          </button>
+                        </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty">No sample yet. Refresh to build a preview.</p>
+                )}
+                <button
+                  className="ghost load-more"
+                  onClick={handleLoadMoreSample}
+                  disabled={isLoadingSample}
+                >
+                  {isLoadingSample
+                    ? totalImagesKnown !== undefined
+                      ? `Loading... (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
+                      : 'Loading images...'
+                    : totalImagesKnown !== undefined
+                      ? sampleImages.length > 0
+                        ? `Load more images (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
+                        : `Load images (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
+                      : sampleImages.length > 0
+                        ? `Load more images (+${samplePendingExtra})`
+                        : `Load images (+${samplePendingExtra})`}
+                </button>
+                <button
+                  className="ghost load-more"
+                  onClick={handleLoadAllSample}
+                  disabled={isLoadingSample}
+                >
+                  {isLoadingSample
+                    ? totalImagesKnown !== undefined
+                      ? `Loading all ${totalImagesKnown}...`
+                      : 'Loading all images...'
+                    : totalImagesKnown !== undefined
+                      ? `Load all remaining ${Math.max(
+                          0,
+                          totalImagesKnown - sampleImages.length
+                        )}`
+                      : 'Load all remaining'}
+                </button>
+              </div>
+            ) : null}
+              {setViewerTab === 'favorites' ? (
+                <div className="stack">
+                  {isLoadingSample && favoriteImages.length === 0 ? (
+                    <p className="empty">Loading favorites…</p>
+                  ) : null}
+                  {favoriteImages.length > 0 ? (
+                    <div className="image-grid image-grid--zoom image-grid--filled">
+                      {favoriteImages.map((image) => (
+                        <div key={image.id} className="image-tile">
+                          <button
+                            type="button"
+                            className="image-button"
+                            onClick={() => openModal(image.id, favoriteImages, 'Favorites')}
+                          >
+                            <ImageThumb
+                              isConnected={isConnected}
+                              fileId={image.id}
+                              alt={activeSet.name}
+                              size={THUMB_SIZE}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            className={`thumb-action thumb-action--favorite ${
+                              favoriteIds.includes(image.id) ? 'is-active' : ''
+                            }`}
+                            onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
+                            aria-pressed={favoriteIds.includes(image.id)}
+                            aria-label={
+                              favoriteIds.includes(image.id)
+                                ? 'Remove from favorites'
+                                : 'Add to favorites'
+                            }
+                          >
+                            {favoriteIds.includes(image.id) ? (
+                              <IconHeartFilled size={16} />
+                            ) : (
+                              <IconHeart size={16} />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className={`thumb-action ${
+                              activeSet.thumbnailFileId === image.id ? 'is-active' : ''
+                            }`}
+                            onClick={() => handleSetThumbnail(activeSet.id, image.id)}
+                            disabled={isSaving || activeSet.thumbnailFileId === image.id}
+                            aria-label="Use as thumbnail"
+                          >
+                            <IconPhotoStar size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="empty">No favorites yet.</p>
+                  )}
+                </div>
+              ) : null}
+              {setViewerTab === 'all' ? (
+                <div className="stack">
+                  <div className="image-grid image-grid--zoom" ref={allGridRef}>
+                    {activeImages.map((image) => (
                       <div key={image.id} className="image-tile">
                         <button
                           type="button"
                           className="image-button"
-                          onClick={() => openModal(image.id, sampleImages, 'Sample')}
+                          onClick={() => openModal(image.id, activeImages, 'Set')}
                         >
                           <ImageThumb
                             isConnected={isConnected}
@@ -2105,192 +3013,55 @@ export default function App() {
                         </button>
                       </div>
                     ))}
+                    {!isLoadingImages && activeImages.length === 0 ? (
+                      totalImagesKnown === 0 ? (
+                        <p className="empty">No images found in this set.</p>
+                      ) : (
+                        <p className="empty">
+                          No images loaded yet. Use the load buttons below.
+                        </p>
+                      )
+                    ) : null}
                   </div>
-                ) : (
-                  <p className="empty">No sample yet. Refresh to build a preview.</p>
-                )}
-              </div>
-              <div key={activeSet.id} className="field-group">
-                <label className="field">
-                  <span>Name</span>
-                  <input
-                    type="text"
-                    defaultValue={activeSet.name}
-                    onBlur={(event) =>
-                      handleUpdateSet(activeSet.id, {
-                        name: event.target.value.trim() || activeSet.name,
-                      })
-                    }
-                  />
-                </label>
-                <label className="field">
-                  <span>Tags</span>
-                  <input
-                    type="text"
-                    defaultValue={activeSet.tags.join(', ')}
-                    onBlur={(event) =>
-                      handleUpdateSet(activeSet.id, { tags: normalizeTags(event.target.value) })
-                    }
-                  />
-                </label>
-              </div>
-              <div className="stack">
-                {isLoadingImages ? (
-                  <p className="empty">
-                    Loading images… {activeImages.length}/{totalImages} loaded
-                  </p>
+                  {pendingExtra > 0 ? (
+                    <button
+                      className="ghost load-more"
+                      onClick={handleLoadMoreImages}
+                      disabled={isLoadingMore}
+                    >
+                      {isLoadingMore
+                        ? totalImagesKnown !== undefined
+                          ? `Loading... (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
+                          : 'Loading images...'
+                        : totalImagesKnown !== undefined
+                          ? activeImages.length > 0
+                            ? `Load more images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
+                      : `Load images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
+                    : activeImages.length > 0
+                      ? `Load more images (+${allPageSize})`
+                      : `Load images (+${allPageSize})`}
+                  </button>
                 ) : null}
-                {imageLoadStatus ? <p className="muted">{imageLoadStatus}</p> : null}
-                {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
-                {favoriteImages.length > 0 ? (
-                  <div className="stack">
-                    <p className="muted">Favorites</p>
-                    <div className="image-grid image-grid--zoom image-grid--filled">
-                      {favoriteImages.map((image) => (
-                        <div key={image.id} className="image-tile">
-                          <button
-                            type="button"
-                            className="image-button"
-                          onClick={() => openModal(image.id, favoriteImages, 'Favorites')}
-                          >
-                            <ImageThumb
-                              isConnected={isConnected}
-                              fileId={image.id}
-                              alt={activeSet.name}
-                              size={THUMB_SIZE}
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            className={`thumb-action thumb-action--favorite ${
-                              favoriteIds.includes(image.id) ? 'is-active' : ''
-                            }`}
-                            onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
-                            aria-pressed={favoriteIds.includes(image.id)}
-                            aria-label={
-                              favoriteIds.includes(image.id)
-                                ? 'Remove from favorites'
-                                : 'Add to favorites'
-                            }
-                          >
-                            {favoriteIds.includes(image.id) ? (
-                              <IconHeartFilled size={16} />
-                            ) : (
-                              <IconHeart size={16} />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            className={`thumb-action ${
-                              activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                            }`}
-                            onClick={() => handleSetThumbnail(activeSet.id, image.id)}
-                            disabled={
-                              isSaving || activeSet.thumbnailFileId === image.id
-                            }
-                            aria-label="Use as thumbnail"
-                          >
-                            <IconPhotoStar size={16} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                <div className="image-grid image-grid--zoom">
-                  {activeImages.map((image) => (
-                    <div key={image.id} className="image-tile">
-                      <button
-                        type="button"
-                        className="image-button"
-                        onClick={() => openModal(image.id, activeImages, 'Set')}
-                      >
-                        <ImageThumb
-                          isConnected={isConnected}
-                          fileId={image.id}
-                          alt={activeSet.name}
-                          size={THUMB_SIZE}
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        className={`thumb-action thumb-action--favorite ${
-                          favoriteIds.includes(image.id) ? 'is-active' : ''
-                        }`}
-                        onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
-                        aria-pressed={favoriteIds.includes(image.id)}
-                        aria-label={
-                          favoriteIds.includes(image.id)
-                            ? 'Remove from favorites'
-                            : 'Add to favorites'
-                        }
-                      >
-                        {favoriteIds.includes(image.id) ? (
-                          <IconHeartFilled size={16} />
-                        ) : (
-                          <IconHeart size={16} />
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        className={`thumb-action ${
-                          activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                        }`}
-                        onClick={() => handleSetThumbnail(activeSet.id, image.id)}
-                        disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                        aria-label="Use as thumbnail"
-                      >
-                        <IconPhotoStar size={16} />
-                      </button>
-                    </div>
-                  ))}
-                  {!isLoadingImages && activeImages.length === 0 ? (
-                    totalImagesKnown === 0 ? (
-                      <p className="empty">No images found in this set.</p>
-                    ) : (
-                      <p className="empty">
-                        No images loaded yet. Use the load buttons below.
-                      </p>
-                    )
+                  {remainingImages !== undefined && remainingImages > 0 ? (
+                    <button
+                      className="ghost load-more"
+                      onClick={handleLoadAllPreloaded}
+                      disabled={isLoadingMore}
+                    >
+                      {isLoadingMore
+                        ? `Loading all ${totalImages}...`
+                        : `Load all remaining ${remainingImages}`}
+                    </button>
                   ) : null}
                 </div>
-                {pendingExtra > 0 ? (
-                  <button
-                    className="ghost load-more"
-                    onClick={handleLoadMoreImages}
-                    disabled={isLoadingMore}
-                  >
-                    {isLoadingMore
-                      ? totalImagesKnown !== undefined
-                        ? `Loading... (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                        : 'Loading images...'
-                      : totalImagesKnown !== undefined
-                        ? activeImages.length > 0
-                          ? `Load more images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                          : `Load images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                        : activeImages.length > 0
-                          ? `Load more images (+${IMAGE_PAGE_SIZE})`
-                          : `Load images (+${IMAGE_PAGE_SIZE})`}
-                  </button>
-                ) : null}
-                {remainingImages !== undefined && remainingImages > 0 ? (
-                  <button
-                    className="ghost load-more"
-                    onClick={handleLoadAllPreloaded}
-                    disabled={isLoadingMore}
-                  >
-                    {isLoadingMore
-                      ? `Loading all ${totalImages}...`
-                      : `Load all remaining ${remainingImages}`}
-                  </button>
-                ) : null}
-              </div>
+              ) : null}
             </div>
           ) : (
             <p className="empty">Select a set above to view images.</p>
           )}
         </div>
       </section>
+      ) : null}
       {modalImage ? (
         <div className="modal" onClick={closeModal}>
           <div
@@ -2315,7 +3086,7 @@ export default function App() {
                 className={`modal-favorite ${
                   favoriteIds.includes(modalImage.id) ? 'is-active' : ''
                 }`}
-                onClick={() => toggleFavoriteImage(activeSet.id, modalImage.id)}
+                onClick={toggleFavoriteFromModal}
                 aria-pressed={favoriteIds.includes(modalImage.id)}
                 aria-label={
                   favoriteIds.includes(modalImage.id)
@@ -2330,6 +3101,19 @@ export default function App() {
                 )}
               </button>
             ) : null}
+            {modalFavoritePulse ? (
+              <div
+                className={`modal-favorite-pop ${
+                  modalFavoritePulse === 'add' ? 'is-add' : 'is-remove'
+                }`}
+              >
+                {modalFavoritePulse === 'add' ? (
+                  <IconHeartFilled size={1} />
+                ) : (
+                  <IconHeart size={1} />
+                )}
+              </div>
+            ) : null}
             <div
               className={`modal-media ${modalZoom > 1 ? 'is-zoomed' : ''}`}
               style={{
@@ -2338,17 +3122,20 @@ export default function App() {
             >
               <img
                 className="modal-thumb"
+                key={`thumb-${modalImage.id}`}
                 src={createProxyThumbUrl(modalImage.id, THUMB_SIZE)}
                 alt={modalImage.name}
               />
               <img
-                className={`modal-full ${isModalLoaded ? 'is-loaded' : ''}`}
-                src={createProxyMediaUrl(modalImage.id)}
+                className={`modal-full ${
+                  modalFullImageId === modalImage.id ? 'is-loaded' : ''
+                } ${modalFullAnimate ? 'is-animate' : ''}`}
+                key={`full-${modalImage.id}`}
+                src={modalFullSrc ?? undefined}
                 alt={modalImage.name}
-                onLoad={() => setIsModalLoaded(true)}
               />
             </div>
-            <div className={`modal-status ${!isModalLoaded ? 'is-visible' : ''}`}>
+            <div className={`modal-status ${modalIsLoading ? 'is-visible' : ''}`}>
               <div className={`modal-status-inner ${modalPulse ? 'pulse' : ''}`}>
                 <IconLoader2 size={20} />
                 <span>Loading image</span>
@@ -2357,7 +3144,9 @@ export default function App() {
             {modalContextLabel && modalIndex !== null ? (
               <div className="modal-counter">
                 {modalContextLabel} {modalIndex + 1}/{modalItems.length}
-                {modalContextLabel === 'Set' ? ` [${totalImages}]` : ''}
+                {modalContextLabel === 'Set' || modalContextLabel === 'Sample'
+                  ? ` [${totalImages}]`
+                  : ''}
               </div>
             ) : null}
             <div className="modal-hint">

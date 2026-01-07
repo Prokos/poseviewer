@@ -7,6 +7,7 @@ import {
   IconDotsVertical,
   IconHeart,
   IconHeartFilled,
+  IconTimeline,
   IconLoader2,
   IconFolder,
   IconPhoto,
@@ -403,6 +404,7 @@ export default function App() {
   const [modalFullSrc, setModalFullSrc] = useState<string | null>(null);
   const [modalFullImageId, setModalFullImageId] = useState<string | null>(null);
   const [modalFullAnimate, setModalFullAnimate] = useState(false);
+  const [modalLoadKey, setModalLoadKey] = useState(0);
   const [modalZoom, setModalZoom] = useState(1);
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
   const [modalControlsVisible, setModalControlsVisible] = useState(true);
@@ -410,6 +412,7 @@ export default function App() {
     null
   );
   const [modalSwipeProgress, setModalSwipeProgress] = useState(0);
+  const [modalHasHistory, setModalHasHistory] = useState(false);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
   const isPanningRef = useRef(false);
@@ -425,11 +428,18 @@ export default function App() {
   const modalPrefetchCacheRef = useRef<Map<string, string>>(new Map());
   const modalFullCacheRef = useRef<Map<string, string>>(new Map());
   const modalFullCacheMax = 6;
+  const modalHistoryRef = useRef<{
+    items: DriveImage[];
+    label: string;
+    imageId: string | null;
+    index: number | null;
+  } | null>(null);
   const sampleGridRef = useRef<HTMLDivElement | null>(null);
   const allGridRef = useRef<HTMLDivElement | null>(null);
   const sampleHistoryRef = useRef<DriveImage[]>([]);
   const sampleHistorySetRef = useRef<string | null>(null);
   const sampleAppendInFlightRef = useRef(false);
+  const nonFavoriteAppendInFlightRef = useRef(false);
   const nonFavoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const metadataSaveTimeoutRef = useRef<number | null>(null);
   const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
@@ -1883,6 +1893,90 @@ export default function App() {
     }
   }, [activeSet, isConnected, resolveSetImages]);
 
+  const applyModalContext = useCallback(
+    (snapshot: {
+      items: DriveImage[];
+      label: string;
+      imageId: string | null;
+      index: number | null;
+    }) => {
+      setModalItems(snapshot.items);
+      modalItemsLengthRef.current = snapshot.items.length;
+      setModalContextLabel(snapshot.label);
+      setModalImageId(snapshot.imageId);
+      setModalIndex(snapshot.index);
+      setModalFullSrc(null);
+      setModalFullImageId(null);
+      setModalFullAnimate(false);
+      setModalLoadKey((key) => key + 1);
+      triggerModalPulse();
+    },
+    []
+  );
+
+  const openModalChronologicalContext = useCallback(async () => {
+    if (!activeSet || !modalImageId || modalContextLabel === 'Set') {
+      return;
+    }
+    modalHistoryRef.current = {
+      items: modalItems,
+      label: modalContextLabel,
+      imageId: modalImageId,
+      index: modalIndex,
+    };
+    setModalHasHistory(true);
+    setError('');
+    try {
+      const images = await resolveSetImages(activeSet, true);
+      if (images.length === 0) {
+        return;
+      }
+      const index = images.findIndex((image) => image.id === modalImageId);
+      if (index < 0) {
+        return;
+      }
+      const preload = 10;
+      const end = Math.min(images.length, index + preload + 1);
+      const nextLimit = Math.max(end, allPageSize);
+      setImageLimit(nextLimit);
+      setActiveImages(images.slice(0, nextLimit));
+      setFavoriteImages(filterFavorites(images, activeSet.favoriteImageIds ?? []));
+      applyModalContext({
+        items: images.slice(0, nextLimit),
+        label: 'Set',
+        imageId: modalImageId,
+        index,
+      });
+    } catch (loadError) {
+      setError((loadError as Error).message);
+    }
+  }, [
+    activeSet,
+    allPageSize,
+    applyModalContext,
+    modalContextLabel,
+    modalImageId,
+    modalIndex,
+    modalItems,
+    resolveSetImages,
+  ]);
+
+  const restoreModalContext = useCallback(() => {
+    if (!modalHistoryRef.current) {
+      return;
+    }
+    const current = {
+      items: modalItems,
+      label: modalContextLabel,
+      imageId: modalImageId,
+      index: modalIndex,
+    };
+    const previous = modalHistoryRef.current;
+    modalHistoryRef.current = current;
+    setModalHasHistory(true);
+    applyModalContext(previous);
+  }, [applyModalContext, modalContextLabel, modalImageId, modalIndex, modalItems]);
+
   const handleLoadMoreImages = async () => {
     if (!activeSet) {
       return;
@@ -2076,6 +2170,8 @@ export default function App() {
     setModalFullAnimate(false);
     setModalZoom(1);
     setModalPan({ x: 0, y: 0 });
+    modalHistoryRef.current = null;
+    setModalHasHistory(false);
     sampleHistoryRef.current = [];
     sampleHistorySetRef.current = null;
     sampleAppendInFlightRef.current = false;
@@ -2283,6 +2379,67 @@ export default function App() {
           });
         return;
       }
+      if (modalContextLabel === 'Non favorites' && activeSet) {
+        if (nonFavoriteAppendInFlightRef.current) {
+          return;
+        }
+        nonFavoriteAppendInFlightRef.current = true;
+        (async () => {
+          const source =
+            readImageListCache(activeSet.id) ??
+            (await resolveSetImages(activeSet, true));
+          if (!source || source.length === 0) {
+            return;
+          }
+          const nonFavorites = filterNonFavorites(
+            source,
+            activeSet.favoriteImageIds ?? []
+          );
+          if (nonFavorites.length === 0) {
+            return;
+          }
+          const nextBatch = pickNextNonFavorites(
+            activeSet.id,
+            nonFavorites,
+            samplePageSize
+          );
+          if (nextBatch.length === 0) {
+            return;
+          }
+          const existingIds = new Set(modalItems.map((item) => item.id));
+          const deduped = nextBatch.filter((item) => !existingIds.has(item.id));
+          if (deduped.length === 0) {
+            return;
+          }
+          const updated = [...modalItems, ...deduped];
+          setModalItems(updated);
+          modalItemsLengthRef.current = updated.length;
+          setNonFavoriteImages((current) => {
+            const existingIds = new Set(current.map((item) => item.id));
+            const merged = [...current];
+            for (const item of deduped) {
+              if (!existingIds.has(item.id)) {
+                merged.push(item);
+              }
+            }
+            return merged;
+          });
+          const nextIndex = updated.length - deduped.length;
+          setModalFullSrc(null);
+          setModalFullImageId(null);
+          setModalFullAnimate(false);
+          setModalImageId(updated[nextIndex]?.id ?? null);
+          setModalIndex(updated[nextIndex]?.id ? nextIndex : null);
+          triggerModalPulse();
+        })()
+          .catch((error) => {
+            setError((error as Error).message);
+          })
+          .finally(() => {
+            nonFavoriteAppendInFlightRef.current = false;
+          });
+        return;
+      }
       if (
         modalContextLabel === 'Set' &&
         remainingImages !== undefined &&
@@ -2345,6 +2502,13 @@ export default function App() {
       if (event.key.toLowerCase() === 'f') {
         toggleFavoriteFromModal();
       }
+      if (event.key.toLowerCase() === 'c') {
+        if (modalContextLabel === 'Set' && modalHasHistory) {
+          restoreModalContext();
+        } else if (activeSet && modalContextLabel !== 'Set') {
+          openModalChronologicalContext();
+        }
+      }
       if (event.key === 'Escape') {
         closeModal();
       }
@@ -2366,6 +2530,11 @@ export default function App() {
     goPrevImage,
     modalImageId,
     modalIndex,
+    modalContextLabel,
+    modalHasHistory,
+    openModalChronologicalContext,
+    restoreModalContext,
+    activeSet,
     toggleFavoriteFromModal,
   ]);
 
@@ -2458,7 +2627,7 @@ export default function App() {
         setError((loadError as Error).message);
         setModalIsLoading(false);
       });
-  }, [fetchImageBlob, modalImageId, storeModalFullCache]);
+  }, [fetchImageBlob, modalImageId, modalLoadKey, storeModalFullCache]);
 
   useEffect(() => {
     if (modalIndex === null || modalIndex < 0 || modalItems.length === 0) {
@@ -2532,7 +2701,6 @@ export default function App() {
     modalPendingAdvanceRef.current = false;
     setModalImageId(nextImage.id);
     setModalIndex(previousLength);
-    setIsModalLoaded(false);
     triggerModalPulse();
   }, [activeImages, modalContextLabel, modalItems.length]);
 
@@ -3491,24 +3659,24 @@ export default function App() {
                           ? `Load more images (+${nonFavoritesPendingExtra})`
                           : `Load images (+${nonFavoritesPendingExtra})`}
                   </button>
-                  <button
-                    className="ghost load-more"
-                    onClick={handleLoadAllNonFavorites}
-                    disabled={isLoadingNonFavorites}
-                  >
-                    {isLoadingNonFavorites
-                      ? nonFavoritesCount !== undefined
-                        ? `Loading all ${nonFavoritesCount}...`
-                        : 'Loading all images...'
-                      : nonFavoritesCount !== undefined
-                        ? `Load all remaining ${Math.max(
-                            0,
-                            nonFavoritesCount - nonFavoriteImages.length
-                          )}`
-                        : 'Load all remaining'}
-                  </button>
-                </div>
-              ) : null}
+                <button
+                  className="ghost load-more"
+                  onClick={handleLoadAllNonFavorites}
+                  disabled={isLoadingNonFavorites}
+                >
+                  {isLoadingNonFavorites
+                    ? nonFavoritesCount !== undefined
+                      ? `Loading all ${nonFavoritesCount}...`
+                      : 'Loading all images...'
+                    : nonFavoritesCount !== undefined
+                      ? `Load all remaining ${Math.max(
+                          0,
+                          nonFavoritesCount - nonFavoriteImages.length
+                        )} • ${nonFavoriteImages.length}/${nonFavoritesCount}`
+                      : 'Load all remaining'}
+                </button>
+              </div>
+            ) : null}
               {setViewerTab === 'favorites' ? (
                 <div className="stack">
                   {isLoadingSample && favoriteImages.length === 0 ? (
@@ -3682,9 +3850,30 @@ export default function App() {
             onTouchEnd={handleModalTouchEnd}
             onTouchCancel={handleModalTouchEnd}
           >
-            <button type="button" className="modal-close" onClick={closeModal}>
-              Close
-            </button>
+            <div className="modal-controls-right">
+              {modalContextLabel === 'Set' && modalHasHistory ? (
+                <button
+                  type="button"
+                  className="modal-context"
+                  onClick={restoreModalContext}
+                  aria-label="Back to previous list"
+                >
+                  <IconArrowLeft size={18} />
+                </button>
+              ) : activeSet ? (
+                <button
+                  type="button"
+                  className="modal-context"
+                  onClick={openModalChronologicalContext}
+                  aria-label="View in chronological order"
+                >
+                  <IconTimeline size={18} />
+                </button>
+              ) : null}
+              <button type="button" className="modal-close" onClick={closeModal}>
+                Close
+              </button>
+            </div>
             {activeSet ? (
               <button
                 type="button"
@@ -3751,7 +3940,9 @@ export default function App() {
                 {modalContextLabel} {modalIndex + 1}/{modalItems.length}
                 {modalContextLabel === 'Set' || modalContextLabel === 'Sample'
                   ? ` [${totalImages}]`
-                  : ''}
+                  : modalContextLabel === 'Non favorites' && nonFavoritesCount !== undefined
+                    ? ` [${nonFavoritesCount}]`
+                    : ''}
               </div>
             ) : null}
             {modalSwipeAction ? (

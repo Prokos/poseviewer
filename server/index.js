@@ -25,9 +25,46 @@ const TOKEN_CACHE_PATH = path.join(CACHE_DIR, 'oauth.json');
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SIZE = 320;
 const MAX_SIZE = 1600;
+const MAX_MEDIA_CONCURRENCY = Number(process.env.MEDIA_CONCURRENCY ?? 6);
+const MEDIA_TIMEOUT_MS = Number(process.env.MEDIA_TIMEOUT_MS ?? 20000);
 
 await fs.mkdir(THUMB_CACHE_DIR, { recursive: true });
 await fs.mkdir(MEDIA_CACHE_DIR, { recursive: true });
+
+function createSemaphore(limit) {
+  let active = 0;
+  const queue = [];
+  const acquire = () =>
+    new Promise((resolve) => {
+      if (active < limit) {
+        active += 1;
+        resolve();
+        return;
+      }
+      queue.push(resolve);
+    });
+  const release = () => {
+    active = Math.max(0, active - 1);
+    const next = queue.shift();
+    if (next) {
+      active += 1;
+      next();
+    }
+  };
+  return { acquire, release };
+}
+
+const mediaSemaphore = createSemaphore(MAX_MEDIA_CONCURRENCY);
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function clampSize(value) {
   if (!Number.isFinite(value)) {
@@ -271,13 +308,33 @@ app.get('/api/media/:fileId', async (req, res) => {
   }
 
   try {
+    await mediaSemaphore.acquire();
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
+    let response;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        response = await fetchWithTimeout(
+          url,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          },
+          MEDIA_TIMEOUT_MS
+        );
+        break;
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError' && attempt === 0) {
+          continue;
+        }
+        throw error;
+      }
+    }
 
+    if (!response) {
+      res.status(504).send('Upstream timeout');
+      return;
+    }
     if (!response.ok) {
       const text = await response.text();
       res.status(response.status).send(text);
@@ -295,6 +352,8 @@ app.get('/api/media/:fileId', async (req, res) => {
     res.type(contentType).send(buffer);
   } catch (error) {
     res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
+  } finally {
+    mediaSemaphore.release();
   }
 });
 

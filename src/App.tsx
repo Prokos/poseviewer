@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   IconArrowDown,
+  IconArrowLeft,
+  IconArrowRight,
   IconArrowUp,
   IconDotsVertical,
   IconHeart,
@@ -23,9 +25,11 @@ import {
 import {
   createPoseSet,
   emptyMetadata,
+  getMetadataInfo,
   loadMetadata,
-  saveMetadata,
+  saveMetadataWithInfo,
   type MetadataDocument,
+  type MetadataInfo,
   type PoseSet,
 } from './metadata';
 import type { DriveImage } from './drive/types';
@@ -39,6 +43,7 @@ const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
 const METADATA_CACHE_KEY = 'poseviewer-metadata-cache';
 const METADATA_CACHE_TIME_KEY = 'poseviewer-metadata-cache-ts';
 const METADATA_CACHE_ROOT_KEY = 'poseviewer-metadata-root';
+const METADATA_DIRTY_KEY = 'poseviewer-metadata-dirty';
 const IMAGE_LIST_CACHE_TTL = 24 * 60 * 60 * 1000;
 const IMAGE_LIST_CACHE_PREFIX = 'poseviewer-set-images:v2:';
 const IMAGE_LIST_CACHE_TIME_PREFIX = 'poseviewer-set-images-ts:v2:';
@@ -126,6 +131,42 @@ function filterFavorites(images: DriveImage[], favoriteIds: string[]) {
   return images.filter((image) => favorites.has(image.id));
 }
 
+function filterNonFavorites(images: DriveImage[], favoriteIds: string[]) {
+  if (favoriteIds.length === 0) {
+    return images;
+  }
+  const favorites = new Set(favoriteIds);
+  return images.filter((image) => !favorites.has(image.id));
+}
+
+function mergeMetadata(local: MetadataDocument, remote: MetadataDocument): MetadataDocument {
+  const localMap = new Map(local.sets.map((set) => [set.id, set]));
+  const merged = remote.sets.map((remoteSet) => {
+    const localSet = localMap.get(remoteSet.id);
+    if (!localSet) {
+      return remoteSet;
+    }
+    localMap.delete(remoteSet.id);
+    const localUpdated = localSet.updatedAt ?? 0;
+    const remoteUpdated = remoteSet.updatedAt ?? 0;
+    if (localUpdated === remoteUpdated) {
+      return { ...remoteSet, ...localSet };
+    }
+    return localUpdated > remoteUpdated ? localSet : remoteSet;
+  });
+  for (const set of localMap.values()) {
+    merged.push(set);
+  }
+  return { version: 1, sets: merged };
+}
+
+type MetadataCache = {
+  fileId: string | null;
+  data: MetadataDocument;
+  md5Checksum?: string;
+  modifiedTime?: string;
+};
+
 function readMetadataCache(rootId: string, options?: { allowStale?: boolean }) {
   const cacheRoot = localStorage.getItem(METADATA_CACHE_ROOT_KEY);
   const cacheTs = localStorage.getItem(METADATA_CACHE_TIME_KEY);
@@ -143,7 +184,7 @@ function readMetadataCache(rootId: string, options?: { allowStale?: boolean }) {
     }
   }
   try {
-    return JSON.parse(cacheData) as { fileId: string | null; data: MetadataDocument };
+    return JSON.parse(cacheData) as MetadataCache;
   } catch {
     return null;
   }
@@ -152,7 +193,8 @@ function readMetadataCache(rootId: string, options?: { allowStale?: boolean }) {
 function writeMetadataCache(
   rootId: string,
   fileId: string | null,
-  data: MetadataDocument
+  data: MetadataDocument,
+  info?: Pick<MetadataInfo, 'md5Checksum' | 'modifiedTime'>
 ) {
   localStorage.setItem(METADATA_CACHE_ROOT_KEY, rootId);
   localStorage.setItem(METADATA_CACHE_TIME_KEY, String(Date.now()));
@@ -161,8 +203,18 @@ function writeMetadataCache(
     JSON.stringify({
       fileId,
       data,
+      md5Checksum: info?.md5Checksum,
+      modifiedTime: info?.modifiedTime,
     })
   );
+}
+
+function readMetadataDirtyFlag() {
+  return localStorage.getItem(METADATA_DIRTY_KEY) === 'true';
+}
+
+function writeMetadataDirtyFlag(value: boolean) {
+  localStorage.setItem(METADATA_DIRTY_KEY, value ? 'true' : 'false');
 }
 
 function readImageListCache(setId: string) {
@@ -295,6 +347,8 @@ export default function App() {
   );
   const [metadata, setMetadata] = useState<MetadataDocument>(emptyMetadata());
   const [metadataFileId, setMetadataFileId] = useState<string | null>(null);
+  const [metadataInfo, setMetadataInfo] = useState<MetadataInfo>({ fileId: null });
+  const [metadataDirty, setMetadataDirty] = useState(readMetadataDirtyFlag());
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanCount, setScanCount] = useState(0);
@@ -321,7 +375,9 @@ export default function App() {
   const [activeImages, setActiveImages] = useState<DriveImage[]>([]);
   const [isLoadingImages, setIsLoadingImages] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [setViewerTab, setSetViewerTab] = useState<'samples' | 'favorites' | 'all'>('samples');
+  const [setViewerTab, setSetViewerTab] = useState<
+    'samples' | 'favorites' | 'nonfavorites' | 'all'
+  >('samples');
   const [sampleColumns, setSampleColumns] = useState(1);
   const [allColumns, setAllColumns] = useState(1);
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
@@ -329,7 +385,9 @@ export default function App() {
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [previewIndexProgress, setPreviewIndexProgress] = useState('');
   const [sampleImages, setSampleImages] = useState<DriveImage[]>([]);
+  const [nonFavoriteImages, setNonFavoriteImages] = useState<DriveImage[]>([]);
   const [isLoadingSample, setIsLoadingSample] = useState(false);
+  const [isLoadingNonFavorites, setIsLoadingNonFavorites] = useState(false);
   const [imageLoadStatus, setImageLoadStatus] = useState('');
   const [viewerIndexProgress, setViewerIndexProgress] = useState('');
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
@@ -347,6 +405,11 @@ export default function App() {
   const [modalFullAnimate, setModalFullAnimate] = useState(false);
   const [modalZoom, setModalZoom] = useState(1);
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
+  const [modalControlsVisible, setModalControlsVisible] = useState(true);
+  const [modalSwipeAction, setModalSwipeAction] = useState<null | 'close' | 'favorite'>(
+    null
+  );
+  const [modalSwipeProgress, setModalSwipeProgress] = useState(0);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
   const isPanningRef = useRef(false);
@@ -355,6 +418,7 @@ export default function App() {
   const modalItemsLengthRef = useRef(0);
   const modalPulseTimeout = useRef<number | null>(null);
   const modalFavoritePulseTimeout = useRef<number | null>(null);
+  const modalControlsTimeoutRef = useRef<number | null>(null);
   const modalFullAbortRef = useRef<AbortController | null>(null);
   const modalFullUrlRef = useRef<string | null>(null);
   const modalPrefetchAbortRef = useRef<Map<string, AbortController>>(new Map());
@@ -366,6 +430,7 @@ export default function App() {
   const sampleHistoryRef = useRef<DriveImage[]>([]);
   const sampleHistorySetRef = useRef<string | null>(null);
   const sampleAppendInFlightRef = useRef(false);
+  const nonFavoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const metadataSaveTimeoutRef = useRef<number | null>(null);
   const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
   const pendingSaveResolveRef = useRef<(() => void) | null>(null);
@@ -379,9 +444,18 @@ export default function App() {
   const prefetchedThumbsRef = useRef<Set<string>>(new Set());
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const touchLastRef = useRef<{ x: number; y: number } | null>(null);
-  const pinchStartRef = useRef<{ distance: number; zoom: number } | null>(null);
+  const pinchStartRef = useRef<{
+    distance: number;
+    zoom: number;
+    pointerX: number;
+    pointerY: number;
+    panX: number;
+    panY: number;
+  } | null>(null);
   const oneHandZoomRef = useRef<{ startY: number; zoom: number } | null>(null);
+  const oneHandZoomMovedRef = useRef(false);
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const lastDoubleTapRef = useRef(0);
   const touchMovedRef = useRef(false);
   const prebuiltIndexRef = useRef<{
     folderId: string;
@@ -394,6 +468,8 @@ export default function App() {
   const allPageSize = Math.max(1, Math.ceil(IMAGE_PAGE_SIZE / allColumns) * allColumns);
   const metadataRef = useRef<MetadataDocument>(metadata);
   const metadataFileIdRef = useRef<string | null>(metadataFileId);
+  const metadataInfoRef = useRef<MetadataInfo>(metadataInfo);
+  const metadataDirtyRef = useRef(metadataDirty);
   const updateQueueRef = useRef(Promise.resolve());
 
   const filteredFolders = useMemo(() => {
@@ -597,6 +673,37 @@ export default function App() {
     };
   }, [checkAuthStatus]);
 
+  const applyMetadataSnapshot = useCallback(
+    (
+      snapshot: {
+        data: MetadataDocument;
+        fileId: string | null;
+        md5Checksum?: string;
+        modifiedTime?: string;
+      },
+      options?: { preserveDirty?: boolean }
+    ) => {
+      setMetadata(snapshot.data);
+      setMetadataFileId(snapshot.fileId);
+      setMetadataInfo({
+        fileId: snapshot.fileId,
+        md5Checksum: snapshot.md5Checksum,
+        modifiedTime: snapshot.modifiedTime,
+      });
+      metadataLoadedRef.current = true;
+      if (!options?.preserveDirty) {
+        setMetadataDirty(false);
+      }
+      if (rootId) {
+        writeMetadataCache(rootId, snapshot.fileId, snapshot.data, {
+          md5Checksum: snapshot.md5Checksum,
+          modifiedTime: snapshot.modifiedTime,
+        });
+      }
+    },
+    [rootId]
+  );
+
   const handleFetchMetadata = useCallback(async () => {
     if (!isConnected || !rootId) {
       return;
@@ -605,18 +712,38 @@ export default function App() {
     setError('');
 
     try {
-      const meta = await loadMetadata(rootId);
+      const remoteInfo = await getMetadataInfo(rootId);
+      if (!remoteInfo.fileId) {
+        if (metadataRef.current.sets.length > 0) {
+          const saved = await saveMetadataWithInfo(
+            rootId,
+            metadataFileIdRef.current,
+            metadataRef.current
+          );
+          applyMetadataSnapshot({ data: metadataRef.current, ...saved });
+        }
+        return;
+      }
 
-      setMetadata(meta.data);
-      setMetadataFileId(meta.fileId);
-      metadataLoadedRef.current = true;
-      writeMetadataCache(rootId, meta.fileId, meta.data);
+      const cachedMd5 = metadataInfoRef.current.md5Checksum;
+      if (cachedMd5 && remoteInfo.md5Checksum && cachedMd5 === remoteInfo.md5Checksum) {
+        return;
+      }
+
+      const remote = await loadMetadata(rootId);
+      if (metadataDirtyRef.current) {
+        const merged = mergeMetadata(metadataRef.current, remote.data);
+        const saved = await saveMetadataWithInfo(rootId, remote.fileId, merged);
+        applyMetadataSnapshot({ data: merged, ...saved });
+      } else {
+        applyMetadataSnapshot(remote);
+      }
     } catch (loadError) {
       setError((loadError as Error).message);
     } finally {
       setIsLoadingMetadata(false);
     }
-  }, [isConnected, rootId]);
+  }, [applyMetadataSnapshot, isConnected, rootId]);
 
   const handleScan = useCallback(async () => {
     if (!isConnected || !rootId) {
@@ -630,8 +757,11 @@ export default function App() {
 
     try {
       const meta = await loadMetadata(rootId);
-      const excludeIds = new Set(meta.data.sets.map((set) => set.rootFolderId));
-      const excludePaths = meta.data.sets.map((set) => set.rootPath);
+      const base = metadataDirtyRef.current
+        ? mergeMetadata(metadataRef.current, meta.data)
+        : meta.data;
+      const excludeIds = new Set(base.sets.map((set) => set.rootFolderId));
+      const excludePaths = base.sets.map((set) => set.rootPath);
       const ignoreIds = new Set(hiddenFolders.map((folder) => folder.id));
       const ignorePaths = hiddenFolders.map((folder) => folder.path);
       const folders = await listFolderPaths(rootId, {
@@ -646,15 +776,18 @@ export default function App() {
         },
       });
       setFolderPaths(folders);
-      setMetadata(meta.data);
-      setMetadataFileId(meta.fileId);
-      writeMetadataCache(rootId, meta.fileId, meta.data);
+      if (metadataDirtyRef.current) {
+        const saved = await saveMetadataWithInfo(rootId, meta.fileId, base);
+        applyMetadataSnapshot({ data: base, ...saved });
+      } else {
+        applyMetadataSnapshot(meta);
+      }
     } catch (scanError) {
       setError((scanError as Error).message);
     } finally {
       setIsScanning(false);
     }
-  }, [hiddenFolders, isConnected, rootId]);
+  }, [applyMetadataSnapshot, hiddenFolders, isConnected, rootId]);
 
   useEffect(() => {
     if (!rootId) {
@@ -663,19 +796,47 @@ export default function App() {
 
     const cached = readMetadataCache(rootId, { allowStale: !isConnected });
     if (cached) {
-      setMetadata(cached.data);
-      setMetadataFileId(cached.fileId);
-      metadataLoadedRef.current = true;
+      applyMetadataSnapshot(
+        {
+          data: cached.data,
+          fileId: cached.fileId,
+          md5Checksum: cached.md5Checksum,
+          modifiedTime: cached.modifiedTime,
+        },
+        { preserveDirty: readMetadataDirtyFlag() }
+      );
     }
 
     if (!isConnected) {
       return;
     }
 
-    if (!cached) {
-      void handleFetchMetadata();
-    }
-  }, [handleFetchMetadata, isConnected, rootId]);
+    const checkRemote = async () => {
+      if (!cached) {
+        await handleFetchMetadata();
+        return;
+      }
+      const remoteInfo = await getMetadataInfo(rootId);
+      if (!remoteInfo.fileId) {
+        return;
+      }
+      const cachedMd5 = cached.md5Checksum;
+      if (cachedMd5 && remoteInfo.md5Checksum && cachedMd5 === remoteInfo.md5Checksum) {
+        return;
+      }
+      const remote = await loadMetadata(rootId);
+      if (metadataDirtyRef.current) {
+        const merged = mergeMetadata(metadataRef.current, remote.data);
+        const saved = await saveMetadataWithInfo(rootId, remote.fileId, merged);
+        applyMetadataSnapshot({ data: merged, ...saved });
+      } else {
+        applyMetadataSnapshot(remote);
+      }
+    };
+    void checkRemote().catch((loadError) => {
+      setError((loadError as Error).message);
+    });
+  }, [applyMetadataSnapshot, handleFetchMetadata, isConnected, rootId]);
 
   useEffect(() => {
     if (activeSet) {
@@ -684,7 +845,21 @@ export default function App() {
   }, [activeSet?.id]);
 
   useEffect(() => {
+    if (!activeSet) {
+      return;
+    }
+    setNonFavoriteImages((current) =>
+      filterNonFavorites(current, activeSet.favoriteImageIds ?? [])
+    );
+  }, [activeSet?.favoriteImageIds, activeSet?.id]);
+
+  useEffect(() => {
     if (setViewerTab !== 'all' || !activeSet || isLoadingImages || isLoadingMore) {
+      return;
+    }
+    if (activeImages.length === 0) {
+      setImageLimit(allPageSize);
+      void loadSetImages(activeSet, allPageSize, true);
       return;
     }
     if (allColumns <= 1 || activeImages.length === 0) {
@@ -717,6 +892,15 @@ export default function App() {
   useEffect(() => {
     metadataFileIdRef.current = metadataFileId;
   }, [metadataFileId]);
+
+  useEffect(() => {
+    metadataInfoRef.current = metadataInfo;
+  }, [metadataInfo]);
+
+  useEffect(() => {
+    metadataDirtyRef.current = metadataDirty;
+    writeMetadataDirtyFlag(metadataDirty);
+  }, [metadataDirty]);
 
   useEffect(() => {
     const readColumns = (element: HTMLDivElement | null) => {
@@ -922,10 +1106,10 @@ export default function App() {
         sets: [...metadata.sets, next],
       };
 
-      const newFileId = await saveMetadata(rootId, metadataFileId, updated);
-      setMetadataFileId(newFileId);
       setMetadata(updated);
-      writeMetadataCache(rootId, newFileId, updated);
+      setMetadataDirty(true);
+      const saved = await saveMetadataWithInfo(rootId, metadataFileId, updated);
+      applyMetadataSnapshot({ data: updated, ...saved });
       await handleOpenSet(next);
     } catch (saveError) {
       setError((saveError as Error).message);
@@ -940,18 +1124,28 @@ export default function App() {
       return;
     }
 
+    const updateWithTimestamp: Partial<PoseSet> = {
+      ...update,
+      updatedAt: update.updatedAt ?? Date.now(),
+    };
+
     if (activeSet?.id === setId) {
-      setActiveSet((current) => (current ? { ...current, ...update } : current));
+      setActiveSet((current) =>
+        current ? { ...current, ...updateWithTimestamp } : current
+      );
     }
 
     const base = metadataRef.current;
     const updated: MetadataDocument = {
       version: 1,
-      sets: base.sets.map((set) => (set.id === setId ? { ...set, ...update } : set)),
+      sets: base.sets.map((set) =>
+        set.id === setId ? { ...set, ...updateWithTimestamp } : set
+      ),
     };
 
     metadataRef.current = updated;
     setMetadata(updated);
+    setMetadataDirty(true);
 
     if (!pendingSavePromiseRef.current) {
       pendingSavePromiseRef.current = new Promise<void>((resolve) => {
@@ -969,14 +1163,13 @@ export default function App() {
         setIsSaving(true);
         setError('');
         try {
-          const newFileId = await saveMetadata(
+          const saved = await saveMetadataWithInfo(
             rootId,
             metadataFileIdRef.current,
             metadataRef.current
           );
-          metadataFileIdRef.current = newFileId;
-          setMetadataFileId(newFileId);
-          writeMetadataCache(rootId, newFileId, metadataRef.current);
+          metadataFileIdRef.current = saved.fileId ?? null;
+          applyMetadataSnapshot({ data: metadataRef.current, ...saved });
         } catch (saveError) {
           setError((saveError as Error).message);
         } finally {
@@ -1034,6 +1227,34 @@ export default function App() {
         seen.add(image.id);
       }
       sampleSeenRef.current.set(setId, seen);
+      return sample;
+    },
+    []
+  );
+
+  const pickNextNonFavorites = useCallback(
+    (setId: string, images: DriveImage[], count: number) => {
+      if (images.length === 0) {
+        nonFavoriteSeenRef.current.set(setId, new Set());
+        return [];
+      }
+      const seen = nonFavoriteSeenRef.current.get(setId) ?? new Set<string>();
+      const availableIds = new Set(images.map((image) => image.id));
+      for (const id of seen) {
+        if (!availableIds.has(id)) {
+          seen.delete(id);
+        }
+      }
+      if (seen.size >= images.length) {
+        seen.clear();
+      }
+      const unseen = images.filter((image) => !seen.has(image.id));
+      const pool = unseen.length > 0 ? unseen : images;
+      const sample = pickRandom(pool, Math.min(count, pool.length));
+      for (const image of sample) {
+        seen.add(image.id);
+      }
+      nonFavoriteSeenRef.current.set(setId, seen);
       return sample;
     },
     []
@@ -1203,10 +1424,10 @@ export default function App() {
     setIsSaving(true);
     setError('');
     try {
-      const newFileId = await saveMetadata(rootId, metadataFileId, updated);
-      setMetadataFileId(newFileId);
       setMetadata(updated);
-      writeMetadataCache(rootId, newFileId, updated);
+      setMetadataDirty(true);
+      const saved = await saveMetadataWithInfo(rootId, metadataFileId, updated);
+      applyMetadataSnapshot({ data: updated, ...saved });
       if (activeSet?.id === setToDelete.id) {
         setActiveSet(null);
         setActiveImages([]);
@@ -1501,9 +1722,54 @@ export default function App() {
     [activeSet, isConnected, pickNextSample, resolveSetImages]
   );
 
+  const loadNonFavoriteBatch = useCallback(
+    async (count: number) => {
+      if (!activeSet || !isConnected || count <= 0) {
+        return;
+      }
+      setIsLoadingNonFavorites(true);
+      setViewerIndexProgress('Loading images…');
+      try {
+        const images = await resolveSetImages(activeSet, true);
+        const nonFavorites = filterNonFavorites(
+          images,
+          activeSet.favoriteImageIds ?? []
+        );
+        if (nonFavorites.length === 0) {
+          setNonFavoriteImages([]);
+          return;
+        }
+        const nextBatch = pickNextNonFavorites(activeSet.id, nonFavorites, count);
+        if (nextBatch.length === 0) {
+          return;
+        }
+        setNonFavoriteImages((current) => {
+          const existingIds = new Set(current.map((item) => item.id));
+          const merged = [...current];
+          for (const item of nextBatch) {
+            if (!existingIds.has(item.id)) {
+              merged.push(item);
+            }
+          }
+          return merged;
+        });
+      } catch (loadError) {
+        setError((loadError as Error).message);
+      } finally {
+        setIsLoadingNonFavorites(false);
+        setViewerIndexProgress('');
+      }
+    },
+    [activeSet, isConnected, pickNextNonFavorites, resolveSetImages]
+  );
+
   const handleLoadMoreSample = useCallback(async () => {
     await loadSampleBatch(samplePageSize);
   }, [loadSampleBatch, samplePageSize]);
+
+  const handleLoadMoreNonFavorites = useCallback(async () => {
+    await loadNonFavoriteBatch(samplePageSize);
+  }, [loadNonFavoriteBatch, samplePageSize]);
 
   useEffect(() => {
     if (setViewerTab !== 'samples' || !activeSet || isLoadingSample) {
@@ -1527,6 +1793,40 @@ export default function App() {
     setViewerTab,
   ]);
 
+  useEffect(() => {
+    if (setViewerTab !== 'nonfavorites' || !activeSet || isLoadingNonFavorites) {
+      return;
+    }
+    if (nonFavoriteImages.length === 0) {
+      void loadNonFavoriteBatch(samplePageSize);
+      return;
+    }
+    if (sampleColumns <= 1 || nonFavoriteImages.length === 0) {
+      return;
+    }
+    const remainder = nonFavoriteImages.length % sampleColumns;
+    if (remainder === 0) {
+      return;
+    }
+    const fill = sampleColumns - remainder;
+    void loadNonFavoriteBatch(fill);
+  }, [
+    activeSet,
+    isLoadingNonFavorites,
+    loadNonFavoriteBatch,
+    nonFavoriteImages.length,
+    sampleColumns,
+    setViewerTab,
+  ]);
+
+  useEffect(() => {
+    if (setViewerTab !== 'nonfavorites' || !activeSet) {
+      return;
+    }
+    nonFavoriteSeenRef.current.set(activeSet.id, new Set());
+    setNonFavoriteImages([]);
+  }, [activeSet?.id, setViewerTab]);
+
   const handleLoadAllSample = useCallback(async () => {
     if (!activeSet || !isConnected) {
       return;
@@ -1549,6 +1849,36 @@ export default function App() {
       setError((loadError as Error).message);
     } finally {
       setIsLoadingSample(false);
+      setViewerIndexProgress('');
+    }
+  }, [activeSet, isConnected, resolveSetImages]);
+
+  const handleLoadAllNonFavorites = useCallback(async () => {
+    if (!activeSet || !isConnected) {
+      return;
+    }
+    setIsLoadingNonFavorites(true);
+    setViewerIndexProgress('Loading images…');
+    try {
+      const images = await resolveSetImages(activeSet, true);
+      const nonFavorites = filterNonFavorites(
+        images,
+        activeSet.favoriteImageIds ?? []
+      );
+      if (nonFavorites.length === 0) {
+        setNonFavoriteImages([]);
+        return;
+      }
+      const shuffled = shuffleItems(nonFavorites);
+      setNonFavoriteImages(shuffled);
+      nonFavoriteSeenRef.current.set(
+        activeSet.id,
+        new Set(shuffled.map((image) => image.id))
+      );
+    } catch (loadError) {
+      setError((loadError as Error).message);
+    } finally {
+      setIsLoadingNonFavorites(false);
       setViewerIndexProgress('');
     }
   }, [activeSet, isConnected, resolveSetImages]);
@@ -1646,6 +1976,8 @@ export default function App() {
       : allPageSize;
   const favoritesCount = activeSet?.favoriteImageIds?.length ?? 0;
   const allImagesCount = totalImagesKnown ?? activeImages.length;
+  const nonFavoritesCount =
+    totalImagesKnown !== undefined ? Math.max(0, totalImagesKnown - favoritesCount) : undefined;
   const sampleRemaining =
     totalImagesKnown !== undefined
       ? Math.max(0, totalImagesKnown - sampleImages.length)
@@ -1654,9 +1986,23 @@ export default function App() {
     sampleRemaining !== undefined
       ? Math.max(0, Math.min(samplePageSize, sampleRemaining))
       : samplePageSize;
+  const nonFavoritesRemaining =
+    nonFavoritesCount !== undefined
+      ? Math.max(0, nonFavoritesCount - nonFavoriteImages.length)
+      : undefined;
+  const nonFavoritesPendingExtra =
+    nonFavoritesRemaining !== undefined
+      ? Math.max(0, Math.min(samplePageSize, nonFavoritesRemaining))
+      : samplePageSize;
+  const canGoPrevModal = modalIndex !== null && modalIndex > 0;
+  const canGoNextModal =
+    modalIndex !== null &&
+    (modalIndex < modalItems.length - 1 ||
+      (modalContextLabel === 'Set' && !!remainingImages) ||
+      (modalContextLabel === 'Sample' && !!activeSet));
 
   const handleSetViewerTab = useCallback(
-    (tab: 'samples' | 'favorites' | 'all') => {
+    (tab: 'samples' | 'favorites' | 'nonfavorites' | 'all') => {
       setSetViewerTab(tab);
       if (tab === 'all' && activeSet && activeImages.length === 0 && !isLoadingImages) {
         setImageLimit(allPageSize);
@@ -1666,7 +2012,37 @@ export default function App() {
     [activeImages.length, activeSet, allPageSize, isLoadingImages]
   );
 
+  const scheduleModalControlsHide = useCallback(() => {
+    setModalControlsVisible(true);
+    if (modalControlsTimeoutRef.current) {
+      window.clearTimeout(modalControlsTimeoutRef.current);
+    }
+    modalControlsTimeoutRef.current = window.setTimeout(() => {
+      setModalControlsVisible(false);
+    }, 2000);
+  }, []);
+
+  const requestViewerFullscreen = () => {
+    if (document.fullscreenElement) {
+      return;
+    }
+    document.documentElement.requestFullscreen().catch(() => {
+      // Ignore fullscreen failures (unsupported or user gesture blocked).
+    });
+  };
+
+  const exitViewerFullscreen = () => {
+    if (!document.fullscreenElement) {
+      return;
+    }
+    document.exitFullscreen().catch(() => {
+      // Ignore fullscreen exit failures.
+    });
+  };
+
   const openModal = (imageId: string, items: DriveImage[], label: string) => {
+    requestViewerFullscreen();
+    scheduleModalControlsHide();
     const index = items.findIndex((image) => image.id === imageId);
     setModalItems(items);
     modalItemsLengthRef.current = items.length;
@@ -1730,6 +2106,11 @@ export default function App() {
     modalPrefetchCacheRef.current.clear();
     modalFullCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
     modalFullCacheRef.current.clear();
+    if (modalControlsTimeoutRef.current) {
+      window.clearTimeout(modalControlsTimeoutRef.current);
+      modalControlsTimeoutRef.current = null;
+    }
+    exitViewerFullscreen();
   };
 
   const triggerModalPulse = () => {
@@ -1996,6 +2377,9 @@ export default function App() {
       if (modalFavoritePulseTimeout.current) {
         window.clearTimeout(modalFavoritePulseTimeout.current);
       }
+      if (modalControlsTimeoutRef.current) {
+        window.clearTimeout(modalControlsTimeoutRef.current);
+      }
       modalPrefetchAbortRef.current.forEach((controller) => controller.abort());
       modalPrefetchAbortRef.current.clear();
       modalPrefetchCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
@@ -2013,8 +2397,9 @@ export default function App() {
     if (modalImageId) {
       setModalZoom(1);
       setModalPan({ x: 0, y: 0 });
+      scheduleModalControlsHide();
     }
-  }, [modalImageId, storeModalFullCache]);
+  }, [modalImageId, scheduleModalControlsHide, storeModalFullCache]);
 
   useEffect(() => {
     if (!modalImageId) {
@@ -2153,6 +2538,7 @@ export default function App() {
 
   const handleModalWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
+    scheduleModalControlsHide();
     const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
     const nextZoom = Math.min(4, Math.max(1, modalZoom * zoomFactor));
     if (nextZoom === modalZoom) {
@@ -2180,6 +2566,7 @@ export default function App() {
   };
 
   const handleModalPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    scheduleModalControlsHide();
     if (event.button !== 0 || modalZoom <= 1) {
       return;
     }
@@ -2199,6 +2586,7 @@ export default function App() {
   };
 
   const handleModalPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    scheduleModalControlsHide();
     if (!isPanningRef.current) {
       return;
     }
@@ -2219,6 +2607,13 @@ export default function App() {
   };
 
   const handleModalTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    scheduleModalControlsHide();
+    setModalSwipeAction(null);
+    setModalSwipeProgress(0);
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button')) {
+      return;
+    }
     if (event.touches.length === 1) {
       const touch = event.touches[0];
       if (!touch) {
@@ -2228,14 +2623,11 @@ export default function App() {
       const lastTap = lastTapRef.current;
       if (lastTap) {
         const dt = now - lastTap.time;
-        const dx = touch.clientX - lastTap.x;
-        const dy = touch.clientY - lastTap.y;
-        if (dt < 300 && Math.hypot(dx, dy) < 24) {
+        if (dt < 300) {
           event.preventDefault();
+          lastDoubleTapRef.current = now;
           oneHandZoomRef.current = { startY: touch.clientY, zoom: modalZoom };
-          if (modalZoom <= 1) {
-            setModalZoom(1.2);
-          }
+          oneHandZoomMovedRef.current = false;
           touchStartRef.current = null;
           touchLastRef.current = null;
           lastTapRef.current = null;
@@ -2253,20 +2645,40 @@ export default function App() {
       }
       const dx = second.clientX - first.clientX;
       const dy = second.clientY - first.clientY;
-      pinchStartRef.current = { distance: Math.hypot(dx, dy), zoom: modalZoom };
+      const rect = event.currentTarget.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const midX = (first.clientX + second.clientX) / 2;
+      const midY = (first.clientY + second.clientY) / 2;
+      pinchStartRef.current = {
+        distance: Math.hypot(dx, dy),
+        zoom: modalZoom,
+        pointerX: midX - centerX,
+        pointerY: midY - centerY,
+        panX: modalPan.x,
+        panY: modalPan.y,
+      };
       touchStartRef.current = null;
       touchLastRef.current = null;
     }
   };
 
   const handleModalTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    scheduleModalControlsHide();
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button')) {
+      return;
+    }
     if (event.touches.length === 1 && oneHandZoomRef.current) {
       event.preventDefault();
       const touch = event.touches[0];
       if (!touch) {
         return;
       }
-      const deltaY = oneHandZoomRef.current.startY - touch.clientY;
+      const deltaY = touch.clientY - oneHandZoomRef.current.startY;
+      if (Math.abs(deltaY) > 2) {
+        oneHandZoomMovedRef.current = true;
+      }
       const nextZoom = Math.min(4, Math.max(1, oneHandZoomRef.current.zoom + deltaY / 200));
       setModalZoom(nextZoom);
       if (nextZoom === 1) {
@@ -2288,10 +2700,23 @@ export default function App() {
         4,
         Math.max(1, (distance / pinchStartRef.current.distance) * pinchStartRef.current.zoom)
       );
-      setModalZoom(nextZoom);
       if (nextZoom === 1) {
         setModalPan({ x: 0, y: 0 });
+        setModalZoom(1);
+        return;
       }
+      const start = pinchStartRef.current;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const midX = (first.clientX + second.clientX) / 2 - centerX;
+      const midY = (first.clientY + second.clientY) / 2 - centerY;
+      const worldX = (start.pointerX - start.panX) / start.zoom;
+      const worldY = (start.pointerY - start.panY) / start.zoom;
+      const nextPanX = midX - worldX * nextZoom;
+      const nextPanY = midY - worldY * nextZoom;
+      setModalZoom(nextZoom);
+      setModalPan({ x: nextPanX, y: nextPanY });
       return;
     }
 
@@ -2303,6 +2728,20 @@ export default function App() {
       if (touchStartRef.current) {
         const dx = touch.clientX - touchStartRef.current.x;
         const dy = touch.clientY - touchStartRef.current.y;
+        if (modalZoom <= 1.05) {
+          const absX = Math.abs(dx);
+          const absY = Math.abs(dy);
+          const hintThreshold = 20;
+          const commitThreshold = 80;
+          if (absY > absX && absY > hintThreshold) {
+            const action = dy < 0 ? 'close' : 'favorite';
+            setModalSwipeAction(action);
+            setModalSwipeProgress(Math.min(1, absY / commitThreshold));
+          } else if (modalSwipeAction) {
+            setModalSwipeAction(null);
+            setModalSwipeProgress(0);
+          }
+        }
         if (Math.hypot(dx, dy) > 10) {
           touchMovedRef.current = true;
         }
@@ -2326,7 +2765,13 @@ export default function App() {
       return;
     }
     if (oneHandZoomRef.current) {
+      const shouldReset = !oneHandZoomMovedRef.current;
       oneHandZoomRef.current = null;
+      oneHandZoomMovedRef.current = false;
+      if (shouldReset) {
+        setModalZoom(1);
+        setModalPan({ x: 0, y: 0 });
+      }
       return;
     }
     if (!touchStartRef.current || !touchLastRef.current) {
@@ -2349,11 +2794,15 @@ export default function App() {
       }
     } else if (dy < -verticalThreshold && modalZoom <= 1.05) {
       closeModal();
+    } else if (dy > verticalThreshold && modalZoom <= 1.05) {
+      toggleFavoriteFromModal();
     }
 
     if (!touchMovedRef.current && absX < 6 && absY < 6) {
       lastTapRef.current = { time: Date.now(), x: touchStartRef.current.x, y: touchStartRef.current.y };
     }
+    setModalSwipeAction(null);
+    setModalSwipeProgress(0);
     touchStartRef.current = null;
     touchLastRef.current = null;
     touchMovedRef.current = false;
@@ -2363,39 +2812,43 @@ export default function App() {
   return (
     <div className={`app ${isLoadingMetadata ? 'app--loading' : ''}`}>
       <header className="topbar">
-        <div className="topbar-left">
-          <div className="title">Pose Viewer</div>
-          <div className="nav-tabs">
-            <button
-              type="button"
-              className={`nav-tab ${page === 'overview' ? 'is-active' : ''}`}
-              onClick={() => setPage('overview')}
-            >
-              Sets
-            </button>
-            <button
-              type="button"
-              className={`nav-tab ${page === 'create' ? 'is-active' : ''}`}
-              onClick={() => setPage('create')}
-            >
-              Create
-            </button>
-            {activeSet ? (
-              <button
-                type="button"
-                className={`nav-tab ${page === 'set' ? 'is-active' : ''}`}
-                onClick={() => setPage('set')}
-              >
-                Viewer
-              </button>
-            ) : null}
-          </div>
-        </div>
+        <button
+          type="button"
+          className="title topbar-title"
+          onClick={() => setPage('overview')}
+        >
+          Pose Viewer
+        </button>
         <div className="auth-chip">
           <button className="chip-button" onClick={handleConnect}>
             {isConnected ? 'Reconnect' : 'Connect'}
           </button>
           {isConnected ? <span className="chip-status">Connected</span> : null}
+        </div>
+        <div className="nav-tabs">
+          <button
+            type="button"
+            className={`nav-tab ${page === 'overview' ? 'is-active' : ''}`}
+            onClick={() => setPage('overview')}
+          >
+            Sets
+          </button>
+          <button
+            type="button"
+            className={`nav-tab ${page === 'create' ? 'is-active' : ''}`}
+            onClick={() => setPage('create')}
+          >
+            Create
+          </button>
+          {activeSet ? (
+            <button
+              type="button"
+              className={`nav-tab ${page === 'set' ? 'is-active' : ''}`}
+              onClick={() => setPage('set')}
+            >
+              Viewer
+            </button>
+          ) : null}
         </div>
       </header>
       {isLoadingMetadata ? (
@@ -2737,17 +3190,46 @@ export default function App() {
                   </span>
                 </div>
                 <div className="viewer-title-stack">
-                  <input
-                    className="viewer-title-input"
-                    type="text"
-                    key={activeSet.id}
-                    defaultValue={activeSet.name}
-                    onBlur={(event) =>
-                      handleUpdateSet(activeSet.id, {
-                        name: event.target.value.trim() || activeSet.name,
-                      })
-                    }
-                  />
+                  <div className="viewer-title-bar">
+                    <input
+                      className="viewer-title-input"
+                      type="text"
+                      key={activeSet.id}
+                      defaultValue={activeSet.name}
+                      onBlur={(event) =>
+                        handleUpdateSet(activeSet.id, {
+                          name: event.target.value.trim() || activeSet.name,
+                        })
+                      }
+                    />
+                    <div className="viewer-actions">
+                      <div className="viewer-menu">
+                        <button
+                          type="button"
+                          className="ghost viewer-menu-trigger"
+                          aria-label="Set actions"
+                        >
+                          <IconDotsVertical size={18} />
+                        </button>
+                        <div className="viewer-menu-panel">
+                          <button
+                            className="ghost"
+                            onClick={() => handleRefreshSet(activeSet)}
+                            disabled={isRefreshingSet}
+                          >
+                            {isRefreshingSet ? 'Refreshing…' : 'Refresh data'}
+                          </button>
+                          <button
+                            className="ghost ghost--danger"
+                            onClick={() => handleDeleteSet(activeSet)}
+                            disabled={isSaving}
+                          >
+                            Delete set
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                   <div className="viewer-meta-inline">
                     <IconFolder size={16} />
                     <a
@@ -2799,31 +3281,6 @@ export default function App() {
               <h2>Set viewer</h2>
             )}
           </div>
-          {activeSet ? (
-            <div className="viewer-actions">
-              <div className="viewer-menu">
-                <button type="button" className="ghost viewer-menu-trigger" aria-label="Set actions">
-                  <IconDotsVertical size={18} />
-                </button>
-                <div className="viewer-menu-panel">
-                  <button
-                    className="ghost"
-                    onClick={() => handleRefreshSet(activeSet)}
-                    disabled={isRefreshingSet}
-                  >
-                    {isRefreshingSet ? 'Refreshing…' : 'Refresh data'}
-                  </button>
-                  <button
-                    className="ghost ghost--danger"
-                    onClick={() => handleDeleteSet(activeSet)}
-                    disabled={isSaving}
-                  >
-                    Delete set
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : null}
         </div>
         <div className="panel-body">
           {activeSet ? (
@@ -2842,6 +3299,13 @@ export default function App() {
                   onClick={() => handleSetViewerTab('favorites')}
                 >
                   Favorites ({favoritesCount})
+                </button>
+                <button
+                  type="button"
+                  className={`subtab ${setViewerTab === 'nonfavorites' ? 'is-active' : ''}`}
+                  onClick={() => handleSetViewerTab('nonfavorites')}
+                >
+                  Non favorites{nonFavoritesCount !== undefined ? ` (${nonFavoritesCount})` : ''}
                 </button>
                 <button
                   type="button"
@@ -2946,7 +3410,105 @@ export default function App() {
                       : 'Load all remaining'}
                 </button>
               </div>
-            ) : null}
+              ) : null}
+              {setViewerTab === 'nonfavorites' ? (
+                <div className="preview">
+                  {isLoadingNonFavorites ? (
+                    <div className="stack">
+                      <p className="empty">Loading images…</p>
+                      {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+                    </div>
+                  ) : viewerIndexProgress ? (
+                    <p className="muted">{viewerIndexProgress}</p>
+                  ) : nonFavoriteImages.length > 0 ? (
+                    <div className="image-grid image-grid--zoom" ref={sampleGridRef}>
+                      {nonFavoriteImages.map((image) => (
+                        <div key={image.id} className="image-tile">
+                          <button
+                            type="button"
+                            className="image-button"
+                            onClick={() =>
+                              openModal(image.id, nonFavoriteImages, 'Non favorites')
+                            }
+                          >
+                            <ImageThumb
+                              isConnected={isConnected}
+                              fileId={image.id}
+                              alt={activeSet.name}
+                              size={THUMB_SIZE}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            className={`thumb-action thumb-action--favorite ${
+                              favoriteIds.includes(image.id) ? 'is-active' : ''
+                            }`}
+                            onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
+                            aria-pressed={favoriteIds.includes(image.id)}
+                            aria-label={
+                              favoriteIds.includes(image.id)
+                                ? 'Remove from favorites'
+                                : 'Add to favorites'
+                            }
+                          >
+                            {favoriteIds.includes(image.id) ? (
+                              <IconHeartFilled size={16} />
+                            ) : (
+                              <IconHeart size={16} />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className={`thumb-action ${
+                              activeSet.thumbnailFileId === image.id ? 'is-active' : ''
+                            }`}
+                            onClick={() => handleSetThumbnail(activeSet.id, image.id)}
+                            disabled={isSaving || activeSet.thumbnailFileId === image.id}
+                            aria-label="Use as thumbnail"
+                          >
+                            <IconPhotoStar size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="empty">No non-favorites yet.</p>
+                  )}
+                  <button
+                    className="ghost load-more"
+                    onClick={handleLoadMoreNonFavorites}
+                    disabled={isLoadingNonFavorites}
+                  >
+                    {isLoadingNonFavorites
+                      ? nonFavoritesCount !== undefined
+                        ? `Loading... (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
+                        : 'Loading images...'
+                      : nonFavoritesCount !== undefined
+                        ? nonFavoriteImages.length > 0
+                          ? `Load more images (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
+                          : `Load images (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
+                        : nonFavoriteImages.length > 0
+                          ? `Load more images (+${nonFavoritesPendingExtra})`
+                          : `Load images (+${nonFavoritesPendingExtra})`}
+                  </button>
+                  <button
+                    className="ghost load-more"
+                    onClick={handleLoadAllNonFavorites}
+                    disabled={isLoadingNonFavorites}
+                  >
+                    {isLoadingNonFavorites
+                      ? nonFavoritesCount !== undefined
+                        ? `Loading all ${nonFavoritesCount}...`
+                        : 'Loading all images...'
+                      : nonFavoritesCount !== undefined
+                        ? `Load all remaining ${Math.max(
+                            0,
+                            nonFavoritesCount - nonFavoriteImages.length
+                          )}`
+                        : 'Load all remaining'}
+                  </button>
+                </div>
+              ) : null}
               {setViewerTab === 'favorites' ? (
                 <div className="stack">
                   {isLoadingSample && favoriteImages.length === 0 ? (
@@ -3107,13 +3669,14 @@ export default function App() {
       {modalImage ? (
         <div className="modal" onClick={closeModal}>
           <div
-            className="modal-content"
+            className={`modal-content ${modalControlsVisible ? '' : 'is-controls-hidden'}`}
             onClick={(event) => event.stopPropagation()}
             onWheel={handleModalWheel}
             onPointerDown={handleModalPointerDown}
             onPointerMove={handleModalPointerMove}
             onPointerUp={handleModalPointerUp}
             onPointerCancel={handleModalPointerUp}
+            onMouseMove={scheduleModalControlsHide}
             onTouchStart={handleModalTouchStart}
             onTouchMove={handleModalTouchMove}
             onTouchEnd={handleModalTouchEnd}
@@ -3191,10 +3754,36 @@ export default function App() {
                   : ''}
               </div>
             ) : null}
-            <div className="modal-hint">
-              {modalZoom > 1 ? 'Drag to pan • ' : ''}
-              Scroll to zoom • Use ← → to navigate
-            </div>
+            {modalSwipeAction ? (
+              <div
+                className={`modal-swipe-hint ${
+                  modalSwipeAction === 'close' ? 'is-close' : 'is-favorite'
+                }`}
+                style={{ opacity: 0.3 + modalSwipeProgress * 0.7 }}
+              >
+                {modalSwipeAction === 'close' ? 'Release to close' : 'Release to favorite'}
+              </div>
+            ) : null}
+            <button
+              type="button"
+              className="modal-nav modal-nav--prev"
+              onClick={(event) => {
+                event.stopPropagation();
+                goPrevImage();
+              }}
+              disabled={!canGoPrevModal}
+              aria-label="Previous image"
+            />
+            <button
+              type="button"
+              className="modal-nav modal-nav--next"
+              onClick={(event) => {
+                event.stopPropagation();
+                goNextImage();
+              }}
+              disabled={!canGoNextModal}
+              aria-label="Next image"
+            />
           </div>
         </div>
       ) : null}

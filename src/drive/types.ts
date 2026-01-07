@@ -4,6 +4,8 @@ export type DriveFile = {
   mimeType: string;
   parents?: string[];
   thumbnailLink?: string;
+  md5Checksum?: string;
+  modifiedTime?: string;
 };
 
 export type DriveFolder = DriveFile & {

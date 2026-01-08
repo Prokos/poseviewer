@@ -15,6 +15,7 @@ import { appendUniqueImages } from '../utils/imageSampling';
 import { useModalTimer } from '../features/modal/useModalTimer';
 import { useModalMedia } from '../features/modal/useModalMedia';
 import { useModalGestures } from '../features/modal/useModalGestures';
+import { useModalHistory } from '../features/modal/useModalHistory';
 
 type ResolveSetImages = (
   set: PoseSet,
@@ -160,7 +161,6 @@ export function useModalViewer({
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
   const [modalControlsVisible, setModalControlsVisible] = useState(true);
   const [modalShake, setModalShake] = useState(false);
-  const [modalHasHistory, setModalHasHistory] = useState(false);
 
   const modalPendingAdvanceRef = useRef(false);
   const modalItemsLengthRef = useRef(0);
@@ -169,13 +169,6 @@ export function useModalViewer({
   const modalControlsTimeoutRef = useRef<number | null>(null);
   const modalShakeTimeoutRef = useRef<number | null>(null);
   const goNextImageRef = useRef<(options?: { suppressControls?: boolean }) => void>(() => {});
-  const modalHistoryRef = useRef<{
-    items: DriveImage[];
-    label: string;
-    imageId: string | null;
-    index: number | null;
-    contextSetId?: string | null;
-  } | null>(null);
   const sampleHistoryRef = useRef<DriveImage[]>([]);
   const sampleHistorySetRef = useRef<string | null>(null);
   const sampleAppendInFlightRef = useRef(false);
@@ -489,96 +482,29 @@ export function useModalViewer({
     [resetModalMediaState, triggerModalPulse, updateModalItems]
   );
 
-  const openModalChronologicalContext = useCallback(async () => {
-    if (!modalImageId || modalContextLabel === 'Set') {
-      return;
-    }
-    const contextSetId =
-      modalContextLabel === 'Slideshow'
-        ? slideshowImageSetRef.current.get(modalImageId) ?? null
-        : activeSet?.id ?? null;
-    const contextSet = contextSetId ? setsById.get(contextSetId) : null;
-    if (!contextSet) {
-      return;
-    }
-    modalHistoryRef.current = {
-      items: modalItems,
-      label: modalContextLabel,
-      imageId: modalImageId,
-      index: modalIndex,
-      contextSetId: modalContextSetId,
-    };
-    setModalHasHistory(true);
-    setError('');
-    try {
-      const images = await resolveSetImages(contextSet, true);
-      if (images.length === 0) {
-        return;
-      }
-      const index = images.findIndex((image) => image.id === modalImageId);
-      if (index < 0) {
-        return;
-      }
-      const preload = 5;
-      const end = Math.min(images.length, index + preload + 1);
-      const start = Math.max(0, index - preload);
-      const nextLimit = Math.max(end, allPageSize);
-      prefetchThumbs(images.slice(start, end));
-      setImageLimit(nextLimit);
-      setActiveImages(images.slice(0, nextLimit));
-      if (activeSet?.id === contextSet.id) {
-        updateFavoriteImagesFromSource(
-          contextSet.id,
-          images,
-          contextSet.favoriteImageIds ?? [],
-          { keepLength: true }
-        );
-      }
-      applyModalContext({
-        items: images.slice(0, nextLimit),
-        label: 'Set',
-        imageId: modalImageId,
-        index,
-        contextSetId: contextSet.id,
-      });
-    } catch (loadError) {
-      setError((loadError as Error).message);
-    }
-  }, [
+  const {
+    modalHasHistory,
+    openModalChronologicalContext,
+    restoreModalContext,
+    resetModalHistory,
+  } = useModalHistory({
     activeSet,
     allPageSize,
-    applyModalContext,
     modalContextLabel,
     modalContextSetId,
     modalImageId,
     modalIndex,
     modalItems,
-    prefetchThumbs,
+    setsById,
+    slideshowImageSetRef,
     resolveSetImages,
     setActiveImages,
     setError,
     setImageLimit,
-    setsById,
-    slideshowImageSetRef,
+    prefetchThumbs,
     updateFavoriteImagesFromSource,
-  ]);
-
-  const restoreModalContext = useCallback(() => {
-    if (!modalHistoryRef.current) {
-      return;
-    }
-    const current = {
-      items: modalItems,
-      label: modalContextLabel,
-      imageId: modalImageId,
-      index: modalIndex,
-      contextSetId: modalContextSetId,
-    };
-    const previous = modalHistoryRef.current;
-    modalHistoryRef.current = current;
-    setModalHasHistory(true);
-    applyModalContext(previous);
-  }, [applyModalContext, modalContextLabel, modalContextSetId, modalImageId, modalIndex, modalItems]);
+    applyModalContext,
+  });
 
   const openModal = useCallback(
     (imageId: string, items: DriveImage[], label: string) => {
@@ -616,11 +542,13 @@ export function useModalViewer({
     setModalZoom(1);
     setModalPan({ x: 0, y: 0 });
     resetModalTimerState();
-    modalHistoryRef.current = null;
-    setModalHasHistory(false);
+    resetModalHistory();
     sampleHistoryRef.current = [];
     sampleHistorySetRef.current = null;
     sampleAppendInFlightRef.current = false;
+    favoriteAppendInFlightRef.current = false;
+    nonFavoriteAppendInFlightRef.current = false;
+    slideshowAppendInFlightRef.current = false;
     if (modalPulseTimeout.current) {
       window.clearTimeout(modalPulseTimeout.current);
       modalPulseTimeout.current = null;

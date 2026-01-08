@@ -64,38 +64,65 @@ export function useSlideshowState({
     if (!isConnected) {
       return [];
     }
+    const shouldSkipSet = (set: PoseSet) => {
+      const favorites = set.favoriteImageIds?.length ?? 0;
+      if (slideshowFavoriteFilter === 'favorites') {
+        return favorites === 0;
+      }
+      if (slideshowFavoriteFilter === 'nonfavorites') {
+        if (typeof set.imageCount === 'number') {
+          return set.imageCount - favorites <= 0;
+        }
+      }
+      if (typeof set.imageCount === 'number' && set.imageCount <= 0) {
+        return true;
+      }
+      return false;
+    };
+    const setsToLoad = slideshowSets.filter((set) => !shouldSkipSet(set));
     const results: DriveImage[] = [];
     const map = new Map<string, string>();
-    const totalSets = slideshowSets.length;
+    const totalSets = setsToLoad.length;
     let processed = 0;
-    for (const set of slideshowSets) {
+    const queue = [...setsToLoad];
+    const concurrency = Math.min(6, totalSets || 1);
+    const handleSet = async (set: PoseSet) => {
+      const images = await resolveSetImages(set, true, { suppressProgress: true });
+      if (images.length > 0) {
+        if (slideshowFavoriteFilter === 'favorites') {
+          const favorites = set.favoriteImageIds ?? [];
+          const filtered = filterImagesByFavoriteStatus(images, favorites, 'favorites');
+          for (const image of filtered) {
+            map.set(image.id, set.id);
+          }
+          results.push(...filtered);
+        } else if (slideshowFavoriteFilter === 'nonfavorites') {
+          const favorites = set.favoriteImageIds ?? [];
+          const filtered = filterImagesByFavoriteStatus(images, favorites, 'nonfavorites');
+          for (const image of filtered) {
+            map.set(image.id, set.id);
+          }
+          results.push(...filtered);
+        } else {
+          for (const image of images) {
+            map.set(image.id, set.id);
+          }
+          results.push(...images);
+        }
+      }
       processed += 1;
       setViewerIndexProgress(`Loading indexes ${processed}/${totalSets}`);
-      const images = await resolveSetImages(set, true, { suppressProgress: true });
-      if (images.length === 0) {
-        continue;
+    };
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (queue.length > 0) {
+        const set = queue.shift();
+        if (!set) {
+          break;
+        }
+        await handleSet(set);
       }
-      if (slideshowFavoriteFilter === 'favorites') {
-        const favorites = set.favoriteImageIds ?? [];
-        const filtered = filterImagesByFavoriteStatus(images, favorites, 'favorites');
-        for (const image of filtered) {
-          map.set(image.id, set.id);
-        }
-        results.push(...filtered);
-      } else if (slideshowFavoriteFilter === 'nonfavorites') {
-        const favorites = set.favoriteImageIds ?? [];
-        const filtered = filterImagesByFavoriteStatus(images, favorites, 'nonfavorites');
-        for (const image of filtered) {
-          map.set(image.id, set.id);
-        }
-        results.push(...filtered);
-      } else {
-        for (const image of images) {
-          map.set(image.id, set.id);
-        }
-        results.push(...images);
-      }
-    }
+    });
+    await Promise.all(workers);
     slideshowImageSetRef.current = map;
     setViewerIndexProgress('');
     return results;

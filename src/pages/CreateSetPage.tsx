@@ -1,6 +1,7 @@
 import type { FolderPath } from '../drive/scan';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from '../components/ImageThumb';
+import { useModal } from '../features/modal/ModalContext';
 
 type CreateSetPageProps = {
   isConnected: boolean;
@@ -35,7 +36,6 @@ type CreateSetPageProps = {
   onRefreshPreview: () => void;
   onCreateSet: () => void;
   onScanFolders: () => void;
-  onOpenModal: (imageId: string, images: DriveImage[], label: string) => void;
   thumbSize: number;
 };
 
@@ -72,9 +72,9 @@ export function CreateSetPage({
   onRefreshPreview,
   onCreateSet,
   onScanFolders,
-  onOpenModal,
   thumbSize,
 }: CreateSetPageProps) {
+  const { openModal } = useModal();
   return (
     <section className="columns">
       <div className="panel">
@@ -226,7 +226,7 @@ export function CreateSetPage({
                         key={image.id}
                         type="button"
                         className="image-button"
-                        onClick={() => onOpenModal(image.id, previewImages, 'Preview')}
+                        onClick={() => openModal(image.id, previewImages, 'Preview')}
                       >
                         <ImageThumb
                           isConnected={isConnected}

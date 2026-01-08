@@ -40,8 +40,7 @@ import { CreateSetPage } from './pages/CreateSetPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { SlideshowPage } from './pages/SlideshowPage';
 import { SetViewerPage } from './pages/SetViewerPage';
-import { ModalViewer } from './components/ModalViewer';
-import { useModalViewer } from './hooks/useModalViewer';
+import { ModalStateProvider } from './features/modal/ModalStateProvider';
 
 const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
 const IMAGE_PAGE_SIZE = 96;
@@ -2020,7 +2019,7 @@ export default function App() {
     ]
   );
 
-  const { modalState, openModal } = useModalViewer({
+  const modalDeps = {
     activeSet,
     setsById,
     activeImages,
@@ -2049,9 +2048,7 @@ export default function App() {
     slideshowPageSize,
     prefetchThumbs,
     setError,
-  });
-
-  openModalRef.current = openModal;
+  };
 
   const handleLoadMoreSlideshow = useCallback(async () => {
     await loadSlideshowBatch(slideshowPageSize);
@@ -2090,11 +2087,11 @@ export default function App() {
   const handleStartSlideshow = useCallback(async () => {
     setSlideshowStarted(true);
     if (slideshowImages.length > 0) {
-      openModal(slideshowImages[0].id, slideshowImages, 'Slideshow');
+      openModalRef.current(slideshowImages[0].id, slideshowImages, 'Slideshow');
       return;
     }
     await loadSlideshowBatch(slideshowPageSize, { openModal: true });
-  }, [loadSlideshowBatch, openModal, slideshowImages, slideshowPageSize]);
+  }, [loadSlideshowBatch, slideshowImages, slideshowPageSize]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -2116,19 +2113,26 @@ export default function App() {
   }, []);
 
   return (
-    <div className={`app ${isLoadingMetadata ? 'app--loading' : ''}`}>
-      <AppHeader
-        page={page}
-        activeSet={activeSet}
-        isConnected={isConnected}
-        onConnect={handleConnect}
-        onNavigate={setPage}
-      />
-      {isLoadingMetadata ? (
-        <div className="loading-overlay loading-overlay--full">
-          <div className="loading-card">Loading metadata…</div>
-        </div>
-      ) : null}
+    <ModalStateProvider
+      deps={modalDeps}
+      thumbSize={THUMB_SIZE}
+      onOpenModalReady={(modalOpen) => {
+        openModalRef.current = modalOpen;
+      }}
+    >
+      <div className={`app ${isLoadingMetadata ? 'app--loading' : ''}`}>
+        <AppHeader
+          page={page}
+          activeSet={activeSet}
+          isConnected={isConnected}
+          onConnect={handleConnect}
+          onNavigate={setPage}
+        />
+        {isLoadingMetadata ? (
+          <div className="loading-overlay loading-overlay--full">
+            <div className="loading-card">Loading metadata…</div>
+          </div>
+        ) : null}
 
       {page === 'create' ? (
         <CreateSetPage
@@ -2164,7 +2168,6 @@ export default function App() {
           onRefreshPreview={handleRefreshPreview}
           onCreateSet={handleCreateSet}
           onScanFolders={handleScan}
-          onOpenModal={openModal}
           thumbSize={THUMB_SIZE}
         />
       ) : null}
@@ -2208,7 +2211,6 @@ export default function App() {
           slideshowImageSetMap={slideshowImageSetRef.current}
           setsById={setsById}
           onToggleFavoriteImage={toggleFavoriteImage}
-          onOpenModal={openModal}
           thumbSize={THUMB_SIZE}
           onLoadMoreSlideshow={handleLoadMoreSlideshow}
           onLoadMoreClick={handleLoadMoreClick}
@@ -2254,7 +2256,6 @@ export default function App() {
           onLoadAllFavorites={handleLoadAllFavorites}
           onLoadMoreImages={handleLoadMoreImages}
           onLoadAllPreloaded={handleLoadAllPreloaded}
-          onOpenModal={openModal}
           onToggleFavoriteImage={toggleFavoriteImage}
           onSetThumbnail={handleSetThumbnail}
           onUpdateSetName={(value) => {
@@ -2276,19 +2277,19 @@ export default function App() {
         />
       ) : null}
 
-      <ModalViewer {...modalState} thumbSize={THUMB_SIZE} />
-      <ToastStack toasts={toasts} />
-      <ScrollControls
-        canScrollUp={canScrollUp}
-        canScrollDown={canScrollDown}
-        onScrollTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-        onScrollBottom={() =>
-          window.scrollTo({
-            top: document.documentElement.scrollHeight,
-            behavior: 'smooth',
-          })
-        }
-      />
-    </div>
+        <ToastStack toasts={toasts} />
+        <ScrollControls
+          canScrollUp={canScrollUp}
+          canScrollDown={canScrollDown}
+          onScrollTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          onScrollBottom={() =>
+            window.scrollTo({
+              top: document.documentElement.scrollHeight,
+              behavior: 'smooth',
+            })
+          }
+        />
+      </div>
+    </ModalStateProvider>
   );
 }

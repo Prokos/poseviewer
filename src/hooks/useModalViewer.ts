@@ -23,7 +23,7 @@ type LoadSlideshowBatch = (
   options?: { openModal?: boolean }
 ) => Promise<DriveImage[] | void>;
 
-type ModalDeps = {
+export type ModalDeps = {
   activeSet: PoseSet | null;
   setsById: Map<string, PoseSet>;
   activeImages: DriveImage[];

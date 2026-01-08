@@ -3,6 +3,7 @@ import type { MouseEvent } from 'react';
 import type { PoseSet } from '../metadata';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from '../components/ImageThumb';
+import { useModal } from '../features/modal/ModalContext';
 
 type SlideshowPageProps = {
   isConnected: boolean;
@@ -23,7 +24,6 @@ type SlideshowPageProps = {
   slideshowImageSetMap: Map<string, string>;
   setsById: Map<string, PoseSet>;
   onToggleFavoriteImage: (setId: string, imageId: string) => void;
-  onOpenModal: (imageId: string, images: DriveImage[], label: string) => void;
   thumbSize: number;
   onLoadMoreSlideshow: () => void | Promise<void>;
   onLoadMoreClick: (
@@ -51,12 +51,12 @@ export function SlideshowPage({
   slideshowImageSetMap,
   setsById,
   onToggleFavoriteImage,
-  onOpenModal,
   thumbSize,
   onLoadMoreSlideshow,
   onLoadMoreClick,
   slideshowPageSize,
 }: SlideshowPageProps) {
+  const { openModal } = useModal();
   return (
     <section className="panel panel--slideshow">
       <div className="panel-header panel-header--row">
@@ -160,7 +160,7 @@ export function SlideshowPage({
                     <button
                       type="button"
                       className="image-button"
-                      onClick={() => onOpenModal(image.id, slideshowImages, 'Slideshow')}
+                      onClick={() => openModal(image.id, slideshowImages, 'Slideshow')}
                     >
                       <ImageThumb
                         isConnected={isConnected}

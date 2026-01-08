@@ -10,6 +10,7 @@ import type { MouseEvent, RefObject } from 'react';
 import type { PoseSet } from '../metadata';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from '../components/ImageThumb';
+import { useModal } from '../features/modal/ModalContext';
 
 type ViewerQuickTags = {
   active: string[];
@@ -53,7 +54,6 @@ type SetViewerPageProps = {
   onLoadAllFavorites: () => void | Promise<void>;
   onLoadMoreImages: () => void | Promise<void>;
   onLoadAllPreloaded: () => void | Promise<void>;
-  onOpenModal: (imageId: string, images: DriveImage[], label: string) => void;
   onToggleFavoriteImage: (setId: string, imageId: string) => void;
   onSetThumbnail: (setId: string, imageId: string) => void;
   onUpdateSetName: (value: string) => void;
@@ -106,7 +106,6 @@ export function SetViewerPage({
   onLoadAllFavorites,
   onLoadMoreImages,
   onLoadAllPreloaded,
-  onOpenModal,
   onToggleFavoriteImage,
   onSetThumbnail,
   onUpdateSetName,
@@ -119,6 +118,7 @@ export function SetViewerPage({
   allGridRef,
   sectionRef,
 }: SetViewerPageProps) {
+  const { openModal } = useModal();
   const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
   return (
     <section className="panel" ref={sectionRef}>
@@ -294,7 +294,7 @@ export function SetViewerPage({
                         <button
                           type="button"
                           className="image-button"
-                          onClick={() => onOpenModal(image.id, sampleImages, 'Sample')}
+                          onClick={() => openModal(image.id, sampleImages, 'Sample')}
                         >
                           <ImageThumb
                             isConnected={isConnected}
@@ -389,7 +389,7 @@ export function SetViewerPage({
                         <button
                           type="button"
                           className="image-button"
-                          onClick={() => onOpenModal(image.id, nonFavoriteImages, 'Non favorites')}
+                          onClick={() => openModal(image.id, nonFavoriteImages, 'Non favorites')}
                         >
                           <ImageThumb
                             isConnected={isConnected}
@@ -487,7 +487,7 @@ export function SetViewerPage({
                         <button
                           type="button"
                           className="image-button"
-                          onClick={() => onOpenModal(image.id, favoriteImages, 'Favorites')}
+                          onClick={() => openModal(image.id, favoriteImages, 'Favorites')}
                         >
                           <ImageThumb
                             isConnected={isConnected}
@@ -564,7 +564,7 @@ export function SetViewerPage({
                       <button
                         type="button"
                         className="image-button"
-                        onClick={() => onOpenModal(image.id, activeImages, 'Set')}
+                        onClick={() => openModal(image.id, activeImages, 'Set')}
                       >
                         <ImageThumb
                           isConnected={isConnected}

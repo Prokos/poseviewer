@@ -96,7 +96,10 @@ export function ModalViewer() {
             >
               <IconArrowLeft size={18} />
             </button>
-          ) : modalSetId && (modalContextLabel !== 'Set' || viewerSort === 'random') ? (
+          ) : modalSetId &&
+            modalContextLabel !== 'Preview' &&
+            modalContextLabel !== 'Sample' &&
+            (modalContextLabel !== 'Set' || viewerSort === 'random') ? (
             <button
               type="button"
               className="modal-context"

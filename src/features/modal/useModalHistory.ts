@@ -72,6 +72,14 @@ export function useModalHistory({
     if (!modalImageId) {
       return;
     }
+    if (
+      modalContextLabel !== 'Set' &&
+      modalContextLabel !== 'Favorites' &&
+      modalContextLabel !== 'Non favorites' &&
+      modalContextLabel !== 'Slideshow'
+    ) {
+      return;
+    }
     if (modalContextLabel === 'Set' && viewerSort === 'chronological') {
       return;
     }

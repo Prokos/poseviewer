@@ -557,7 +557,7 @@ export function useModalViewer({
         return;
       }
       if (modalContextLabel === 'Set' && modalRemainingImages !== undefined && modalRemainingImages > 0) {
-        if (modalContextSetId && activeSet?.id !== modalContextSetId) {
+        if (modalContextSetId && (modalHasHistory || activeSet?.id !== modalContextSetId)) {
           if (modalPendingAdvanceRef.current) {
             return;
           }
@@ -701,9 +701,17 @@ export function useModalViewer({
         toggleFavoriteFromModal();
       }
       if (event.key.toLowerCase() === 'c') {
-        if (modalContextLabel === 'Set' && modalHasHistory) {
-          restoreModalContext();
-        } else if (activeSet && modalContextLabel !== 'Set') {
+        if (modalContextLabel === 'Set') {
+          if (modalHasHistory) {
+            restoreModalContext();
+          } else if (viewerSort === 'random') {
+            void openModalChronologicalContext();
+          }
+        } else if (
+          modalContextLabel === 'Favorites' ||
+          modalContextLabel === 'Non favorites' ||
+          modalContextLabel === 'Slideshow'
+        ) {
           void openModalChronologicalContext();
         }
       }
@@ -732,6 +740,7 @@ export function useModalViewer({
     openModalChronologicalContext,
     restoreModalContext,
     toggleFavoriteFromModal,
+    viewerSort,
   ]);
 
   useEffect(() => {

@@ -16,6 +16,7 @@ import { useModalMedia } from '../features/modal/useModalMedia';
 import { useModalGestures } from '../features/modal/useModalGestures';
 import { useModalHistory } from '../features/modal/useModalHistory';
 import { useModalDataLoader } from '../features/modal/useModalDataLoader';
+import { useModalState } from '../features/modal/useModalState';
 
 type ResolveSetImages = (
   set: PoseSet,
@@ -430,61 +431,33 @@ export function useModalViewer({
     applyModalContext,
   });
 
-  const openModal = useCallback(
-    (imageId: string, items: DriveImage[], label: string) => {
-      requestViewerFullscreen();
-      scheduleModalControlsHide(true);
-      const index = items.findIndex((image) => image.id === imageId);
-      updateModalItems(items);
-      setModalContextLabel(label);
-      setModalContextSetId(label === 'Set' && activeSet ? activeSet.id : null);
-      resetModalMediaState();
-      if (label === 'Sample' && activeSet) {
-        sampleHistoryRef.current = items;
-        sampleHistorySetRef.current = activeSet.id;
-      } else {
-        sampleHistoryRef.current = [];
-        sampleHistorySetRef.current = null;
-      }
-      setModalImageId(imageId);
-      setModalIndex(index >= 0 ? index : null);
-      triggerModalPulse();
-    },
-    [activeSet, resetModalMediaState, scheduleModalControlsHide, updateModalItems]
-  );
-
-  const closeModal = () => {
-    setModalIndex(null);
-    setModalImageId(null);
-    updateModalItems([]);
-    setModalContextLabel('');
-    setModalContextSetId(null);
-    setModalPulse(false);
-    setModalFavoritePulse(null);
-    resetModalMediaState();
-    stopModalLoading();
-    setModalZoom(1);
-    setModalPan({ x: 0, y: 0 });
-    resetModalTimerState();
-    resetModalHistory();
-    sampleHistoryRef.current = [];
-    sampleHistorySetRef.current = null;
-    resetInFlight();
-    if (modalPulseTimeout.current) {
-      window.clearTimeout(modalPulseTimeout.current);
-      modalPulseTimeout.current = null;
-    }
-    if (modalFavoritePulseTimeout.current) {
-      window.clearTimeout(modalFavoritePulseTimeout.current);
-      modalFavoritePulseTimeout.current = null;
-    }
-    clearModalMediaCache();
-    if (modalControlsTimeoutRef.current) {
-      window.clearTimeout(modalControlsTimeoutRef.current);
-      modalControlsTimeoutRef.current = null;
-    }
-    exitViewerFullscreen();
-  };
+  const { openModal, closeModal } = useModalState({
+    activeSet,
+    scheduleModalControlsHide,
+    requestViewerFullscreen,
+    exitViewerFullscreen,
+    updateModalItems,
+    setModalContextLabel,
+    setModalContextSetId,
+    resetModalMediaState,
+    stopModalLoading,
+    clearModalMediaCache,
+    setModalImageId,
+    setModalIndex,
+    triggerModalPulse,
+    setModalPulse,
+    setModalFavoritePulse,
+    setModalZoom,
+    setModalPan,
+    resetModalTimerState,
+    resetModalHistory,
+    sampleHistoryRef,
+    sampleHistorySetRef,
+    resetInFlight,
+    modalPulseTimeoutRef: modalPulseTimeout,
+    modalFavoritePulseTimeoutRef: modalFavoritePulseTimeout,
+    modalControlsTimeoutRef,
+  });
 
   const toggleFavoriteFromModal = useCallback(() => {
     if (!modalImage) {

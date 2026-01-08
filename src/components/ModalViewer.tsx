@@ -15,6 +15,8 @@ import { useModal } from '../features/modal/ModalContext';
 export function ModalViewer() {
   const {
     modalImage,
+    modalItems,
+    modalIndex,
     modalContextLabel,
     modalSetId,
     modalIsFavorite,

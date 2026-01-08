@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, type FolderPath } from './drive/scan';
 import {
@@ -21,7 +27,7 @@ import {
 } from './metadata';
 import type { DriveImage } from './drive/types';
 import { normalizeTags } from './utils/tags';
-import { pickRandom, shuffleItems } from './utils/random';
+import { pickRandom } from './utils/random';
 import { formatDownloadProgress, formatIndexProgress, startIndexTimer } from './utils/progress';
 import { createProxyThumbUrl } from './utils/driveUrls';
 import {
@@ -32,7 +38,7 @@ import {
   writeMetadataCache,
   writeMetadataDirtyFlag,
 } from './utils/cache';
-import { appendUniqueImages, pickNextBatch } from './utils/imageSampling';
+import { filterImagesByFavoriteStatus } from './utils/imageSampling';
 import { AppHeader } from './components/AppHeader';
 import { ToastStack } from './components/ToastStack';
 import { ScrollControls } from './components/ScrollControls';
@@ -41,6 +47,10 @@ import { OverviewPage } from './pages/OverviewPage';
 import { SlideshowPage } from './pages/SlideshowPage';
 import { SetViewerPage } from './pages/SetViewerPage';
 import { ModalStateProvider } from './features/modal/ModalStateProvider';
+import { useSetViewerGrids } from './features/setViewer/useSetViewerGrids';
+import { SetViewerProvider } from './features/setViewer/SetViewerContext';
+import { SlideshowProvider } from './features/slideshow/SlideshowContext';
+import { useSlideshowState } from './features/slideshow/useSlideshowState';
 
 const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
 const IMAGE_PAGE_SIZE = 96;
@@ -65,22 +75,6 @@ function parsePathState() {
     }
   }
   return { page: 'overview', setId: undefined };
-}
-
-function filterFavorites(images: DriveImage[], favoriteIds: string[]) {
-  if (favoriteIds.length === 0) {
-    return [];
-  }
-  const favorites = new Set(favoriteIds);
-  return images.filter((image) => favorites.has(image.id));
-}
-
-function filterNonFavorites(images: DriveImage[], favoriteIds: string[]) {
-  if (favoriteIds.length === 0) {
-    return images;
-  }
-  const favorites = new Set(favoriteIds);
-  return images.filter((image) => !favorites.has(image.id));
 }
 
 function mergeMetadata(local: MetadataDocument, remote: MetadataDocument): MetadataDocument {
@@ -151,34 +145,18 @@ export default function App() {
   const [setViewerTab, setSetViewerTab] = useState<
     'samples' | 'favorites' | 'nonfavorites' | 'all'
   >('samples');
-  const [sampleColumns, setSampleColumns] = useState(1);
   const [allColumns, setAllColumns] = useState(1);
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [previewIndexProgress, setPreviewIndexProgress] = useState('');
-  const [sampleImages, setSampleImages] = useState<DriveImage[]>([]);
-  const [nonFavoriteImages, setNonFavoriteImages] = useState<DriveImage[]>([]);
-  const [isLoadingSample, setIsLoadingSample] = useState(false);
-  const [isLoadingFavorites, setIsLoadingFavorites] = useState(false);
-  const [isLoadingNonFavorites, setIsLoadingNonFavorites] = useState(false);
-  const [slideshowImages, setSlideshowImages] = useState<DriveImage[]>([]);
-  const [isLoadingSlideshow, setIsLoadingSlideshow] = useState(false);
-  const [slideshowStarted, setSlideshowStarted] = useState(false);
   const [imageLoadStatus, setImageLoadStatus] = useState('');
   const [viewerIndexProgress, setViewerIndexProgress] = useState('');
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
-  const [favoriteImages, setFavoriteImages] = useState<DriveImage[]>([]);
   const [isRefreshingSet, setIsRefreshingSet] = useState(false);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
-  const sampleGridRef = useRef<HTMLDivElement | null>(null);
   const allGridRef = useRef<HTMLDivElement | null>(null);
-  const slideshowSeenRef = useRef<Set<string>>(new Set());
-  const slideshowPoolRef = useRef<{ key: string; images: DriveImage[] } | null>(null);
-  const slideshowImageSetRef = useRef<Map<string, string>>(new Map());
-  const nonFavoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
-  const favoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const metadataSaveTimeoutRef = useRef<number | null>(null);
   const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
   const pendingSaveResolveRef = useRef<(() => void) | null>(null);
@@ -187,8 +165,6 @@ export default function App() {
   const metadataLoadedRef = useRef(false);
   const pendingSetIdRef = useRef<string | null>(null);
   const pendingSetFetchAttemptedRef = useRef(false);
-  const setViewerRef = useRef<HTMLDivElement | null>(null);
-  const sampleSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const prefetchedThumbsRef = useRef<Set<string>>(new Set());
   const prebuiltIndexRef = useRef<{
     folderId: string;
@@ -197,14 +173,12 @@ export default function App() {
   } | null>(null);
   const viewerIndexTimerRef = useRef<(() => void) | null>(null);
 
-  const samplePageSize = Math.max(1, Math.ceil(48 / sampleColumns) * sampleColumns);
   const allPageSize = Math.max(1, Math.ceil(IMAGE_PAGE_SIZE / allColumns) * allColumns);
   const slideshowPageSize = 48;
   const metadataRef = useRef<MetadataDocument>(metadata);
   const metadataFileIdRef = useRef<string | null>(metadataFileId);
   const metadataInfoRef = useRef<MetadataInfo>(metadataInfo);
   const metadataDirtyRef = useRef(metadataDirty);
-  const slideshowImagesRef = useRef<DriveImage[]>(slideshowImages);
   const openModalRef = useRef<
     (imageId: string, images: DriveImage[], label: string) => void
   >(() => {});
@@ -633,15 +607,6 @@ export default function App() {
   }, [activeSet?.id]);
 
   useEffect(() => {
-    if (!activeSet) {
-      return;
-    }
-    setNonFavoriteImages((current) =>
-      filterNonFavorites(current, activeSet.favoriteImageIds ?? [])
-    );
-  }, [activeSet?.favoriteImageIds, activeSet?.id]);
-
-  useEffect(() => {
     if (setViewerTab !== 'all' || !activeSet || isLoadingImages || isLoadingMore) {
       return;
     }
@@ -691,10 +656,6 @@ export default function App() {
   }, [metadataDirty]);
 
   useEffect(() => {
-    slideshowImagesRef.current = slideshowImages;
-  }, [slideshowImages]);
-
-  useEffect(() => {
     const readColumns = (element: HTMLDivElement | null) => {
       if (!element) {
         return 1;
@@ -706,17 +667,11 @@ export default function App() {
       const count = value.split(' ').filter(Boolean).length;
       return Math.max(1, count);
     };
-    const updateSample = () => setSampleColumns(readColumns(sampleGridRef.current));
     const updateAll = () => setAllColumns(readColumns(allGridRef.current));
-    updateSample();
     updateAll();
     const observer = new ResizeObserver(() => {
-      updateSample();
       updateAll();
     });
-    if (sampleGridRef.current) {
-      observer.observe(sampleGridRef.current);
-    }
     if (allGridRef.current) {
       observer.observe(allGridRef.current);
     }
@@ -769,14 +724,6 @@ export default function App() {
     setSlideshowIncludeTags([]);
     setSlideshowExcludeTags([]);
   };
-
-  const resetSlideshow = useCallback(() => {
-    slideshowPoolRef.current = null;
-    slideshowSeenRef.current = new Set();
-    slideshowImageSetRef.current = new Map();
-    setSlideshowImages([]);
-    setSlideshowStarted(false);
-  }, []);
 
   const toggleFavoriteImage = async (setId: string, imageId: string) => {
     const set = metadata.sets.find((item) => item.id === setId);
@@ -1032,24 +979,6 @@ export default function App() {
     [activeSet, handleUpdateSet]
   );
 
-  const pickNextSample = useCallback(
-    (setId: string, images: DriveImage[], count: number) =>
-      pickNextBatch(setId, images, count, sampleSeenRef.current),
-    []
-  );
-
-  const pickNextNonFavorites = useCallback(
-    (setId: string, images: DriveImage[], count: number) =>
-      pickNextBatch(setId, images, count, nonFavoriteSeenRef.current),
-    []
-  );
-
-  const pickNextFavorites = useCallback(
-    (setId: string, images: DriveImage[], count: number) =>
-      pickNextBatch(setId, images, count, favoriteSeenRef.current),
-    []
-  );
-
   type IndexItems = Awaited<ReturnType<typeof buildSetIndex>>;
 
   const getPrebuiltIndexForSet = useCallback((set: PoseSet) => {
@@ -1155,66 +1084,57 @@ export default function App() {
     [getPrebuiltIndexForSet, isConnected, loadIndexItemsForSet]
   );
 
-  const updateFavoriteImagesFromSource = useCallback(
-    (
-      setId: string,
-      images: DriveImage[],
-      favoriteIds: string[],
-      options?: { keepLength?: boolean }
-    ) => {
-      const favorites = filterFavorites(images, favoriteIds);
-      if (favorites.length === 0) {
-        setFavoriteImages([]);
-        favoriteSeenRef.current.set(setId, new Set());
-        return;
-      }
-      const targetLength =
-        options?.keepLength && favoriteImages.length > 0
-          ? Math.min(favoriteImages.length, favorites.length)
-          : Math.min(samplePageSize, favorites.length);
-      favoriteSeenRef.current.set(setId, new Set());
-      const next = pickNextFavorites(setId, favorites, targetLength);
-      setFavoriteImages(next);
-    },
-    [favoriteImages.length, pickNextFavorites, samplePageSize]
-  );
+  const {
+    sampleImages,
+    setSampleImages,
+    favoriteImages,
+    setFavoriteImages,
+    nonFavoriteImages,
+    setNonFavoriteImages,
+    isLoadingSample,
+    isLoadingFavorites,
+    isLoadingNonFavorites,
+    samplePageSize,
+    sampleGridRef,
+    pickNext,
+    updateFavoriteImagesFromSource,
+    handleLoadMoreSample,
+    handleLoadAllSample,
+    handleLoadMoreFavorites,
+    handleLoadAllFavorites,
+    handleLoadMoreNonFavorites,
+    handleLoadAllNonFavorites,
+  } = useSetViewerGrids({
+    activeSet,
+    isConnected,
+    setViewerTab,
+    resolveSetImages,
+    setError,
+    setViewerIndexProgress,
+    sampleBaseCount: 48,
+  });
 
-  const hydrateSetExtras = useCallback(
-    async (set: PoseSet, buildIfMissing: boolean) => {
-      setIsLoadingSample(true);
-      setViewerIndexProgress('Loading index…');
-      try {
-        const images = await resolveSetImages(set, buildIfMissing);
-        updateFavoriteImagesFromSource(set.id, images, set.favoriteImageIds ?? []);
-        setSampleImages(pickNextSample(set.id, images, samplePageSize));
-      } catch (loadError) {
-        setError((loadError as Error).message);
-        setFavoriteImages([]);
-        setSampleImages([]);
-      } finally {
-        setIsLoadingSample(false);
-        setViewerIndexProgress('');
-      }
-    },
-    [pickNextSample, resolveSetImages, samplePageSize, updateFavoriteImagesFromSource]
-  );
-
-  const hydratedSetIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!isConnected) {
-      hydratedSetIdRef.current = null;
-      return;
-    }
-    if (!activeSet) {
-      return;
-    }
-    if (hydratedSetIdRef.current === activeSet.id) {
-      return;
-    }
-    hydratedSetIdRef.current = activeSet.id;
-    void hydrateSetExtras(activeSet, true);
-  }, [activeSet, hydrateSetExtras, isConnected]);
+  const {
+    slideshowImages,
+    isLoadingSlideshow,
+    slideshowStarted,
+    slideshowImagesRef,
+    slideshowImageSetRef,
+    loadSlideshowBatch,
+    handleLoadMoreSlideshow,
+    handleStartSlideshow,
+  } = useSlideshowState({
+    page,
+    isConnected,
+    slideshowSets,
+    slideshowFavoriteFilter,
+    slideshowTagFilters,
+    resolveSetImages,
+    setViewerIndexProgress,
+    setError,
+    openModalRef,
+    slideshowPageSize,
+  });
 
   const prefetchThumbs = useCallback((images: DriveImage[]) => {
     for (const image of images) {
@@ -1383,7 +1303,6 @@ export default function App() {
     if (!set.indexFileId && nextSet.indexFileId) {
       await handleUpdateSet(set.id, { indexFileId: nextSet.indexFileId });
     }
-    await hydrateSetExtras(nextSet, true);
   };
 
   useEffect(() => {
@@ -1509,7 +1428,7 @@ export default function App() {
         updatedSet.favoriteImageIds ?? [],
         { keepLength: true }
       );
-      setSampleImages(pickNextSample(set.id, refreshed, samplePageSize));
+      setSampleImages(pickNext.sample(set.id, refreshed, samplePageSize));
       if (activeImages.length > 0) {
         setActiveImages(refreshed.slice(0, imageLimit));
       }
@@ -1520,280 +1439,6 @@ export default function App() {
       setViewerIndexProgress('');
     }
   };
-
-  const loadSampleBatch = useCallback(
-    async (count: number) => {
-      if (!activeSet || !isConnected || count <= 0) {
-        return;
-      }
-      setIsLoadingSample(true);
-      setViewerIndexProgress('Loading sample…');
-      try {
-        const images = await resolveSetImages(activeSet, true);
-        if (images.length === 0) {
-          setSampleImages([]);
-          return;
-        }
-        const nextSample = pickNextSample(activeSet.id, images, count);
-        if (nextSample.length === 0) {
-          return;
-        }
-        setSampleImages((current) => appendUniqueImages(current, nextSample));
-      } catch (loadError) {
-        setError((loadError as Error).message);
-      } finally {
-        setIsLoadingSample(false);
-        setViewerIndexProgress('');
-      }
-    },
-    [activeSet, isConnected, pickNextSample, resolveSetImages]
-  );
-
-  const loadNonFavoriteBatch = useCallback(
-    async (count: number) => {
-      if (!activeSet || !isConnected || count <= 0) {
-        return;
-      }
-      setIsLoadingNonFavorites(true);
-      setViewerIndexProgress('Loading images…');
-      try {
-        const images = await resolveSetImages(activeSet, true);
-        const nonFavorites = filterNonFavorites(
-          images,
-          activeSet.favoriteImageIds ?? []
-        );
-        if (nonFavorites.length === 0) {
-          setNonFavoriteImages([]);
-          return;
-        }
-        const nextBatch = pickNextNonFavorites(activeSet.id, nonFavorites, count);
-        if (nextBatch.length === 0) {
-          return;
-        }
-        setNonFavoriteImages((current) => appendUniqueImages(current, nextBatch));
-      } catch (loadError) {
-        setError((loadError as Error).message);
-      } finally {
-        setIsLoadingNonFavorites(false);
-        setViewerIndexProgress('');
-      }
-    },
-    [activeSet, isConnected, pickNextNonFavorites, resolveSetImages]
-  );
-
-  const loadFavoriteBatch = useCallback(
-    async (count: number) => {
-      if (!activeSet || !isConnected || count <= 0) {
-        return;
-      }
-      setIsLoadingFavorites(true);
-      setViewerIndexProgress('Loading favorites…');
-      try {
-        const images = await resolveSetImages(activeSet, true);
-        const favorites = filterFavorites(images, activeSet.favoriteImageIds ?? []);
-        if (favorites.length === 0) {
-          setFavoriteImages([]);
-          return;
-        }
-        const nextBatch = pickNextFavorites(activeSet.id, favorites, count);
-        if (nextBatch.length === 0) {
-          return;
-        }
-        setFavoriteImages((current) => appendUniqueImages(current, nextBatch));
-      } catch (loadError) {
-        setError((loadError as Error).message);
-      } finally {
-        setIsLoadingFavorites(false);
-        setViewerIndexProgress('');
-      }
-    },
-    [activeSet, isConnected, pickNextFavorites, resolveSetImages]
-  );
-
-  const handleLoadMoreSample = useCallback(async () => {
-    await loadSampleBatch(samplePageSize);
-  }, [loadSampleBatch, samplePageSize]);
-
-  const handleLoadMoreNonFavorites = useCallback(async () => {
-    await loadNonFavoriteBatch(samplePageSize);
-  }, [loadNonFavoriteBatch, samplePageSize]);
-
-  const handleLoadMoreFavorites = useCallback(async () => {
-    await loadFavoriteBatch(samplePageSize);
-  }, [loadFavoriteBatch, samplePageSize]);
-
-  useEffect(() => {
-    if (setViewerTab !== 'samples' || !activeSet || isLoadingSample) {
-      return;
-    }
-    if (sampleColumns <= 1 || sampleImages.length === 0) {
-      return;
-    }
-    const remainder = sampleImages.length % sampleColumns;
-    if (remainder === 0) {
-      return;
-    }
-    const fill = sampleColumns - remainder;
-    void loadSampleBatch(fill);
-  }, [
-    activeSet,
-    isLoadingSample,
-    loadSampleBatch,
-    sampleColumns,
-    sampleImages.length,
-    setViewerTab,
-  ]);
-
-  useEffect(() => {
-    if (setViewerTab !== 'favorites' || !activeSet || isLoadingFavorites) {
-      return;
-    }
-    if (favoriteImages.length === 0) {
-      void loadFavoriteBatch(samplePageSize);
-      return;
-    }
-    if (sampleColumns <= 1 || favoriteImages.length === 0) {
-      return;
-    }
-    const remainder = favoriteImages.length % sampleColumns;
-    if (remainder === 0) {
-      return;
-    }
-    const fill = sampleColumns - remainder;
-    void loadFavoriteBatch(fill);
-  }, [
-    activeSet,
-    favoriteImages.length,
-    isLoadingFavorites,
-    loadFavoriteBatch,
-    sampleColumns,
-    setViewerTab,
-  ]);
-
-  useEffect(() => {
-    if (setViewerTab !== 'nonfavorites' || !activeSet || isLoadingNonFavorites) {
-      return;
-    }
-    if (nonFavoriteImages.length === 0) {
-      void loadNonFavoriteBatch(samplePageSize);
-      return;
-    }
-    if (sampleColumns <= 1 || nonFavoriteImages.length === 0) {
-      return;
-    }
-    const remainder = nonFavoriteImages.length % sampleColumns;
-    if (remainder === 0) {
-      return;
-    }
-    const fill = sampleColumns - remainder;
-    void loadNonFavoriteBatch(fill);
-  }, [
-    activeSet,
-    isLoadingNonFavorites,
-    loadNonFavoriteBatch,
-    nonFavoriteImages.length,
-    sampleColumns,
-    setViewerTab,
-  ]);
-
-  useEffect(() => {
-    if (setViewerTab !== 'favorites' || !activeSet) {
-      return;
-    }
-    favoriteSeenRef.current.set(activeSet.id, new Set());
-    setFavoriteImages([]);
-  }, [activeSet?.id, setViewerTab]);
-
-  useEffect(() => {
-    if (setViewerTab !== 'nonfavorites' || !activeSet) {
-      return;
-    }
-    nonFavoriteSeenRef.current.set(activeSet.id, new Set());
-    setNonFavoriteImages([]);
-  }, [activeSet?.id, setViewerTab]);
-
-  const handleLoadAllSample = useCallback(async () => {
-    if (!activeSet || !isConnected) {
-      return;
-    }
-    setIsLoadingSample(true);
-    setViewerIndexProgress('Loading sample…');
-    try {
-      const images = await resolveSetImages(activeSet, true);
-      if (images.length === 0) {
-        setSampleImages([]);
-        return;
-      }
-      const shuffled = shuffleItems(images);
-      setSampleImages(shuffled);
-      sampleSeenRef.current.set(
-        activeSet.id,
-        new Set(shuffled.map((image) => image.id))
-      );
-    } catch (loadError) {
-      setError((loadError as Error).message);
-    } finally {
-      setIsLoadingSample(false);
-      setViewerIndexProgress('');
-    }
-  }, [activeSet, isConnected, resolveSetImages]);
-
-  const handleLoadAllFavorites = useCallback(async () => {
-    if (!activeSet || !isConnected) {
-      return;
-    }
-    setIsLoadingFavorites(true);
-    setViewerIndexProgress('Loading favorites…');
-    try {
-      const images = await resolveSetImages(activeSet, true);
-      const favorites = filterFavorites(images, activeSet.favoriteImageIds ?? []);
-      if (favorites.length === 0) {
-        setFavoriteImages([]);
-        return;
-      }
-      const shuffled = shuffleItems(favorites);
-      setFavoriteImages(shuffled);
-      favoriteSeenRef.current.set(
-        activeSet.id,
-        new Set(shuffled.map((image) => image.id))
-      );
-    } catch (loadError) {
-      setError((loadError as Error).message);
-    } finally {
-      setIsLoadingFavorites(false);
-      setViewerIndexProgress('');
-    }
-  }, [activeSet, isConnected, resolveSetImages]);
-
-  const handleLoadAllNonFavorites = useCallback(async () => {
-    if (!activeSet || !isConnected) {
-      return;
-    }
-    setIsLoadingNonFavorites(true);
-    setViewerIndexProgress('Loading images…');
-    try {
-      const images = await resolveSetImages(activeSet, true);
-      const nonFavorites = filterNonFavorites(
-        images,
-        activeSet.favoriteImageIds ?? []
-      );
-      if (nonFavorites.length === 0) {
-        setNonFavoriteImages([]);
-        return;
-      }
-      const shuffled = shuffleItems(nonFavorites);
-      setNonFavoriteImages(shuffled);
-      nonFavoriteSeenRef.current.set(
-        activeSet.id,
-        new Set(shuffled.map((image) => image.id))
-      );
-    } catch (loadError) {
-      setError((loadError as Error).message);
-    } finally {
-      setIsLoadingNonFavorites(false);
-      setViewerIndexProgress('');
-    }
-  }, [activeSet, isConnected, resolveSetImages]);
 
   const handleLoadMoreImages = async () => {
     if (!activeSet) {
@@ -1916,108 +1561,65 @@ export default function App() {
     [activeImages.length, activeSet, allPageSize, isLoadingImages]
   );
 
-  const buildSlideshowPool = useCallback(async () => {
-    if (!isConnected) {
-      return [];
-    }
-    const results: DriveImage[] = [];
-    const map = new Map<string, string>();
-    const totalSets = slideshowSets.length;
-    let processed = 0;
-    for (const set of slideshowSets) {
-      processed += 1;
-      setViewerIndexProgress(`Loading indexes ${processed}/${totalSets}`);
-      const images = await resolveSetImages(set, true, { suppressProgress: true });
-      if (images.length === 0) {
-        continue;
-      }
-      if (slideshowFavoriteFilter === 'favorites') {
-        const favorites = set.favoriteImageIds ?? [];
-        const filtered = filterFavorites(images, favorites);
-        for (const image of filtered) {
-          map.set(image.id, set.id);
-        }
-        results.push(...filtered);
-      } else if (slideshowFavoriteFilter === 'nonfavorites') {
-        const favorites = set.favoriteImageIds ?? [];
-        const filtered = filterNonFavorites(images, favorites);
-        for (const image of filtered) {
-          map.set(image.id, set.id);
-        }
-        results.push(...filtered);
-      } else {
-        for (const image of images) {
-          map.set(image.id, set.id);
-        }
-        results.push(...images);
-      }
-    }
-    slideshowImageSetRef.current = map;
-    setViewerIndexProgress('');
-    return results;
-  }, [isConnected, resolveSetImages, slideshowFavoriteFilter, slideshowSets]);
-
-  const loadSlideshowBatch = useCallback(
-    async (count: number, options?: { openModal?: boolean }) => {
-      if (!isConnected || count <= 0) {
+  const handleUpdateSetName = useCallback(
+    (value: string) => {
+      if (!activeSet) {
         return;
       }
-      setIsLoadingSlideshow(true);
-      setViewerIndexProgress('Loading slideshow…');
-      try {
-        const key = JSON.stringify({
-          include: slideshowTagFilters.include,
-          exclude: slideshowTagFilters.exclude,
-          favorite: slideshowFavoriteFilter,
-        });
-        if (!slideshowPoolRef.current || slideshowPoolRef.current.key !== key) {
-          slideshowPoolRef.current = {
-            key,
-            images: await buildSlideshowPool(),
-          };
-          slideshowSeenRef.current = new Set();
-          setSlideshowImages([]);
-        }
-        const pool = slideshowPoolRef.current.images;
-        if (pool.length === 0) {
-          return;
-        }
-        const seen = slideshowSeenRef.current;
-        if (seen.size >= pool.length) {
-          seen.clear();
-        }
-        const available = pool.filter((image) => !seen.has(image.id));
-        const batch = pickRandom(available, Math.min(count, available.length));
-        for (const image of batch) {
-          seen.add(image.id);
-        }
-        let mergedResult: DriveImage[] | null = null;
-        setSlideshowImages((current) => {
-          const merged = appendUniqueImages(current, batch);
-          if (options?.openModal && merged.length > 0 && current.length === 0) {
-            openModalRef.current(merged[0].id, merged, 'Slideshow');
-          }
-          mergedResult = merged;
-          return merged;
-        });
-        if (mergedResult) {
-          return mergedResult;
-        }
-      } catch (loadError) {
-        setError((loadError as Error).message);
-      } finally {
-        setIsLoadingSlideshow(false);
-        setViewerIndexProgress('');
-      }
+      void handleUpdateSet(activeSet.id, {
+        name: value.trim() || activeSet.name,
+      });
     },
-    [
-      buildSlideshowPool,
-      isConnected,
-      slideshowFavoriteFilter,
-      slideshowTagFilters.exclude,
-      slideshowTagFilters.include,
-    ]
+    [activeSet, handleUpdateSet]
   );
+
+  const setViewerValue = {
+    activeSet,
+    isConnected,
+    isSaving,
+    isRefreshingSet,
+    setViewerTab,
+    onSetViewerTab: handleSetViewerTab,
+    viewerQuickTags,
+    onToggleActiveSetTag: toggleActiveSetTag,
+    favoriteIds,
+    favoritesCount,
+    nonFavoritesCount,
+    allImagesCount,
+    sampleImages,
+    favoriteImages,
+    nonFavoriteImages,
+    activeImages,
+    viewerIndexProgress,
+    isLoadingSample,
+    isLoadingFavorites,
+    isLoadingNonFavorites,
+    isLoadingImages,
+    isLoadingMore,
+    totalImagesKnown,
+    samplePendingExtra,
+    nonFavoritesPendingExtra,
+    favoritesPendingExtra,
+    pendingExtra,
+    remainingImages,
+    onLoadMoreSample: handleLoadMoreSample,
+    onLoadAllSample: handleLoadAllSample,
+    onLoadMoreNonFavorites: handleLoadMoreNonFavorites,
+    onLoadAllNonFavorites: handleLoadAllNonFavorites,
+    onLoadMoreFavorites: handleLoadMoreFavorites,
+    onLoadAllFavorites: handleLoadAllFavorites,
+    onLoadMoreImages: handleLoadMoreImages,
+    onLoadAllPreloaded: handleLoadAllPreloaded,
+    onToggleFavoriteImage: toggleFavoriteImage,
+    onSetThumbnail: handleSetThumbnail,
+    onUpdateSetName: handleUpdateSetName,
+    onRefreshSet: handleRefreshSet,
+    onDeleteSet: handleDeleteSet,
+    thumbSize: THUMB_SIZE,
+    viewerThumbSize: VIEWER_THUMB_SIZE,
+    sampleGridRef,
+    allGridRef,
+  };
 
   const modalDeps = {
     activeSet,
@@ -2032,11 +1634,8 @@ export default function App() {
     setSampleImages,
     setNonFavoriteImages,
     readImageListCache,
-    filterFavorites,
-    filterNonFavorites,
-    pickNextSample,
-    pickNextFavorites,
-    pickNextNonFavorites,
+    filterImagesByFavoriteStatus,
+    pickNext,
     resolveSetImages,
     updateFavoriteImagesFromSource,
     handleLoadMoreImages,
@@ -2050,48 +1649,29 @@ export default function App() {
     setError,
   };
 
-  const handleLoadMoreSlideshow = useCallback(async () => {
-    await loadSlideshowBatch(slideshowPageSize);
-  }, [loadSlideshowBatch, slideshowPageSize]);
-
-  const handleLoadMoreClick = useCallback(
-    (handler: () => void | Promise<void>) =>
-      (event: React.MouseEvent<HTMLButtonElement>) => {
-        event.preventDefault();
-        event.currentTarget.blur();
-        void handler();
-      },
-    []
-  );
-
-  useEffect(() => {
-    if (page !== 'slideshow') {
-      return;
-    }
-    resetSlideshow();
-  }, [page, resetSlideshow]);
-
-  useEffect(() => {
-    if (page !== 'slideshow') {
-      return;
-    }
-    resetSlideshow();
-  }, [
-    page,
-    resetSlideshow,
+  const slideshowValue = {
+    isConnected,
+    slideshowSets,
     slideshowFavoriteFilter,
-    slideshowTagFilters.exclude,
-    slideshowTagFilters.include,
-  ]);
-
-  const handleStartSlideshow = useCallback(async () => {
-    setSlideshowStarted(true);
-    if (slideshowImages.length > 0) {
-      openModalRef.current(slideshowImages[0].id, slideshowImages, 'Slideshow');
-      return;
-    }
-    await loadSlideshowBatch(slideshowPageSize, { openModal: true });
-  }, [loadSlideshowBatch, slideshowImages, slideshowPageSize]);
+    onSlideshowFavoriteFilterChange: setSlideshowFavoriteFilter,
+    onStartSlideshow: handleStartSlideshow,
+    isLoadingSlideshow,
+    onClearSlideshowTags: clearSlideshowTags,
+    sortedTags,
+    slideshowIncludeTags,
+    slideshowExcludeTags,
+    onToggleIncludeTag: toggleSlideshowIncludeTag,
+    onToggleExcludeTag: toggleSlideshowExcludeTag,
+    slideshowStarted,
+    viewerIndexProgress,
+    slideshowImages,
+    slideshowImageSetMap: slideshowImageSetRef.current,
+    setsById,
+    onToggleFavoriteImage: toggleFavoriteImage,
+    thumbSize: THUMB_SIZE,
+    onLoadMoreSlideshow: handleLoadMoreSlideshow,
+    slideshowPageSize,
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -2192,89 +1772,15 @@ export default function App() {
       ) : null}
 
       {page === 'slideshow' ? (
-        <SlideshowPage
-          isConnected={isConnected}
-          slideshowSets={slideshowSets}
-          slideshowFavoriteFilter={slideshowFavoriteFilter}
-          onSlideshowFavoriteFilterChange={setSlideshowFavoriteFilter}
-          onStartSlideshow={handleStartSlideshow}
-          isLoadingSlideshow={isLoadingSlideshow}
-          onClearSlideshowTags={clearSlideshowTags}
-          sortedTags={sortedTags}
-          slideshowIncludeTags={slideshowIncludeTags}
-          slideshowExcludeTags={slideshowExcludeTags}
-          onToggleIncludeTag={toggleSlideshowIncludeTag}
-          onToggleExcludeTag={toggleSlideshowExcludeTag}
-          slideshowStarted={slideshowStarted}
-          viewerIndexProgress={viewerIndexProgress}
-          slideshowImages={slideshowImages}
-          slideshowImageSetMap={slideshowImageSetRef.current}
-          setsById={setsById}
-          onToggleFavoriteImage={toggleFavoriteImage}
-          thumbSize={THUMB_SIZE}
-          onLoadMoreSlideshow={handleLoadMoreSlideshow}
-          onLoadMoreClick={handleLoadMoreClick}
-          slideshowPageSize={slideshowPageSize}
-        />
+        <SlideshowProvider value={slideshowValue}>
+          <SlideshowPage />
+        </SlideshowProvider>
       ) : null}
 
       {page === 'set' ? (
-        <SetViewerPage
-          activeSet={activeSet}
-          isConnected={isConnected}
-          isSaving={isSaving}
-          isRefreshingSet={isRefreshingSet}
-          setViewerTab={setViewerTab}
-          onSetViewerTab={handleSetViewerTab}
-          viewerQuickTags={viewerQuickTags}
-          onToggleActiveSetTag={toggleActiveSetTag}
-          favoriteIds={favoriteIds}
-          favoritesCount={favoritesCount}
-          nonFavoritesCount={nonFavoritesCount}
-          allImagesCount={allImagesCount}
-          sampleImages={sampleImages}
-          favoriteImages={favoriteImages}
-          nonFavoriteImages={nonFavoriteImages}
-          activeImages={activeImages}
-          viewerIndexProgress={viewerIndexProgress}
-          isLoadingSample={isLoadingSample}
-          isLoadingFavorites={isLoadingFavorites}
-          isLoadingNonFavorites={isLoadingNonFavorites}
-          isLoadingImages={isLoadingImages}
-          isLoadingMore={isLoadingMore}
-          totalImagesKnown={totalImagesKnown}
-          samplePendingExtra={samplePendingExtra}
-          nonFavoritesPendingExtra={nonFavoritesPendingExtra}
-          favoritesPendingExtra={favoritesPendingExtra}
-          pendingExtra={pendingExtra}
-          remainingImages={remainingImages}
-          onLoadMoreSample={handleLoadMoreSample}
-          onLoadAllSample={handleLoadAllSample}
-          onLoadMoreNonFavorites={handleLoadMoreNonFavorites}
-          onLoadAllNonFavorites={handleLoadAllNonFavorites}
-          onLoadMoreFavorites={handleLoadMoreFavorites}
-          onLoadAllFavorites={handleLoadAllFavorites}
-          onLoadMoreImages={handleLoadMoreImages}
-          onLoadAllPreloaded={handleLoadAllPreloaded}
-          onToggleFavoriteImage={toggleFavoriteImage}
-          onSetThumbnail={handleSetThumbnail}
-          onUpdateSetName={(value) => {
-            if (!activeSet) {
-              return;
-            }
-            void handleUpdateSet(activeSet.id, {
-              name: value.trim() || activeSet.name,
-            });
-          }}
-          onRefreshSet={handleRefreshSet}
-          onDeleteSet={handleDeleteSet}
-          onLoadMoreClick={handleLoadMoreClick}
-          thumbSize={THUMB_SIZE}
-          viewerThumbSize={VIEWER_THUMB_SIZE}
-          sampleGridRef={sampleGridRef}
-          allGridRef={allGridRef}
-          sectionRef={setViewerRef}
-        />
+        <SetViewerProvider value={setViewerValue}>
+          <SetViewerPage />
+        </SetViewerProvider>
       ) : null}
 
         <ToastStack toasts={toasts} />

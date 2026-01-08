@@ -1,127 +1,75 @@
-import {
-  IconDotsVertical,
-  IconFolder,
-  IconHeart,
-  IconHeartFilled,
-  IconPhoto,
-  IconPhotoStar,
-} from '@tabler/icons-react';
-import type { MouseEvent, RefObject } from 'react';
-import type { PoseSet } from '../metadata';
+import { IconDotsVertical, IconFolder, IconPhoto, IconHeart } from '@tabler/icons-react';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from '../components/ImageThumb';
-import { useModal } from '../features/modal/ModalContext';
+import { ImageGrid } from '../components/ImageGrid';
+import { GridLoadButtons } from '../components/GridLoadButtons';
+import { useSetViewer } from '../features/setViewer/SetViewerContext';
 
-type ViewerQuickTags = {
-  active: string[];
-  inactive: string[];
-};
-
-type SetViewerPageProps = {
-  activeSet: PoseSet | null;
-  isConnected: boolean;
-  isSaving: boolean;
-  isRefreshingSet: boolean;
-  setViewerTab: 'samples' | 'favorites' | 'nonfavorites' | 'all';
-  onSetViewerTab: (tab: 'samples' | 'favorites' | 'nonfavorites' | 'all') => void;
-  viewerQuickTags: ViewerQuickTags;
-  onToggleActiveSetTag: (tag: string) => void;
-  favoriteIds: string[];
-  favoritesCount: number;
-  nonFavoritesCount?: number;
-  allImagesCount: number;
-  sampleImages: DriveImage[];
-  favoriteImages: DriveImage[];
-  nonFavoriteImages: DriveImage[];
-  activeImages: DriveImage[];
-  viewerIndexProgress: string;
-  isLoadingSample: boolean;
-  isLoadingFavorites: boolean;
-  isLoadingNonFavorites: boolean;
-  isLoadingImages: boolean;
-  isLoadingMore: boolean;
-  totalImagesKnown?: number;
-  samplePendingExtra: number;
-  nonFavoritesPendingExtra: number;
-  favoritesPendingExtra: number;
-  pendingExtra: number;
-  remainingImages?: number;
-  onLoadMoreSample: () => void | Promise<void>;
-  onLoadAllSample: () => void | Promise<void>;
-  onLoadMoreNonFavorites: () => void | Promise<void>;
-  onLoadAllNonFavorites: () => void | Promise<void>;
-  onLoadMoreFavorites: () => void | Promise<void>;
-  onLoadAllFavorites: () => void | Promise<void>;
-  onLoadMoreImages: () => void | Promise<void>;
-  onLoadAllPreloaded: () => void | Promise<void>;
-  onToggleFavoriteImage: (setId: string, imageId: string) => void;
-  onSetThumbnail: (setId: string, imageId: string) => void;
-  onUpdateSetName: (value: string) => void;
-  onRefreshSet: (set: PoseSet) => void;
-  onDeleteSet: (set: PoseSet) => void;
-  onLoadMoreClick: (
-    handler: () => void | Promise<void>
-  ) => (event: MouseEvent<HTMLButtonElement>) => void;
-  thumbSize: number;
-  viewerThumbSize: number;
-  sampleGridRef: RefObject<HTMLDivElement>;
-  allGridRef: RefObject<HTMLDivElement>;
-  sectionRef: RefObject<HTMLDivElement>;
-};
-
-export function SetViewerPage({
-  activeSet,
-  isConnected,
-  isSaving,
-  isRefreshingSet,
-  setViewerTab,
-  onSetViewerTab,
-  viewerQuickTags,
-  onToggleActiveSetTag,
-  favoriteIds,
-  favoritesCount,
-  nonFavoritesCount,
-  allImagesCount,
-  sampleImages,
-  favoriteImages,
-  nonFavoriteImages,
-  activeImages,
-  viewerIndexProgress,
-  isLoadingSample,
-  isLoadingFavorites,
-  isLoadingNonFavorites,
-  isLoadingImages,
-  isLoadingMore,
-  totalImagesKnown,
-  samplePendingExtra,
-  nonFavoritesPendingExtra,
-  favoritesPendingExtra,
-  pendingExtra,
-  remainingImages,
-  onLoadMoreSample,
-  onLoadAllSample,
-  onLoadMoreNonFavorites,
-  onLoadAllNonFavorites,
-  onLoadMoreFavorites,
-  onLoadAllFavorites,
-  onLoadMoreImages,
-  onLoadAllPreloaded,
-  onToggleFavoriteImage,
-  onSetThumbnail,
-  onUpdateSetName,
-  onRefreshSet,
-  onDeleteSet,
-  onLoadMoreClick,
-  thumbSize,
-  viewerThumbSize,
-  sampleGridRef,
-  allGridRef,
-  sectionRef,
-}: SetViewerPageProps) {
-  const { openModal } = useModal();
+export function SetViewerPage() {
+  const {
+    activeSet,
+    isConnected,
+    isSaving,
+    isRefreshingSet,
+    setViewerTab,
+    onSetViewerTab,
+    viewerQuickTags,
+    onToggleActiveSetTag,
+    favoriteIds,
+    favoritesCount,
+    nonFavoritesCount,
+    allImagesCount,
+    sampleImages,
+    favoriteImages,
+    nonFavoriteImages,
+    activeImages,
+    viewerIndexProgress,
+    isLoadingSample,
+    isLoadingFavorites,
+    isLoadingNonFavorites,
+    isLoadingImages,
+    isLoadingMore,
+    totalImagesKnown,
+    samplePendingExtra,
+    nonFavoritesPendingExtra,
+    favoritesPendingExtra,
+    pendingExtra,
+    remainingImages,
+    onLoadMoreSample,
+    onLoadAllSample,
+    onLoadMoreNonFavorites,
+    onLoadAllNonFavorites,
+    onLoadMoreFavorites,
+    onLoadAllFavorites,
+    onLoadMoreImages,
+    onLoadAllPreloaded,
+    onToggleFavoriteImage,
+    onSetThumbnail,
+    onUpdateSetName,
+    onRefreshSet,
+    onDeleteSet,
+    thumbSize,
+    viewerThumbSize,
+    sampleGridRef,
+    allGridRef,
+  } = useSetViewer();
   const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
+  const favoriteAction = activeSet
+    ? {
+        isActive: (image: DriveImage) => favoriteIds.includes(image.id),
+        onToggle: (image: DriveImage) => onToggleFavoriteImage(activeSet.id, image.id),
+      }
+    : undefined;
+  const thumbnailAction = activeSet
+    ? {
+        isActive: (image: DriveImage) => activeSet.thumbnailFileId === image.id,
+        onSet: (image: DriveImage) => onSetThumbnail(activeSet.id, image.id),
+        disabled: (image: DriveImage) =>
+          isSaving || activeSet.thumbnailFileId === image.id,
+      }
+    : undefined;
   return (
-    <section className="panel" ref={sectionRef}>
+    <section className="panel">
       <div className="panel-header panel-header--row panel-header--viewer">
         <div className="viewer-title">
           {activeSet ? (
@@ -288,89 +236,29 @@ export function SetViewerPage({
                 ) : viewerIndexProgress ? (
                   <p className="muted">{viewerIndexProgress}</p>
                 ) : sampleImages.length > 0 ? (
-                  <div className="image-grid image-grid--zoom" ref={sampleGridRef}>
-                    {sampleImages.map((image) => (
-                      <div key={image.id} className="image-tile">
-                        <button
-                          type="button"
-                          className="image-button"
-                          onClick={() => openModal(image.id, sampleImages, 'Sample')}
-                        >
-                          <ImageThumb
-                            isConnected={isConnected}
-                            fileId={image.id}
-                            alt={activeSet.name}
-                            size={thumbSize}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          className={`thumb-action thumb-action--favorite ${
-                            favoriteIds.includes(image.id) ? 'is-active' : ''
-                          }`}
-                          onClick={() => onToggleFavoriteImage(activeSet.id, image.id)}
-                          aria-pressed={favoriteIds.includes(image.id)}
-                          aria-label={
-                            favoriteIds.includes(image.id)
-                              ? 'Remove from favorites'
-                              : 'Add to favorites'
-                          }
-                        >
-                          {favoriteIds.includes(image.id) ? (
-                            <IconHeartFilled size={16} />
-                          ) : (
-                            <IconHeart size={16} />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className={`thumb-action ${
-                            activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                          }`}
-                          onClick={() => onSetThumbnail(activeSet.id, image.id)}
-                          disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                          aria-label="Use as thumbnail"
-                        >
-                          <IconPhotoStar size={16} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                  <ImageGrid
+                    images={sampleImages}
+                    isConnected={isConnected}
+                    thumbSize={thumbSize}
+                    alt={activeSet.name}
+                    modalLabel="Sample"
+                    gridClassName="image-grid image-grid--zoom"
+                    gridRef={sampleGridRef}
+                    favoriteAction={favoriteAction}
+                    thumbnailAction={thumbnailAction}
+                  />
                 ) : (
                   <p className="empty">No sample yet. Refresh to build a preview.</p>
                 )}
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={onLoadMoreClick(onLoadMoreSample)}
-                  disabled={isLoadingSample}
-                >
-                  {isLoadingSample
-                    ? totalImagesKnown !== undefined
-                      ? `Loading... (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
-                      : 'Loading images...'
-                    : totalImagesKnown !== undefined
-                      ? sampleImages.length > 0
-                        ? `Load more images (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
-                        : `Load images (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
-                      : sampleImages.length > 0
-                        ? `Load more images (+${samplePendingExtra})`
-                        : `Load images (+${samplePendingExtra})`}
-                </button>
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={onLoadMoreClick(onLoadAllSample)}
-                  disabled={isLoadingSample}
-                >
-                  {isLoadingSample
-                    ? totalImagesKnown !== undefined
-                      ? `Loading all ${totalImagesKnown}...`
-                      : 'Loading all images...'
-                    : totalImagesKnown !== undefined
-                      ? `Load all remaining ${Math.max(0, totalImagesKnown - sampleImages.length)}`
-                      : 'Load all remaining'}
-                </button>
+                <GridLoadButtons
+                  variant="sample"
+                  isLoading={isLoadingSample}
+                  currentCount={sampleImages.length}
+                  pendingCount={samplePendingExtra}
+                  totalCount={totalImagesKnown}
+                  onLoadMore={onLoadMoreSample}
+                  onLoadAll={onLoadAllSample}
+                />
               </div>
             ) : null}
             {setViewerTab === 'nonfavorites' ? (
@@ -383,92 +271,29 @@ export function SetViewerPage({
                 ) : viewerIndexProgress ? (
                   <p className="muted">{viewerIndexProgress}</p>
                 ) : nonFavoriteImages.length > 0 ? (
-                  <div className="image-grid image-grid--zoom" ref={sampleGridRef}>
-                    {nonFavoriteImages.map((image) => (
-                      <div key={image.id} className="image-tile">
-                        <button
-                          type="button"
-                          className="image-button"
-                          onClick={() => openModal(image.id, nonFavoriteImages, 'Non favorites')}
-                        >
-                          <ImageThumb
-                            isConnected={isConnected}
-                            fileId={image.id}
-                            alt={activeSet.name}
-                            size={thumbSize}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          className={`thumb-action thumb-action--favorite ${
-                            favoriteIds.includes(image.id) ? 'is-active' : ''
-                          }`}
-                          onClick={() => onToggleFavoriteImage(activeSet.id, image.id)}
-                          aria-pressed={favoriteIds.includes(image.id)}
-                          aria-label={
-                            favoriteIds.includes(image.id)
-                              ? 'Remove from favorites'
-                              : 'Add to favorites'
-                          }
-                        >
-                          {favoriteIds.includes(image.id) ? (
-                            <IconHeartFilled size={16} />
-                          ) : (
-                            <IconHeart size={16} />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className={`thumb-action ${
-                            activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                          }`}
-                          onClick={() => onSetThumbnail(activeSet.id, image.id)}
-                          disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                          aria-label="Use as thumbnail"
-                        >
-                          <IconPhotoStar size={16} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                  <ImageGrid
+                    images={nonFavoriteImages}
+                    isConnected={isConnected}
+                    thumbSize={thumbSize}
+                    alt={activeSet.name}
+                    modalLabel="Non favorites"
+                    gridClassName="image-grid image-grid--zoom"
+                    gridRef={sampleGridRef}
+                    favoriteAction={favoriteAction}
+                    thumbnailAction={thumbnailAction}
+                  />
                 ) : (
                   <p className="empty">No non-favorites yet.</p>
                 )}
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={onLoadMoreClick(onLoadMoreNonFavorites)}
-                  disabled={isLoadingNonFavorites}
-                >
-                  {isLoadingNonFavorites
-                    ? nonFavoritesCount !== undefined
-                      ? `Loading... (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
-                      : 'Loading images...'
-                    : nonFavoritesCount !== undefined
-                      ? nonFavoriteImages.length > 0
-                        ? `Load more images (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
-                        : `Load images (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
-                      : nonFavoriteImages.length > 0
-                        ? `Load more images (+${nonFavoritesPendingExtra})`
-                        : `Load images (+${nonFavoritesPendingExtra})`}
-                </button>
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={onLoadMoreClick(onLoadAllNonFavorites)}
-                  disabled={isLoadingNonFavorites}
-                >
-                  {isLoadingNonFavorites
-                    ? nonFavoritesCount !== undefined
-                      ? `Loading all ${nonFavoritesCount}...`
-                      : 'Loading all images...'
-                    : nonFavoritesCount !== undefined
-                      ? `Load all remaining ${Math.max(
-                          0,
-                          nonFavoritesCount - nonFavoriteImages.length
-                        )} • ${nonFavoriteImages.length}/${nonFavoritesCount}`
-                      : 'Load all remaining'}
-                </button>
+                <GridLoadButtons
+                  variant="nonfavorites"
+                  isLoading={isLoadingNonFavorites}
+                  currentCount={nonFavoriteImages.length}
+                  pendingCount={nonFavoritesPendingExtra}
+                  totalCount={nonFavoritesCount}
+                  onLoadMore={onLoadMoreNonFavorites}
+                  onLoadAll={onLoadAllNonFavorites}
+                />
               </div>
             ) : null}
             {setViewerTab === 'favorites' ? (
@@ -481,167 +306,64 @@ export function SetViewerPage({
                 ) : viewerIndexProgress ? (
                   <p className="muted">{viewerIndexProgress}</p>
                 ) : favoriteImages.length > 0 ? (
-                  <div className="image-grid image-grid--zoom image-grid--filled">
-                    {favoriteImages.map((image) => (
-                      <div key={image.id} className="image-tile">
-                        <button
-                          type="button"
-                          className="image-button"
-                          onClick={() => openModal(image.id, favoriteImages, 'Favorites')}
-                        >
-                          <ImageThumb
-                            isConnected={isConnected}
-                            fileId={image.id}
-                            alt={activeSet.name}
-                            size={thumbSize}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          className={`thumb-action thumb-action--favorite ${
-                            favoriteIds.includes(image.id) ? 'is-active' : ''
-                          }`}
-                          onClick={() => onToggleFavoriteImage(activeSet.id, image.id)}
-                          aria-pressed={favoriteIds.includes(image.id)}
-                          aria-label={
-                            favoriteIds.includes(image.id)
-                              ? 'Remove from favorites'
-                              : 'Add to favorites'
-                          }
-                        >
-                          {favoriteIds.includes(image.id) ? (
-                            <IconHeartFilled size={16} />
-                          ) : (
-                            <IconHeart size={16} />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className={`thumb-action ${
-                            activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                          }`}
-                          onClick={() => onSetThumbnail(activeSet.id, image.id)}
-                          disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                          aria-label="Use as thumbnail"
-                        >
-                          <IconPhotoStar size={16} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                  <ImageGrid
+                    images={favoriteImages}
+                    isConnected={isConnected}
+                    thumbSize={thumbSize}
+                    alt={activeSet.name}
+                    modalLabel="Favorites"
+                    gridClassName="image-grid image-grid--zoom image-grid--filled"
+                    favoriteAction={favoriteAction}
+                    thumbnailAction={thumbnailAction}
+                  />
                 ) : (
                   <p className="empty">No favorites yet.</p>
                 )}
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={onLoadMoreClick(onLoadMoreFavorites)}
-                  disabled={isLoadingFavorites || favoritesRemaining === 0}
-                >
-                  {isLoadingFavorites
-                    ? `Loading... (+${favoritesPendingExtra}) • ${favoriteImages.length}/${favoritesCount}`
-                    : favoritesRemaining > 0
-                      ? `Load more favorites (+${favoritesPendingExtra}) • ${favoriteImages.length}/${favoritesCount}`
-                      : `All favorites loaded (${favoriteImages.length})`}
-                </button>
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={onLoadMoreClick(onLoadAllFavorites)}
-                  disabled={isLoadingFavorites || favoritesRemaining === 0}
-                >
-                  {isLoadingFavorites
-                    ? `Loading all ${favoritesCount}...`
-                    : `Load all remaining ${favoritesRemaining}`}
-                </button>
+                <GridLoadButtons
+                  variant="favorites"
+                  isLoading={isLoadingFavorites}
+                  currentCount={favoriteImages.length}
+                  pendingCount={favoritesPendingExtra}
+                  totalCount={favoritesCount}
+                  remainingCount={favoritesRemaining}
+                  onLoadMore={onLoadMoreFavorites}
+                  onLoadAll={onLoadAllFavorites}
+                />
               </div>
             ) : null}
             {setViewerTab === 'all' ? (
               <div className="stack">
-                <div className="image-grid image-grid--zoom" ref={allGridRef}>
-                  {activeImages.map((image) => (
-                    <div key={image.id} className="image-tile">
-                      <button
-                        type="button"
-                        className="image-button"
-                        onClick={() => openModal(image.id, activeImages, 'Set')}
-                      >
-                        <ImageThumb
-                          isConnected={isConnected}
-                          fileId={image.id}
-                          alt={activeSet.name}
-                          size={thumbSize}
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        className={`thumb-action thumb-action--favorite ${
-                          favoriteIds.includes(image.id) ? 'is-active' : ''
-                        }`}
-                        onClick={() => onToggleFavoriteImage(activeSet.id, image.id)}
-                        aria-pressed={favoriteIds.includes(image.id)}
-                        aria-label={
-                          favoriteIds.includes(image.id)
-                            ? 'Remove from favorites'
-                            : 'Add to favorites'
-                        }
-                      >
-                        {favoriteIds.includes(image.id) ? (
-                          <IconHeartFilled size={16} />
-                        ) : (
-                          <IconHeart size={16} />
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        className={`thumb-action ${
-                          activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                        }`}
-                        onClick={() => onSetThumbnail(activeSet.id, image.id)}
-                        disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                        aria-label="Use as thumbnail"
-                      >
-                        <IconPhotoStar size={16} />
-                      </button>
-                    </div>
-                  ))}
-                  {!isLoadingImages && activeImages.length === 0 ? (
-                    totalImagesKnown === 0 ? (
-                      <p className="empty">No images found in this set.</p>
-                    ) : (
-                      <p className="empty">No images loaded yet. Use the load buttons below.</p>
-                    )
-                  ) : null}
-                </div>
-                {pendingExtra > 0 ? (
-                  <button
-                    type="button"
-                    className="ghost load-more"
-                    onClick={onLoadMoreClick(onLoadMoreImages)}
-                    disabled={isLoadingMore}
-                  >
-                    {isLoadingMore
-                      ? totalImagesKnown !== undefined
-                        ? `Loading... (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                        : 'Loading images...'
-                      : totalImagesKnown !== undefined
-                        ? activeImages.length > 0
-                          ? `Load more images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                          : `Load images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                        : activeImages.length > 0
-                          ? `Load more images (+${pendingExtra})`
-                          : `Load images (+${pendingExtra})`}
-                  </button>
+                <ImageGrid
+                  images={activeImages}
+                  isConnected={isConnected}
+                  thumbSize={thumbSize}
+                  alt={activeSet.name}
+                  modalLabel="Set"
+                  gridClassName="image-grid image-grid--zoom"
+                  gridRef={allGridRef}
+                  favoriteAction={favoriteAction}
+                  thumbnailAction={thumbnailAction}
+                />
+                {!isLoadingImages && activeImages.length === 0 ? (
+                  totalImagesKnown === 0 ? (
+                    <p className="empty">No images found in this set.</p>
+                  ) : (
+                    <p className="empty">No images loaded yet. Use the load buttons below.</p>
+                  )
                 ) : null}
-                {remainingImages !== undefined && remainingImages > 0 ? (
-                  <button
-                    type="button"
-                    className="ghost load-more"
-                    onClick={onLoadMoreClick(onLoadAllPreloaded)}
-                    disabled={isLoadingMore}
-                  >
-                    {isLoadingMore ? `Loading all ${allImagesCount}...` : `Load all remaining ${remainingImages}`}
-                  </button>
+                {pendingExtra > 0 || (remainingImages !== undefined && remainingImages > 0) ? (
+                  <GridLoadButtons
+                    variant="all"
+                    isLoading={isLoadingMore}
+                    currentCount={activeImages.length}
+                    pendingCount={pendingExtra}
+                    totalCount={totalImagesKnown}
+                    remainingCount={remainingImages}
+                    showLoadMore={pendingExtra > 0}
+                    showLoadAll={remainingImages !== undefined && remainingImages > 0}
+                    onLoadMore={onLoadMoreImages}
+                    onLoadAll={onLoadAllPreloaded}
+                  />
                 ) : null}
               </div>
             ) : null}

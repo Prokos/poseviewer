@@ -21,11 +21,16 @@ type UseModalDataLoaderOptions = {
     options?: { suppressControls?: boolean }
   ) => void;
   updateModalItems: (items: DriveImage[]) => void;
-  filterFavorites: (images: DriveImage[], favoriteIds: string[]) => DriveImage[];
-  filterNonFavorites: (images: DriveImage[], favoriteIds: string[]) => DriveImage[];
-  pickNextSample: (setId: string, images: DriveImage[], count: number) => DriveImage[];
-  pickNextFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
-  pickNextNonFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+  filterImagesByFavoriteStatus: (
+    images: DriveImage[],
+    favoriteIds: string[],
+    mode: 'favorites' | 'nonfavorites' | 'all'
+  ) => DriveImage[];
+  pickNext: {
+    sample: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+    favorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+    nonFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+  };
   setSampleImages: Dispatch<SetStateAction<DriveImage[]>>;
   setFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
   setNonFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
@@ -48,11 +53,8 @@ export function useModalDataLoader({
   setError,
   setModalImageAtIndex,
   updateModalItems,
-  filterFavorites,
-  filterNonFavorites,
-  pickNextSample,
-  pickNextFavorites,
-  pickNextNonFavorites,
+  filterImagesByFavoriteStatus,
+  pickNext,
   setSampleImages,
   setFavoriteImages,
   setNonFavoriteImages,
@@ -140,7 +142,7 @@ export function useModalDataLoader({
       return appendModalBatch({
         inFlightRef: sampleAppendInFlightRef,
         transformSource: (source) => source,
-        pickNext: pickNextSample,
+        pickNext: pickNext.sample,
         appendToList: (items) => {
           setSampleImages((current) => appendUniqueImages(current, items));
         },
@@ -155,7 +157,7 @@ export function useModalDataLoader({
     },
     [
       appendModalBatch,
-      pickNextSample,
+      pickNext,
       sampleHistoryRef,
       sampleHistorySetRef,
       setSampleImages,
@@ -166,8 +168,9 @@ export function useModalDataLoader({
     async (options?: { suppressControls?: boolean }) => {
       return appendModalBatch({
         inFlightRef: nonFavoriteAppendInFlightRef,
-        transformSource: (source) => filterNonFavorites(source, activeSet?.favoriteImageIds ?? []),
-        pickNext: pickNextNonFavorites,
+        transformSource: (source) =>
+          filterImagesByFavoriteStatus(source, activeSet?.favoriteImageIds ?? [], 'nonfavorites'),
+        pickNext: pickNext.nonFavorites,
         appendToList: (items) => {
           setNonFavoriteImages((current) => appendUniqueImages(current, items));
         },
@@ -177,8 +180,8 @@ export function useModalDataLoader({
     [
       activeSet?.favoriteImageIds,
       appendModalBatch,
-      filterNonFavorites,
-      pickNextNonFavorites,
+      filterImagesByFavoriteStatus,
+      pickNext,
       setNonFavoriteImages,
     ]
   );
@@ -187,8 +190,9 @@ export function useModalDataLoader({
     async (options?: { suppressControls?: boolean }) => {
       return appendModalBatch({
         inFlightRef: favoriteAppendInFlightRef,
-        transformSource: (source) => filterFavorites(source, activeSet?.favoriteImageIds ?? []),
-        pickNext: pickNextFavorites,
+        transformSource: (source) =>
+          filterImagesByFavoriteStatus(source, activeSet?.favoriteImageIds ?? [], 'favorites'),
+        pickNext: pickNext.favorites,
         appendToList: (items) => {
           setFavoriteImages((current) => appendUniqueImages(current, items));
         },
@@ -198,8 +202,8 @@ export function useModalDataLoader({
     [
       activeSet?.favoriteImageIds,
       appendModalBatch,
-      filterFavorites,
-      pickNextFavorites,
+      filterImagesByFavoriteStatus,
+      pickNext,
       setFavoriteImages,
     ]
   );

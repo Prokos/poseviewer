@@ -1,62 +1,46 @@
-import { IconHeart, IconHeartFilled } from '@tabler/icons-react';
-import type { MouseEvent } from 'react';
-import type { PoseSet } from '../metadata';
 import type { DriveImage } from '../drive/types';
-import { ImageThumb } from '../components/ImageThumb';
-import { useModal } from '../features/modal/ModalContext';
+import { ImageGrid } from '../components/ImageGrid';
+import { GridLoadButtons } from '../components/GridLoadButtons';
+import { useSlideshow } from '../features/slideshow/SlideshowContext';
 
-type SlideshowPageProps = {
-  isConnected: boolean;
-  slideshowSets: PoseSet[];
-  slideshowFavoriteFilter: 'all' | 'favorites' | 'nonfavorites';
-  onSlideshowFavoriteFilterChange: (value: 'all' | 'favorites' | 'nonfavorites') => void;
-  onStartSlideshow: () => void;
-  isLoadingSlideshow: boolean;
-  onClearSlideshowTags: () => void;
-  sortedTags: string[];
-  slideshowIncludeTags: string[];
-  slideshowExcludeTags: string[];
-  onToggleIncludeTag: (tag: string) => void;
-  onToggleExcludeTag: (tag: string) => void;
-  slideshowStarted: boolean;
-  viewerIndexProgress: string;
-  slideshowImages: DriveImage[];
-  slideshowImageSetMap: Map<string, string>;
-  setsById: Map<string, PoseSet>;
-  onToggleFavoriteImage: (setId: string, imageId: string) => void;
-  thumbSize: number;
-  onLoadMoreSlideshow: () => void | Promise<void>;
-  onLoadMoreClick: (
-    handler: () => void | Promise<void>
-  ) => (event: MouseEvent<HTMLButtonElement>) => void;
-  slideshowPageSize: number;
-};
-
-export function SlideshowPage({
-  isConnected,
-  slideshowSets,
-  slideshowFavoriteFilter,
-  onSlideshowFavoriteFilterChange,
-  onStartSlideshow,
-  isLoadingSlideshow,
-  onClearSlideshowTags,
-  sortedTags,
-  slideshowIncludeTags,
-  slideshowExcludeTags,
-  onToggleIncludeTag,
-  onToggleExcludeTag,
-  slideshowStarted,
-  viewerIndexProgress,
-  slideshowImages,
-  slideshowImageSetMap,
-  setsById,
-  onToggleFavoriteImage,
-  thumbSize,
-  onLoadMoreSlideshow,
-  onLoadMoreClick,
-  slideshowPageSize,
-}: SlideshowPageProps) {
-  const { openModal } = useModal();
+export function SlideshowPage() {
+  const {
+    isConnected,
+    slideshowSets,
+    slideshowFavoriteFilter,
+    onSlideshowFavoriteFilterChange,
+    onStartSlideshow,
+    isLoadingSlideshow,
+    onClearSlideshowTags,
+    sortedTags,
+    slideshowIncludeTags,
+    slideshowExcludeTags,
+    onToggleIncludeTag,
+    onToggleExcludeTag,
+    slideshowStarted,
+    viewerIndexProgress,
+    slideshowImages,
+    slideshowImageSetMap,
+    setsById,
+    onToggleFavoriteImage,
+    thumbSize,
+    onLoadMoreSlideshow,
+    slideshowPageSize,
+  } = useSlideshow();
+  const favoriteAction = {
+    isActive: (image: DriveImage) => {
+      const setId = slideshowImageSetMap.get(image.id);
+      const set = setId ? setsById.get(setId) : undefined;
+      return set?.favoriteImageIds?.includes(image.id) ?? false;
+    },
+    onToggle: (image: DriveImage) => {
+      const setId = slideshowImageSetMap.get(image.id);
+      if (setId) {
+        onToggleFavoriteImage(setId, image.id);
+      }
+    },
+    disabled: (image: DriveImage) => !slideshowImageSetMap.get(image.id),
+  };
   return (
     <section className="panel panel--slideshow">
       <div className="panel-header panel-header--row">
@@ -150,51 +134,23 @@ export function SlideshowPage({
           </div>
         ) : slideshowImages.length > 0 ? (
           <div className="stack">
-            <div className="image-grid image-grid--zoom">
-              {slideshowImages.map((image) => {
-                const setId = slideshowImageSetMap.get(image.id);
-                const set = setId ? setsById.get(setId) : undefined;
-                const isFavorite = set?.favoriteImageIds?.includes(image.id) ?? false;
-                return (
-                  <div key={image.id} className="image-tile">
-                    <button
-                      type="button"
-                      className="image-button"
-                      onClick={() => openModal(image.id, slideshowImages, 'Slideshow')}
-                    >
-                      <ImageThumb
-                        isConnected={isConnected}
-                        fileId={image.id}
-                        alt="Slideshow image"
-                        size={thumbSize}
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      className={`thumb-action thumb-action--favorite ${
-                        isFavorite ? 'is-active' : ''
-                      }`}
-                      onClick={() => (setId ? onToggleFavoriteImage(setId, image.id) : null)}
-                      aria-pressed={isFavorite}
-                      aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                      disabled={!setId}
-                    >
-                      {isFavorite ? <IconHeartFilled size={16} /> : <IconHeart size={16} />}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <button
-              type="button"
-              className="ghost load-more"
-              onClick={onLoadMoreClick(onLoadMoreSlideshow)}
-              disabled={isLoadingSlideshow || !slideshowStarted}
-            >
-              {isLoadingSlideshow
-                ? `Loading... (+${slideshowPageSize})`
-                : `Load more images (+${slideshowPageSize}) • ${slideshowImages.length}`}
-            </button>
+            <ImageGrid
+              images={slideshowImages}
+              isConnected={isConnected}
+              thumbSize={thumbSize}
+              alt="Slideshow image"
+              modalLabel="Slideshow"
+              gridClassName="image-grid image-grid--zoom"
+              favoriteAction={favoriteAction}
+            />
+            <GridLoadButtons
+              variant="slideshow"
+              isLoading={isLoadingSlideshow}
+              currentCount={slideshowImages.length}
+              pendingCount={slideshowPageSize}
+              disabled={!slideshowStarted}
+              onLoadMore={onLoadMoreSlideshow}
+            />
           </div>
         ) : (
           <p className="empty">No images matched the current filters.</p>

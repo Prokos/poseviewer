@@ -2,6 +2,7 @@ import { pickRandom } from './random';
 import type { DriveImage } from '../drive/types';
 
 export type SeenMap = Map<string, Set<string>>;
+export type FavoriteFilterMode = 'all' | 'favorites' | 'nonfavorites';
 
 export function pickNextBatch(
   setId: string,
@@ -31,6 +32,28 @@ export function pickNextBatch(
   }
   seenMap.set(setId, seen);
   return sample;
+}
+
+export function createBatchPicker(seenMap: SeenMap) {
+  return (setId: string, images: DriveImage[], count: number) =>
+    pickNextBatch(setId, images, count, seenMap);
+}
+
+export function filterImagesByFavoriteStatus(
+  images: DriveImage[],
+  favoriteIds: string[],
+  mode: FavoriteFilterMode
+) {
+  if (mode === 'all') {
+    return images;
+  }
+  if (favoriteIds.length === 0) {
+    return mode === 'favorites' ? [] : images;
+  }
+  const favorites = new Set(favoriteIds);
+  return images.filter((image) =>
+    mode === 'favorites' ? favorites.has(image.id) : !favorites.has(image.id)
+  );
 }
 
 export function appendUniqueImages(current: DriveImage[], next: DriveImage[]) {

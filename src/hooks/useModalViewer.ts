@@ -9,6 +9,7 @@ import type {
   TouchEvent,
   WheelEvent,
 } from 'react';
+import type { FavoriteFilterMode } from '../utils/imageSampling';
 import type { PoseSet } from '../metadata';
 import type { DriveImage } from '../drive/types';
 import { useModalTimer } from '../features/modal/useModalTimer';
@@ -49,11 +50,16 @@ export type ModalDeps = {
   setSampleImages: Dispatch<SetStateAction<DriveImage[]>>;
   setNonFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
   readImageListCache: (setId: string) => DriveImage[] | null;
-  filterFavorites: (images: DriveImage[], favoriteIds: string[]) => DriveImage[];
-  filterNonFavorites: (images: DriveImage[], favoriteIds: string[]) => DriveImage[];
-  pickNextSample: (setId: string, images: DriveImage[], count: number) => DriveImage[];
-  pickNextFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
-  pickNextNonFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+  filterImagesByFavoriteStatus: (
+    images: DriveImage[],
+    favoriteIds: string[],
+    mode: FavoriteFilterMode
+  ) => DriveImage[];
+  pickNext: {
+    sample: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+    favorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+    nonFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+  };
   resolveSetImages: ResolveSetImages;
   updateFavoriteImagesFromSource: UpdateFavoritesFromSource;
   handleLoadMoreImages: () => Promise<void>;
@@ -143,11 +149,8 @@ export function useModalViewer({
   slideshowPageSize,
   prefetchThumbs,
   setError,
-  filterFavorites,
-  filterNonFavorites,
-  pickNextSample,
-  pickNextFavorites,
-  pickNextNonFavorites,
+  filterImagesByFavoriteStatus,
+  pickNext,
   isLoadingMore,
 }: ModalDeps) {
   const [modalIndex, setModalIndex] = useState<number | null>(null);
@@ -372,11 +375,8 @@ export function useModalViewer({
     setError,
     setModalImageAtIndex,
     updateModalItems,
-    filterFavorites,
-    filterNonFavorites,
-    pickNextSample,
-    pickNextFavorites,
-    pickNextNonFavorites,
+    filterImagesByFavoriteStatus,
+    pickNext,
     setSampleImages,
     setFavoriteImages,
     setNonFavoriteImages,

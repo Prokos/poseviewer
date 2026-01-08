@@ -1,20 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  IconArrowDown,
   IconArrowLeft,
   IconArrowRight,
-  IconArrowUp,
-  IconDotsVertical,
+  IconClock,
   IconHeart,
   IconHeartFilled,
-  IconClock,
-  IconRefresh,
-  IconX,
-  IconTimeline,
   IconLoader2,
-  IconFolder,
-  IconPhoto,
-  IconPhotoStar,
+  IconRefresh,
+  IconTimeline,
+  IconX,
 } from '@tabler/icons-react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, type FolderPath } from './drive/scan';
@@ -50,6 +44,13 @@ import {
   writeMetadataDirtyFlag,
 } from './utils/cache';
 import { appendUniqueImages, pickNextBatch } from './utils/imageSampling';
+import { AppHeader } from './components/AppHeader';
+import { ToastStack } from './components/ToastStack';
+import { ScrollControls } from './components/ScrollControls';
+import { CreateSetPage } from './pages/CreateSetPage';
+import { OverviewPage } from './pages/OverviewPage';
+import { SlideshowPage } from './pages/SlideshowPage';
+import { SetViewerPage } from './pages/SetViewerPage';
 
 const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
 const IMAGE_PAGE_SIZE = 96;
@@ -111,59 +112,6 @@ function mergeMetadata(local: MetadataDocument, remote: MetadataDocument): Metad
     merged.push(set);
   }
   return { version: 1, sets: merged };
-}
-
-function ImageThumb({
-  isConnected,
-  fileId,
-  alt,
-  size,
-}: {
-  isConnected: boolean;
-  fileId: string;
-  alt: string;
-  size: number;
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  if (!fileId) {
-    return <div className="thumb thumb--empty">No thumbnail</div>;
-  }
-
-  if (!isConnected) {
-    return <div className="thumb thumb--empty">Connect to load</div>;
-  }
-
-  return (
-    <div
-      className="thumb"
-      ref={containerRef}
-      onMouseMove={(event) => {
-        const bounds = containerRef.current?.getBoundingClientRect();
-        if (!bounds) {
-          return;
-        }
-        const y = event.clientY - bounds.top;
-        const raw = y / bounds.height;
-        const clamped = Math.min(1, Math.max(0, raw));
-        const start = 0.2;
-        const end = 0.8;
-        let percent = 0;
-        if (clamped <= start) {
-          percent = 0;
-        } else if (clamped >= end) {
-          percent = 100;
-        } else {
-          percent = ((clamped - start) / (end - start)) * 100;
-        }
-        containerRef.current?.style.setProperty('--thumb-pos', `${percent}%`);
-      }}
-      onMouseLeave={() => {
-        containerRef.current?.style.setProperty('--thumb-pos', '50%');
-      }}
-    >
-      <img src={createProxyThumbUrl(fileId, size)} alt={alt} loading="lazy" decoding="async" />
-    </div>
-  );
 }
 
 export default function App() {
@@ -3907,53 +3855,13 @@ export default function App() {
 
   return (
     <div className={`app ${isLoadingMetadata ? 'app--loading' : ''}`}>
-      <header className="topbar">
-        <button
-          type="button"
-          className="title topbar-title"
-          onClick={() => setPage('overview')}
-        >
-          Pose Viewer
-        </button>
-        <div className="auth-chip">
-          <button className="chip-button" onClick={handleConnect}>
-            {isConnected ? 'Reconnect' : 'Connect'}
-          </button>
-          {isConnected ? <span className="chip-status">Connected</span> : null}
-        </div>
-        <div className="nav-tabs">
-          <button
-            type="button"
-            className={`nav-tab ${page === 'overview' ? 'is-active' : ''}`}
-            onClick={() => setPage('overview')}
-          >
-            Sets
-          </button>
-          <button
-            type="button"
-            className={`nav-tab ${page === 'create' ? 'is-active' : ''}`}
-            onClick={() => setPage('create')}
-          >
-            Create
-          </button>
-          <button
-            type="button"
-            className={`nav-tab ${page === 'slideshow' ? 'is-active' : ''}`}
-            onClick={() => setPage('slideshow')}
-          >
-            Slideshow
-          </button>
-          {activeSet ? (
-            <button
-              type="button"
-              className={`nav-tab ${page === 'set' ? 'is-active' : ''}`}
-              onClick={() => setPage('set')}
-            >
-              Viewer
-            </button>
-          ) : null}
-        </div>
-      </header>
+      <AppHeader
+        page={page}
+        activeSet={activeSet}
+        isConnected={isConnected}
+        onConnect={handleConnect}
+        onNavigate={setPage}
+      />
       {isLoadingMetadata ? (
         <div className="loading-overlay loading-overlay--full">
           <div className="loading-card">Loading metadata…</div>
@@ -3961,1000 +3869,149 @@ export default function App() {
       ) : null}
 
       {page === 'create' ? (
-      <section className="columns">
-        <div className="panel">
-          <div className="panel-header panel-header--row">
-            <div>
-              <h2>Folder paths</h2>
-              <p>Select any folder (including nested) to define a set. Limited to 50 paths.</p>
-            </div>
-            <div className="panel-actions">
-              <button className="primary" onClick={handleScan} disabled={!isConnected || !rootId}>
-                {isScanning ? 'Scanning…' : 'Scan folders'}
-              </button>
-            </div>
-          </div>
-          <div className="panel-body panel-body--overlay">
-            <label className="field">
-              <span>Filter folders</span>
-              <input
-                type="search"
-                value={folderFilter}
-                onChange={(event) => setFolderFilter(event.target.value)}
-                placeholder="Search by path"
-              />
-            </label>
-            {hiddenFolders.length > 0 ? (
-              <button
-                className="ghost"
-                type="button"
-                onClick={() => setShowHiddenFolders((value) => !value)}
-              >
-                {showHiddenFolders ? 'Hide hidden folders' : 'Show hidden folders'}
-              </button>
-            ) : null}
-            {showHiddenFolders && hiddenFolders.length > 0 ? (
-              <div className="hidden-list">
-                {hiddenFolders.map((folder) => (
-                  <div key={folder.id} className="hidden-pill">
-                    <span>{folder.path}</span>
-                    <button className="pill-button" onClick={() => handleShowFolder(folder.id)}>
-                      Unhide
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            <div className="list">
-              {filteredFolders.map((folder) => (
-                <div key={folder.id} className="list-row">
-                  <button
-                    className={`list-item ${selectedFolder?.id === folder.id ? 'active' : ''}`}
-                    onClick={() => handleSelectFolder(folder)}
-                  >
-                    <span>{folder.path}</span>
-                    <span className="badge">{folder.name}</span>
-                  </button>
-                  <button className="list-action" onClick={() => handleHideFolder(folder)}>
-                    Hide
-                  </button>
-                </div>
-              ))}
-              {filteredFolders.length === 0 ? (
-                <p className="empty">No folders yet. Run a scan to populate this list.</p>
-              ) : null}
-            </div>
-            {error ? <p className="error">{error}</p> : null}
-            {isScanning ? (
-              <div className="panel-overlay">
-                <div className="overlay-card">
-                  <p>Scanning folders…</p>
-                  <p className="muted">{scanCount}/50 found</p>
-                  {scanPath ? <p className="overlay-path">{scanPath}</p> : null}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="panel">
-          <div className="panel-header">
-            <h2>Create a set</h2>
-            <p>Turn any folder path into a library set.</p>
-          </div>
-          <div className="panel-body">
-            {selectedFolder ? (
-              <div className="stack">
-                <a
-                  className="pill"
-                  href={`https://drive.google.com/drive/folders/${selectedFolder.id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {selectedFolder.path}
-                </a>
-                <label className="field">
-                  <span>Set name</span>
-                  <input
-                    type="text"
-                    value={setName}
-                    onChange={(event) => setSetName(event.target.value)}
-                  />
-                </label>
-                <label className="field">
-                  <span>Tags (comma separated)</span>
-                  <input
-                    type="text"
-                    value={setTags}
-                    onChange={(event) => setSetTags(event.target.value)}
-                    placeholder="male, clothed, 1000+"
-                  />
-                </label>
-                {availableTags.length > 0 ? (
-                  <div className="tag-suggestions">
-                    <div className="tag-row">
-                      {sortedQuickTags.map((tag) => (
-                        <button
-                          key={tag}
-                          type="button"
-                          className={`tag-button ${
-                            selectedCreateTags.includes(tag) ? 'is-active' : ''
-                          }`}
-                          onClick={() => toggleCreateTag(tag)}
-                        >
-                          {tag}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                <div className="preview">
-                <div className="preview-header">
-                  <p className="muted">Preview sample (random 8)</p>
-                  {previewCount !== null ? (
-                    <p className="muted">{previewCount} images</p>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={handleRefreshPreview}
-                    disabled={isLoadingPreview}
-                  >
-                    {isLoadingPreview ? 'Refreshing…' : 'Refresh'}
-                  </button>
-                  </div>
-                  {isLoadingPreview ? (
-                    <div className="stack">
-                      <p className="empty">Loading preview…</p>
-                      {previewIndexProgress ? <p className="muted">{previewIndexProgress}</p> : null}
-                    </div>
-                  ) : previewIndexProgress ? (
-                    <p className="muted">{previewIndexProgress}</p>
-                  ) : previewImages.length > 0 ? (
-                    <div className="preview-grid">
-                      {previewImages.map((image) => (
-                        <button
-                          key={image.id}
-                          type="button"
-                          className="image-button"
-                          onClick={() => openModal(image.id, previewImages, 'Preview')}
-                        >
-                          <ImageThumb
-                            isConnected={isConnected}
-                            fileId={image.id}
-                            alt={selectedFolder.name}
-                            size={THUMB_SIZE}
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="empty">No images found under this folder.</p>
-                  )}
-                </div>
-                <button className="primary" onClick={handleCreateSet} disabled={isSaving}>
-                  {isSaving ? 'Saving…' : 'Create set'}
-                </button>
-              </div>
-            ) : (
-              <p className="empty">Select a folder path to populate this form.</p>
-            )}
-          </div>
-        </div>
-      </section>
+        <CreateSetPage
+          isConnected={isConnected}
+          rootId={rootId}
+          isScanning={isScanning}
+          scanCount={scanCount}
+          scanPath={scanPath}
+          folderFilter={folderFilter}
+          onFolderFilterChange={setFolderFilter}
+          hiddenFolders={hiddenFolders}
+          showHiddenFolders={showHiddenFolders}
+          onToggleHiddenFolders={() => setShowHiddenFolders((value) => !value)}
+          onShowFolder={handleShowFolder}
+          filteredFolders={filteredFolders}
+          selectedFolder={selectedFolder}
+          onSelectFolder={handleSelectFolder}
+          onHideFolder={handleHideFolder}
+          error={error}
+          isSaving={isSaving}
+          setName={setName}
+          onSetNameChange={setSetName}
+          setTags={setTags}
+          onSetTagsChange={setSetTags}
+          availableTags={availableTags}
+          sortedQuickTags={sortedQuickTags}
+          selectedCreateTags={selectedCreateTags}
+          onToggleCreateTag={toggleCreateTag}
+          previewImages={previewImages}
+          previewCount={previewCount}
+          isLoadingPreview={isLoadingPreview}
+          previewIndexProgress={previewIndexProgress}
+          onRefreshPreview={handleRefreshPreview}
+          onCreateSet={handleCreateSet}
+          onScanFolders={handleScan}
+          onOpenModal={openModal}
+          thumbSize={THUMB_SIZE}
+        />
       ) : null}
 
       {page === 'overview' ? (
-      <section className="panel">
-        <div className="panel-header panel-header--row panel-header--overview">
-          <div className="overview-title">
-            <h2>Sets</h2>
-            <p className="muted">{metadata.sets.length} total</p>
-          </div>
-          <div className="overview-controls">
-            <label className="field field--inline">
-              <span>Filter sets</span>
-              <input
-                type="search"
-                value={setFilter}
-                onChange={(event) => setSetFilter(event.target.value)}
-                placeholder="Search by name or tag"
-              />
-            </label>
-            <label className="field field--inline">
-              <span>Sort sets</span>
-              <select value={setSort} onChange={(event) => setSetSort(event.target.value)}>
-                <option value="added_desc">Added (newest)</option>
-                <option value="added_asc">Added (oldest)</option>
-                <option value="images_desc">Images (high to low)</option>
-                <option value="images_asc">Images (low to high)</option>
-                <option value="favs_desc">Favorites (high to low)</option>
-                <option value="favs_asc">Favorites (low to high)</option>
-              </select>
-            </label>
-          </div>
-        </div>
-        <div className="panel-body">
-          {sortedTags.length > 0 ? (
-            <div className="tag-suggestions">
-              <div className="tag-filter-header">
-                <p className="muted">Filter tags</p>
-                <button
-                  type="button"
-                  className="ghost tag-filter-clear"
-                  onClick={clearSetFilters}
-                  disabled={selectedTags.length === 0 && setFilter.trim().length === 0}
-                >
-                  Clear filters
-                </button>
-              </div>
-              <div className="tag-row">
-                {sortedTags.map((tag) => {
-                  const isActive = selectedTags.includes(tag);
-                  const count = tagCounts[tag] ?? 0;
-                  return (
-                    <button
-                      key={tag}
-                      type="button"
-                      className={`tag-button ${isActive ? 'is-active' : ''}`}
-                      onClick={() => toggleFilterTag(tag)}
-                    >
-                      {tag} ({count})
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-          <div className="card-grid">
-            {filteredSets.map((set) => (
-              <button
-                key={set.id}
-                className="card card--clickable"
-                onClick={() => handleOpenSet(set)}
-              >
-                <div className="card-thumb">
-                  {set.thumbnailFileId ? (
-                    <ImageThumb
-                      isConnected={isConnected}
-                      fileId={set.thumbnailFileId}
-                      alt={set.name}
-                      size={CARD_THUMB_SIZE}
-                    />
-                  ) : (
-                    <div className="thumb thumb--empty">No thumbnail</div>
-                  )}
-                  {typeof set.imageCount === 'number' ? (
-                    <span
-                      className="tag ghost tag--icon card-thumb-meta card-thumb-meta--left"
-                      aria-label={`${set.imageCount} images`}
-                      title={`${set.imageCount} images`}
-                    >
-                      <IconPhoto size={14} />
-                      <span>{set.imageCount}</span>
-                    </span>
-                  ) : null}
-                  <span
-                    className="tag ghost tag--icon card-thumb-meta card-thumb-meta--right"
-                    aria-label={`${(set.favoriteImageIds ?? []).length} favorites`}
-                    title={`${(set.favoriteImageIds ?? []).length} favorites`}
-                  >
-                    <IconHeart size={14} />
-                    <span>{(set.favoriteImageIds ?? []).length}</span>
-                  </span>
-                </div>
-              </button>
-            ))}
-            {filteredSets.length === 0 ? (
-              <p className="empty">No sets yet. Create one from a folder path.</p>
-            ) : null}
-          </div>
-        </div>
-      </section>
+        <OverviewPage
+          isConnected={isConnected}
+          setFilter={setFilter}
+          onSetFilterChange={setSetFilter}
+          setSort={setSort}
+          onSetSortChange={setSetSort}
+          selectedTags={selectedTags}
+          sortedTags={sortedTags}
+          tagCounts={tagCounts}
+          onToggleFilterTag={toggleFilterTag}
+          onClearFilters={clearSetFilters}
+          filteredSets={filteredSets}
+          totalSets={metadata.sets.length}
+          onOpenSet={handleOpenSet}
+          cardThumbSize={CARD_THUMB_SIZE}
+        />
       ) : null}
 
       {page === 'slideshow' ? (
-      <section className="panel panel--slideshow">
-        <div className="panel-header panel-header--row">
-          <div className="overview-title">
-            <h2>Slideshow</h2>
-            <p className="muted">{slideshowSets.length} sets matched</p>
-          </div>
-          <div className="overview-controls">
-            <label className="field field--inline">
-              <span>Favorites</span>
-              <select
-                value={slideshowFavoriteFilter}
-                onChange={(event) =>
-                  setSlideshowFavoriteFilter(
-                    event.target.value as 'all' | 'favorites' | 'nonfavorites'
-                  )
-                }
-              >
-                <option value="all">All images</option>
-                <option value="favorites">Favorites only</option>
-                <option value="nonfavorites">Non favorites only</option>
-              </select>
-            </label>
-            <button
-              type="button"
-              className="primary"
-              onClick={handleStartSlideshow}
-              disabled={isLoadingSlideshow || slideshowSets.length === 0}
-            >
-              {isLoadingSlideshow ? 'Loading…' : 'Start slideshow'}
-            </button>
-            <button
-              type="button"
-              className="ghost tag-filter-clear"
-              onClick={clearSlideshowTags}
-              disabled={
-                slideshowIncludeTags.length === 0 && slideshowExcludeTags.length === 0
-              }
-            >
-              Clear tags
-            </button>
-          </div>
-        </div>
-        <div className="panel-body">
-          {sortedTags.length > 0 ? (
-            <div className="tag-suggestions">
-              <div className="tag-filter-header">
-                <p className="muted">Include tags</p>
-              </div>
-              <div className="tag-row">
-                {sortedTags.map((tag) => {
-                  const isActive = slideshowIncludeTags.includes(tag);
-                  return (
-                    <button
-                      key={`include-${tag}`}
-                      type="button"
-                      className={`tag-button ${isActive ? 'is-active' : ''}`}
-                      onClick={() => toggleSlideshowIncludeTag(tag)}
-                    >
-                      {tag}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="tag-filter-header">
-                <p className="muted">Exclude tags</p>
-              </div>
-              <div className="tag-row">
-                {sortedTags.map((tag) => {
-                  const isActive = slideshowExcludeTags.includes(tag);
-                  return (
-                    <button
-                      key={`exclude-${tag}`}
-                      type="button"
-                      className={`tag-button tag-button--exclude ${
-                        isActive ? 'is-active' : ''
-                      }`}
-                      onClick={() => toggleSlideshowExcludeTag(tag)}
-                    >
-                      {tag}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-          {slideshowSets.length === 0 ? (
-            <p className="empty">No sets match the current filters.</p>
-          ) : !slideshowStarted ? (
-            <p className="empty">Press Start slideshow to load images.</p>
-          ) : isLoadingSlideshow && slideshowImages.length === 0 ? (
-            <div className="stack">
-              <p className="empty">Loading slideshow…</p>
-              {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
-            </div>
-          ) : slideshowImages.length > 0 ? (
-            <div className="stack">
-              <div className="image-grid image-grid--zoom">
-                {slideshowImages.map((image) => {
-                  const setId = slideshowImageSetRef.current.get(image.id);
-                  const set = setId ? setsById.get(setId) : undefined;
-                  const isFavorite = set?.favoriteImageIds?.includes(image.id) ?? false;
-                  return (
-                  <div key={image.id} className="image-tile">
-                    <button
-                      type="button"
-                      className="image-button"
-                      onClick={() => openModal(image.id, slideshowImages, 'Slideshow')}
-                    >
-                      <ImageThumb
-                        isConnected={isConnected}
-                        fileId={image.id}
-                        alt="Slideshow image"
-                        size={THUMB_SIZE}
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      className={`thumb-action thumb-action--favorite ${
-                        isFavorite ? 'is-active' : ''
-                      }`}
-                      onClick={() => (setId ? toggleFavoriteImage(setId, image.id) : null)}
-                      aria-pressed={isFavorite}
-                      aria-label={
-                        isFavorite
-                          ? 'Remove from favorites'
-                          : 'Add to favorites'
-                      }
-                      disabled={!setId}
-                    >
-                      {isFavorite ? (
-                        <IconHeartFilled size={16} />
-                      ) : (
-                        <IconHeart size={16} />
-                      )}
-                    </button>
-                  </div>
-                );
-              })}
-              </div>
-              <button
-                type="button"
-                className="ghost load-more"
-                onClick={handleLoadMoreClick(handleLoadMoreSlideshow)}
-                disabled={isLoadingSlideshow || !slideshowStarted}
-              >
-                {isLoadingSlideshow
-                  ? `Loading... (+${slideshowPageSize})`
-                  : `Load more images (+${slideshowPageSize}) • ${slideshowImages.length}`}
-              </button>
-            </div>
-          ) : (
-            <p className="empty">No images matched the current filters.</p>
-          )}
-        </div>
-      </section>
+        <SlideshowPage
+          isConnected={isConnected}
+          slideshowSets={slideshowSets}
+          slideshowFavoriteFilter={slideshowFavoriteFilter}
+          onSlideshowFavoriteFilterChange={setSlideshowFavoriteFilter}
+          onStartSlideshow={handleStartSlideshow}
+          isLoadingSlideshow={isLoadingSlideshow}
+          onClearSlideshowTags={clearSlideshowTags}
+          sortedTags={sortedTags}
+          slideshowIncludeTags={slideshowIncludeTags}
+          slideshowExcludeTags={slideshowExcludeTags}
+          onToggleIncludeTag={toggleSlideshowIncludeTag}
+          onToggleExcludeTag={toggleSlideshowExcludeTag}
+          slideshowStarted={slideshowStarted}
+          viewerIndexProgress={viewerIndexProgress}
+          slideshowImages={slideshowImages}
+          slideshowImageSetMap={slideshowImageSetRef.current}
+          setsById={setsById}
+          onToggleFavoriteImage={toggleFavoriteImage}
+          onOpenModal={openModal}
+          thumbSize={THUMB_SIZE}
+          onLoadMoreSlideshow={handleLoadMoreSlideshow}
+          onLoadMoreClick={handleLoadMoreClick}
+          slideshowPageSize={slideshowPageSize}
+        />
       ) : null}
 
       {page === 'set' ? (
-      <section className="panel" ref={setViewerRef}>
-        <div className="panel-header panel-header--row panel-header--viewer">
-          <div className="viewer-title">
-            {activeSet ? (
-              <div className="viewer-title-row">
-                <div className="viewer-thumb">
-                  {activeSet.thumbnailFileId ? (
-                    <ImageThumb
-                      isConnected={isConnected}
-                      fileId={activeSet.thumbnailFileId}
-                      alt={activeSet.name}
-                      size={VIEWER_THUMB_SIZE}
-                    />
-                  ) : (
-                    <div className="thumb thumb--empty">No thumbnail</div>
-                  )}
-                  <span
-                    className="tag ghost tag--icon viewer-thumb-meta viewer-thumb-meta--left"
-                    aria-label="Image count"
-                  >
-                    <IconPhoto size={14} />
-                    <span>
-                      {typeof activeSet.imageCount === 'number'
-                        ? activeSet.imageCount
-                        : activeImages.length}
-                    </span>
-                  </span>
-                  <span
-                    className="tag ghost tag--icon viewer-thumb-meta viewer-thumb-meta--right"
-                    aria-label="Favorite count"
-                  >
-                    <IconHeart size={14} />
-                    <span>{(activeSet.favoriteImageIds ?? []).length}</span>
-                  </span>
-                </div>
-                <div className="viewer-title-stack">
-                  <div className="viewer-title-bar">
-                    <input
-                      className="viewer-title-input"
-                      type="text"
-                      key={activeSet.id}
-                      defaultValue={activeSet.name}
-                      onBlur={(event) =>
-                        handleUpdateSet(activeSet.id, {
-                          name: event.target.value.trim() || activeSet.name,
-                        })
-                      }
-                    />
-                    <div className="viewer-actions">
-                      <div className="viewer-menu">
-                        <button
-                          type="button"
-                          className="ghost viewer-menu-trigger"
-                          aria-label="Set actions"
-                        >
-                          <IconDotsVertical size={18} />
-                        </button>
-                        <div className="viewer-menu-panel">
-                          <button
-                            className="ghost"
-                            onClick={() => handleRefreshSet(activeSet)}
-                            disabled={isRefreshingSet}
-                          >
-                            {isRefreshingSet ? 'Refreshing…' : 'Refresh data'}
-                          </button>
-                          <button
-                            className="ghost ghost--danger"
-                            onClick={() => handleDeleteSet(activeSet)}
-                            disabled={isSaving}
-                          >
-                            Delete set
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="viewer-meta-inline">
-                    <IconFolder size={16} />
-                    <a
-                      className="link viewer-path"
-                      href={`https://drive.google.com/drive/folders/${activeSet.rootFolderId}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {activeSet.rootPath}
-                    </a>
-                  </div>
-                  <div key={activeSet.id} className="field-group field-group--viewer">
-                    {viewerQuickTags.active.length > 0 || viewerQuickTags.inactive.length > 0 ? (
-                      <div className="tag-split">
-                        {viewerQuickTags.active.length > 0 ? (
-                          <div className="tag-row tag-row--inline tag-row--active">
-                            {viewerQuickTags.active.map((tag) => (
-                              <button
-                                key={tag}
-                                type="button"
-                                className="tag-button is-active"
-                                onClick={() => toggleActiveSetTag(tag)}
-                              >
-                                {tag}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                        {viewerQuickTags.inactive.length > 0 ? (
-                          <div className="tag-row tag-row--inline tag-row--inactive">
-                            {viewerQuickTags.inactive.map((tag) => (
-                              <button
-                                key={tag}
-                                type="button"
-                                className="tag-button"
-                                onClick={() => toggleActiveSetTag(tag)}
-                              >
-                                {tag}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <h2>Set viewer</h2>
-            )}
-          </div>
-        </div>
-        <div className="panel-body">
-          {activeSet ? (
-            <div className="stack">
-              <div className="subtabs">
-                <button
-                  type="button"
-                  className={`subtab ${setViewerTab === 'samples' ? 'is-active' : ''}`}
-                  onClick={() => handleSetViewerTab('samples')}
-                >
-                  Sample
-                </button>
-                <button
-                  type="button"
-                  className={`subtab ${setViewerTab === 'favorites' ? 'is-active' : ''}`}
-                  onClick={() => handleSetViewerTab('favorites')}
-                >
-                  Favorites ({favoritesCount})
-                </button>
-                <button
-                  type="button"
-                  className={`subtab ${setViewerTab === 'nonfavorites' ? 'is-active' : ''}`}
-                  onClick={() => handleSetViewerTab('nonfavorites')}
-                >
-                  Non favorites{nonFavoritesCount !== undefined ? ` (${nonFavoritesCount})` : ''}
-                </button>
-                <button
-                  type="button"
-                  className={`subtab ${setViewerTab === 'all' ? 'is-active' : ''}`}
-                  onClick={() => handleSetViewerTab('all')}
-                >
-                  All images ({allImagesCount})
-                </button>
-              </div>
-              {setViewerTab === 'samples' ? (
-                <div className="preview">
-                  {isLoadingSample ? (
-                    <div className="stack">
-                      <p className="empty">Loading sample…</p>
-                      {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
-                    </div>
-                  ) : viewerIndexProgress ? (
-                    <p className="muted">{viewerIndexProgress}</p>
-                  ) : sampleImages.length > 0 ? (
-                    <div className="image-grid image-grid--zoom" ref={sampleGridRef}>
-                      {sampleImages.map((image) => (
-                        <div key={image.id} className="image-tile">
-                          <button
-                            type="button"
-                            className="image-button"
-                            onClick={() => openModal(image.id, sampleImages, 'Sample')}
-                          >
-                            <ImageThumb
-                              isConnected={isConnected}
-                              fileId={image.id}
-                              alt={activeSet.name}
-                              size={THUMB_SIZE}
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            className={`thumb-action thumb-action--favorite ${
-                              favoriteIds.includes(image.id) ? 'is-active' : ''
-                            }`}
-                            onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
-                            aria-pressed={favoriteIds.includes(image.id)}
-                            aria-label={
-                              favoriteIds.includes(image.id)
-                                ? 'Remove from favorites'
-                                : 'Add to favorites'
-                            }
-                          >
-                            {favoriteIds.includes(image.id) ? (
-                              <IconHeartFilled size={16} />
-                            ) : (
-                              <IconHeart size={16} />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            className={`thumb-action ${
-                              activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                            }`}
-                            onClick={() => handleSetThumbnail(activeSet.id, image.id)}
-                            disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                            aria-label="Use as thumbnail"
-                          >
-                            <IconPhotoStar size={16} />
-                          </button>
-                        </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty">No sample yet. Refresh to build a preview.</p>
-                )}
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={handleLoadMoreClick(handleLoadMoreSample)}
-                  disabled={isLoadingSample}
-                >
-                  {isLoadingSample
-                    ? totalImagesKnown !== undefined
-                      ? `Loading... (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
-                      : 'Loading images...'
-                    : totalImagesKnown !== undefined
-                      ? sampleImages.length > 0
-                        ? `Load more images (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
-                        : `Load images (+${samplePendingExtra}) • ${sampleImages.length}/${totalImagesKnown}`
-                      : sampleImages.length > 0
-                        ? `Load more images (+${samplePendingExtra})`
-                        : `Load images (+${samplePendingExtra})`}
-                </button>
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={handleLoadMoreClick(handleLoadAllSample)}
-                  disabled={isLoadingSample}
-                >
-                  {isLoadingSample
-                    ? totalImagesKnown !== undefined
-                      ? `Loading all ${totalImagesKnown}...`
-                      : 'Loading all images...'
-                    : totalImagesKnown !== undefined
-                      ? `Load all remaining ${Math.max(
-                          0,
-                          totalImagesKnown - sampleImages.length
-                        )}`
-                      : 'Load all remaining'}
-                </button>
-              </div>
-              ) : null}
-              {setViewerTab === 'nonfavorites' ? (
-                <div className="preview">
-                  {isLoadingNonFavorites ? (
-                    <div className="stack">
-                      <p className="empty">Loading images…</p>
-                      {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
-                    </div>
-                  ) : viewerIndexProgress ? (
-                    <p className="muted">{viewerIndexProgress}</p>
-                  ) : nonFavoriteImages.length > 0 ? (
-                    <div className="image-grid image-grid--zoom" ref={sampleGridRef}>
-                      {nonFavoriteImages.map((image) => (
-                        <div key={image.id} className="image-tile">
-                          <button
-                            type="button"
-                            className="image-button"
-                            onClick={() =>
-                              openModal(image.id, nonFavoriteImages, 'Non favorites')
-                            }
-                          >
-                            <ImageThumb
-                              isConnected={isConnected}
-                              fileId={image.id}
-                              alt={activeSet.name}
-                              size={THUMB_SIZE}
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            className={`thumb-action thumb-action--favorite ${
-                              favoriteIds.includes(image.id) ? 'is-active' : ''
-                            }`}
-                            onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
-                            aria-pressed={favoriteIds.includes(image.id)}
-                            aria-label={
-                              favoriteIds.includes(image.id)
-                                ? 'Remove from favorites'
-                                : 'Add to favorites'
-                            }
-                          >
-                            {favoriteIds.includes(image.id) ? (
-                              <IconHeartFilled size={16} />
-                            ) : (
-                              <IconHeart size={16} />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            className={`thumb-action ${
-                              activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                            }`}
-                            onClick={() => handleSetThumbnail(activeSet.id, image.id)}
-                            disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                            aria-label="Use as thumbnail"
-                          >
-                            <IconPhotoStar size={16} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="empty">No non-favorites yet.</p>
-                  )}
-                  <button
-                    type="button"
-                    className="ghost load-more"
-                    onClick={handleLoadMoreClick(handleLoadMoreNonFavorites)}
-                    disabled={isLoadingNonFavorites}
-                  >
-                    {isLoadingNonFavorites
-                      ? nonFavoritesCount !== undefined
-                        ? `Loading... (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
-                        : 'Loading images...'
-                      : nonFavoritesCount !== undefined
-                        ? nonFavoriteImages.length > 0
-                          ? `Load more images (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
-                          : `Load images (+${nonFavoritesPendingExtra}) • ${nonFavoriteImages.length}/${nonFavoritesCount}`
-                        : nonFavoriteImages.length > 0
-                          ? `Load more images (+${nonFavoritesPendingExtra})`
-                          : `Load images (+${nonFavoritesPendingExtra})`}
-                  </button>
-                <button
-                  type="button"
-                  className="ghost load-more"
-                  onClick={handleLoadMoreClick(handleLoadAllNonFavorites)}
-                  disabled={isLoadingNonFavorites}
-                >
-                  {isLoadingNonFavorites
-                    ? nonFavoritesCount !== undefined
-                      ? `Loading all ${nonFavoritesCount}...`
-                      : 'Loading all images...'
-                    : nonFavoritesCount !== undefined
-                      ? `Load all remaining ${Math.max(
-                          0,
-                          nonFavoritesCount - nonFavoriteImages.length
-                        )} • ${nonFavoriteImages.length}/${nonFavoritesCount}`
-                      : 'Load all remaining'}
-                </button>
-              </div>
-            ) : null}
-              {setViewerTab === 'favorites' ? (
-                <div className="preview">
-                  {isLoadingFavorites ? (
-                    <div className="stack">
-                      <p className="empty">Loading favorites…</p>
-                      {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
-                    </div>
-                  ) : viewerIndexProgress ? (
-                    <p className="muted">{viewerIndexProgress}</p>
-                  ) : favoriteImages.length > 0 ? (
-                    <div className="image-grid image-grid--zoom image-grid--filled">
-                      {favoriteImages.map((image) => (
-                        <div key={image.id} className="image-tile">
-                          <button
-                            type="button"
-                            className="image-button"
-                            onClick={() => openModal(image.id, favoriteImages, 'Favorites')}
-                          >
-                            <ImageThumb
-                              isConnected={isConnected}
-                              fileId={image.id}
-                              alt={activeSet.name}
-                              size={THUMB_SIZE}
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            className={`thumb-action thumb-action--favorite ${
-                              favoriteIds.includes(image.id) ? 'is-active' : ''
-                            }`}
-                            onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
-                            aria-pressed={favoriteIds.includes(image.id)}
-                            aria-label={
-                              favoriteIds.includes(image.id)
-                                ? 'Remove from favorites'
-                                : 'Add to favorites'
-                            }
-                          >
-                            {favoriteIds.includes(image.id) ? (
-                              <IconHeartFilled size={16} />
-                            ) : (
-                              <IconHeart size={16} />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            className={`thumb-action ${
-                              activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                            }`}
-                            onClick={() => handleSetThumbnail(activeSet.id, image.id)}
-                            disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                            aria-label="Use as thumbnail"
-                          >
-                            <IconPhotoStar size={16} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="empty">No favorites yet.</p>
-                  )}
-                  <button
-                    type="button"
-                    className="ghost load-more"
-                    onClick={handleLoadMoreClick(handleLoadMoreFavorites)}
-                    disabled={isLoadingFavorites || favoritesRemaining === 0}
-                  >
-                    {isLoadingFavorites
-                      ? `Loading... (+${favoritesPendingExtra}) • ${favoriteImages.length}/${favoritesCount}`
-                      : favoritesRemaining > 0
-                        ? `Load more favorites (+${favoritesPendingExtra}) • ${favoriteImages.length}/${favoritesCount}`
-                        : `All favorites loaded (${favoriteImages.length})`}
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost load-more"
-                    onClick={handleLoadMoreClick(handleLoadAllFavorites)}
-                    disabled={isLoadingFavorites || favoritesRemaining === 0}
-                  >
-                    {isLoadingFavorites
-                      ? `Loading all ${favoritesCount}...`
-                      : `Load all remaining ${favoritesRemaining}`}
-                  </button>
-                </div>
-              ) : null}
-              {setViewerTab === 'all' ? (
-                <div className="stack">
-                  <div className="image-grid image-grid--zoom" ref={allGridRef}>
-                    {activeImages.map((image) => (
-                      <div key={image.id} className="image-tile">
-                        <button
-                          type="button"
-                          className="image-button"
-                          onClick={() => openModal(image.id, activeImages, 'Set')}
-                        >
-                          <ImageThumb
-                            isConnected={isConnected}
-                            fileId={image.id}
-                            alt={activeSet.name}
-                            size={THUMB_SIZE}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          className={`thumb-action thumb-action--favorite ${
-                            favoriteIds.includes(image.id) ? 'is-active' : ''
-                          }`}
-                          onClick={() => toggleFavoriteImage(activeSet.id, image.id)}
-                          aria-pressed={favoriteIds.includes(image.id)}
-                          aria-label={
-                            favoriteIds.includes(image.id)
-                              ? 'Remove from favorites'
-                              : 'Add to favorites'
-                          }
-                        >
-                          {favoriteIds.includes(image.id) ? (
-                            <IconHeartFilled size={16} />
-                          ) : (
-                            <IconHeart size={16} />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className={`thumb-action ${
-                            activeSet.thumbnailFileId === image.id ? 'is-active' : ''
-                          }`}
-                          onClick={() => handleSetThumbnail(activeSet.id, image.id)}
-                          disabled={isSaving || activeSet.thumbnailFileId === image.id}
-                          aria-label="Use as thumbnail"
-                        >
-                          <IconPhotoStar size={16} />
-                        </button>
-                      </div>
-                    ))}
-                    {!isLoadingImages && activeImages.length === 0 ? (
-                      totalImagesKnown === 0 ? (
-                        <p className="empty">No images found in this set.</p>
-                      ) : (
-                        <p className="empty">
-                          No images loaded yet. Use the load buttons below.
-                        </p>
-                      )
-                    ) : null}
-                  </div>
-                  {pendingExtra > 0 ? (
-                    <button
-                      type="button"
-                      className="ghost load-more"
-                      onClick={handleLoadMoreClick(handleLoadMoreImages)}
-                      disabled={isLoadingMore}
-                    >
-                      {isLoadingMore
-                        ? totalImagesKnown !== undefined
-                          ? `Loading... (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                          : 'Loading images...'
-                        : totalImagesKnown !== undefined
-                          ? activeImages.length > 0
-                            ? `Load more images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                      : `Load images (+${pendingExtra}) • ${activeImages.length}/${totalImagesKnown}`
-                    : activeImages.length > 0
-                      ? `Load more images (+${allPageSize})`
-                      : `Load images (+${allPageSize})`}
-                  </button>
-                ) : null}
-                  {remainingImages !== undefined && remainingImages > 0 ? (
-                    <button
-                      type="button"
-                      className="ghost load-more"
-                      onClick={handleLoadMoreClick(handleLoadAllPreloaded)}
-                      disabled={isLoadingMore}
-                    >
-                      {isLoadingMore
-                        ? `Loading all ${totalImages}...`
-                        : `Load all remaining ${remainingImages}`}
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <p className="empty">Select a set above to view images.</p>
-          )}
-        </div>
-      </section>
+        <SetViewerPage
+          activeSet={activeSet}
+          isConnected={isConnected}
+          isSaving={isSaving}
+          isRefreshingSet={isRefreshingSet}
+          setViewerTab={setViewerTab}
+          onSetViewerTab={handleSetViewerTab}
+          viewerQuickTags={viewerQuickTags}
+          onToggleActiveSetTag={toggleActiveSetTag}
+          favoriteIds={favoriteIds}
+          favoritesCount={favoritesCount}
+          nonFavoritesCount={nonFavoritesCount}
+          allImagesCount={allImagesCount}
+          sampleImages={sampleImages}
+          favoriteImages={favoriteImages}
+          nonFavoriteImages={nonFavoriteImages}
+          activeImages={activeImages}
+          viewerIndexProgress={viewerIndexProgress}
+          isLoadingSample={isLoadingSample}
+          isLoadingFavorites={isLoadingFavorites}
+          isLoadingNonFavorites={isLoadingNonFavorites}
+          isLoadingImages={isLoadingImages}
+          isLoadingMore={isLoadingMore}
+          totalImagesKnown={totalImagesKnown}
+          samplePendingExtra={samplePendingExtra}
+          nonFavoritesPendingExtra={nonFavoritesPendingExtra}
+          favoritesPendingExtra={favoritesPendingExtra}
+          pendingExtra={pendingExtra}
+          remainingImages={remainingImages}
+          onLoadMoreSample={handleLoadMoreSample}
+          onLoadAllSample={handleLoadAllSample}
+          onLoadMoreNonFavorites={handleLoadMoreNonFavorites}
+          onLoadAllNonFavorites={handleLoadAllNonFavorites}
+          onLoadMoreFavorites={handleLoadMoreFavorites}
+          onLoadAllFavorites={handleLoadAllFavorites}
+          onLoadMoreImages={handleLoadMoreImages}
+          onLoadAllPreloaded={handleLoadAllPreloaded}
+          onOpenModal={openModal}
+          onToggleFavoriteImage={toggleFavoriteImage}
+          onSetThumbnail={handleSetThumbnail}
+          onUpdateSetName={(value) => {
+            if (!activeSet) {
+              return;
+            }
+            void handleUpdateSet(activeSet.id, {
+              name: value.trim() || activeSet.name,
+            });
+          }}
+          onRefreshSet={handleRefreshSet}
+          onDeleteSet={handleDeleteSet}
+          onLoadMoreClick={handleLoadMoreClick}
+          thumbSize={THUMB_SIZE}
+          viewerThumbSize={VIEWER_THUMB_SIZE}
+          sampleGridRef={sampleGridRef}
+          allGridRef={allGridRef}
+          sectionRef={setViewerRef}
+        />
       ) : null}
       {modalImage ? (
         <div className="modal" onClick={closeModal}>
@@ -5201,40 +4258,18 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      {toasts.length > 0 ? (
-        <div className="toast-stack">
-          {toasts.map((toast) => (
-            <div key={toast.id} className="toast">
-              {toast.message}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <div className="scroll-controls">
-        <button
-          type="button"
-          className="scroll-control"
-          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          aria-label="Back to top"
-          disabled={!canScrollUp}
-        >
-          <IconArrowUp size={18} />
-        </button>
-        <button
-          type="button"
-          className="scroll-control"
-          onClick={() =>
-            window.scrollTo({
-              top: document.documentElement.scrollHeight,
-              behavior: 'smooth',
-            })
-          }
-          aria-label="Scroll to bottom"
-          disabled={!canScrollDown}
-        >
-          <IconArrowDown size={18} />
-        </button>
-      </div>
+      <ToastStack toasts={toasts} />
+      <ScrollControls
+        canScrollUp={canScrollUp}
+        canScrollDown={canScrollDown}
+        onScrollTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        onScrollBottom={() =>
+          window.scrollTo({
+            top: document.documentElement.scrollHeight,
+            behavior: 'smooth',
+          })
+        }
+      />
     </div>
   );
 }

@@ -17,7 +17,7 @@ import {
   IconPhotoStar,
 } from '@tabler/icons-react';
 import { useLocalStorage } from './hooks/useLocalStorage';
-import { listFolderPaths, listImagesRecursive, type FolderPath } from './drive/scan';
+import { listFolderPaths, type FolderPath } from './drive/scan';
 import {
   buildSetIndex,
   findSetIndexFileId,
@@ -37,70 +37,26 @@ import {
   type PoseSet,
 } from './metadata';
 import type { DriveImage } from './drive/types';
+import { normalizeTags } from './utils/tags';
+import { pickRandom, shuffleItems } from './utils/random';
+import { formatDownloadProgress, formatIndexProgress, startIndexTimer } from './utils/progress';
+import { createProxyMediaUrl, createProxyThumbUrl } from './utils/driveUrls';
+import {
+  readImageListCache,
+  readMetadataCache,
+  readMetadataDirtyFlag,
+  writeImageListCache,
+  writeMetadataCache,
+  writeMetadataDirtyFlag,
+} from './utils/cache';
+import { appendUniqueImages, pickNextBatch } from './utils/imageSampling';
 
 const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
 const IMAGE_PAGE_SIZE = 96;
 const THUMB_SIZE = 320;
 const CARD_THUMB_SIZE = 500;
 const VIEWER_THUMB_SIZE = CARD_THUMB_SIZE;
-const METADATA_CACHE_TTL = 24 * 60 * 60 * 1000;
-const METADATA_CACHE_KEY = 'poseviewer-metadata-cache';
-const METADATA_CACHE_TIME_KEY = 'poseviewer-metadata-cache-ts';
-const METADATA_CACHE_ROOT_KEY = 'poseviewer-metadata-root';
-const METADATA_DIRTY_KEY = 'poseviewer-metadata-dirty';
-const IMAGE_LIST_CACHE_TTL = 24 * 60 * 60 * 1000;
-const IMAGE_LIST_CACHE_PREFIX = 'poseviewer-set-images:v2:';
-const IMAGE_LIST_CACHE_TIME_PREFIX = 'poseviewer-set-images-ts:v2:';
-
 const emptyFolders: FolderPath[] = [];
-
-function normalizeTags(input: string) {
-  return input
-    .split(',')
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-}
-
-function pickRandom<T>(items: T[], count: number) {
-  const result = [...items];
-  for (let i = result.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result.slice(0, count);
-}
-
-function shuffleItems<T>(items: T[]) {
-  const result = [...items];
-  for (let i = result.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
-}
-
-function formatIndexProgress(progress: { folders: number; images: number }) {
-  return `Indexing… ${progress.folders} folders • ${progress.images} images`;
-}
-
-function formatDownloadProgress(progress: { loaded: number }) {
-  const kb = progress.loaded / 1024;
-  if (kb < 1024) {
-    return `Loading index… ${kb.toFixed(1)} KB`;
-  }
-  const mb = kb / 1024;
-  return `Loading index… ${mb.toFixed(2)} MB`;
-}
-
-function startIndexTimer(setter: (value: string) => void) {
-  const startedAt = Date.now();
-  setter('Checking index… 0s');
-  const id = window.setInterval(() => {
-    const seconds = Math.floor((Date.now() - startedAt) / 1000);
-    setter(`Checking index… ${seconds}s`);
-  }, 1000);
-  return () => window.clearInterval(id);
-}
 
 function parsePathState() {
   const raw = window.location.pathname;
@@ -155,129 +111,6 @@ function mergeMetadata(local: MetadataDocument, remote: MetadataDocument): Metad
     merged.push(set);
   }
   return { version: 1, sets: merged };
-}
-
-type MetadataCache = {
-  fileId: string | null;
-  data: MetadataDocument;
-  md5Checksum?: string;
-  modifiedTime?: string;
-};
-
-function readMetadataCache(rootId: string, options?: { allowStale?: boolean }) {
-  const cacheRoot = localStorage.getItem(METADATA_CACHE_ROOT_KEY);
-  const cacheTs = localStorage.getItem(METADATA_CACHE_TIME_KEY);
-  const cacheData = localStorage.getItem(METADATA_CACHE_KEY);
-  if (!cacheRoot || !cacheTs || !cacheData) {
-    return null;
-  }
-  if (cacheRoot !== rootId) {
-    return null;
-  }
-  if (!options?.allowStale) {
-    const timestamp = Number(cacheTs);
-    if (Number.isNaN(timestamp) || Date.now() - timestamp > METADATA_CACHE_TTL) {
-      return null;
-    }
-  }
-  try {
-    return JSON.parse(cacheData) as MetadataCache;
-  } catch {
-    return null;
-  }
-}
-
-function writeMetadataCache(
-  rootId: string,
-  fileId: string | null,
-  data: MetadataDocument,
-  info?: Pick<MetadataInfo, 'md5Checksum' | 'modifiedTime'>
-) {
-  localStorage.setItem(METADATA_CACHE_ROOT_KEY, rootId);
-  localStorage.setItem(METADATA_CACHE_TIME_KEY, String(Date.now()));
-  localStorage.setItem(
-    METADATA_CACHE_KEY,
-    JSON.stringify({
-      fileId,
-      data,
-      md5Checksum: info?.md5Checksum,
-      modifiedTime: info?.modifiedTime,
-    })
-  );
-}
-
-function readMetadataDirtyFlag() {
-  return localStorage.getItem(METADATA_DIRTY_KEY) === 'true';
-}
-
-function writeMetadataDirtyFlag(value: boolean) {
-  localStorage.setItem(METADATA_DIRTY_KEY, value ? 'true' : 'false');
-}
-
-function readImageListCache(setId: string) {
-  const data = localStorage.getItem(`${IMAGE_LIST_CACHE_PREFIX}${setId}`);
-  const ts = localStorage.getItem(`${IMAGE_LIST_CACHE_TIME_PREFIX}${setId}`);
-  if (!data || !ts) {
-    return null;
-  }
-  const timestamp = Number(ts);
-  if (Number.isNaN(timestamp) || Date.now() - timestamp > IMAGE_LIST_CACHE_TTL) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(data) as Array<{ id: string; name: string }>;
-    return parsed.map((item) => ({
-      id: item.id,
-      name: item.name,
-      mimeType: 'image/jpeg',
-    })) as DriveImage[];
-  } catch {
-    return null;
-  }
-}
-
-function clearImageListCache() {
-  const keysToRemove: string[] = [];
-  for (let i = 0; i < localStorage.length; i += 1) {
-    const key = localStorage.key(i);
-    if (
-      key &&
-      (key.startsWith(IMAGE_LIST_CACHE_PREFIX) || key.startsWith(IMAGE_LIST_CACHE_TIME_PREFIX))
-    ) {
-      keysToRemove.push(key);
-    }
-  }
-  for (const key of keysToRemove) {
-    localStorage.removeItem(key);
-  }
-}
-
-function writeImageListCache(setId: string, images: DriveImage[]) {
-  const payload = images.map((image) => ({ id: image.id, name: image.name }));
-  const dataKey = `${IMAGE_LIST_CACHE_PREFIX}${setId}`;
-  const timeKey = `${IMAGE_LIST_CACHE_TIME_PREFIX}${setId}`;
-  try {
-    localStorage.setItem(dataKey, JSON.stringify(payload));
-    localStorage.setItem(timeKey, String(Date.now()));
-    return true;
-  } catch {
-    clearImageListCache();
-    try {
-      localStorage.setItem(dataKey, JSON.stringify(payload));
-      localStorage.setItem(timeKey, String(Date.now()));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
-
-function createProxyThumbUrl(fileId: string, size: number) {
-  return `/api/thumb/${encodeURIComponent(fileId)}?size=${size}`;
-}
-
-function createProxyMediaUrl(fileId: string) {
-  return `/api/media/${encodeURIComponent(fileId)}`;
 }
 
 function ImageThumb({
@@ -1351,86 +1184,20 @@ export default function App() {
   );
 
   const pickNextSample = useCallback(
-    (setId: string, images: DriveImage[], count: number) => {
-      if (images.length === 0) {
-        sampleSeenRef.current.set(setId, new Set());
-        return [];
-      }
-      const seen = sampleSeenRef.current.get(setId) ?? new Set<string>();
-      const availableIds = new Set(images.map((image) => image.id));
-      for (const id of seen) {
-        if (!availableIds.has(id)) {
-          seen.delete(id);
-        }
-      }
-      if (seen.size >= images.length) {
-        seen.clear();
-      }
-      const unseen = images.filter((image) => !seen.has(image.id));
-      const pool = unseen.length > 0 ? unseen : images;
-      const sample = pickRandom(pool, Math.min(count, pool.length));
-      for (const image of sample) {
-        seen.add(image.id);
-      }
-      sampleSeenRef.current.set(setId, seen);
-      return sample;
-    },
+    (setId: string, images: DriveImage[], count: number) =>
+      pickNextBatch(setId, images, count, sampleSeenRef.current),
     []
   );
 
   const pickNextNonFavorites = useCallback(
-    (setId: string, images: DriveImage[], count: number) => {
-      if (images.length === 0) {
-        nonFavoriteSeenRef.current.set(setId, new Set());
-        return [];
-      }
-      const seen = nonFavoriteSeenRef.current.get(setId) ?? new Set<string>();
-      const availableIds = new Set(images.map((image) => image.id));
-      for (const id of seen) {
-        if (!availableIds.has(id)) {
-          seen.delete(id);
-        }
-      }
-      if (seen.size >= images.length) {
-        seen.clear();
-      }
-      const unseen = images.filter((image) => !seen.has(image.id));
-      const pool = unseen.length > 0 ? unseen : images;
-      const sample = pickRandom(pool, Math.min(count, pool.length));
-      for (const image of sample) {
-        seen.add(image.id);
-      }
-      nonFavoriteSeenRef.current.set(setId, seen);
-      return sample;
-    },
+    (setId: string, images: DriveImage[], count: number) =>
+      pickNextBatch(setId, images, count, nonFavoriteSeenRef.current),
     []
   );
 
   const pickNextFavorites = useCallback(
-    (setId: string, images: DriveImage[], count: number) => {
-      if (images.length === 0) {
-        favoriteSeenRef.current.set(setId, new Set());
-        return [];
-      }
-      const seen = favoriteSeenRef.current.get(setId) ?? new Set<string>();
-      const availableIds = new Set(images.map((image) => image.id));
-      for (const id of seen) {
-        if (!availableIds.has(id)) {
-          seen.delete(id);
-        }
-      }
-      if (seen.size >= images.length) {
-        seen.clear();
-      }
-      const unseen = images.filter((image) => !seen.has(image.id));
-      const pool = unseen.length > 0 ? unseen : images;
-      const sample = pickRandom(pool, Math.min(count, pool.length));
-      for (const image of sample) {
-        seen.add(image.id);
-      }
-      favoriteSeenRef.current.set(setId, seen);
-      return sample;
-    },
+    (setId: string, images: DriveImage[], count: number) =>
+      pickNextBatch(setId, images, count, favoriteSeenRef.current),
     []
   );
 
@@ -1922,16 +1689,7 @@ export default function App() {
         if (nextSample.length === 0) {
           return;
         }
-        setSampleImages((current) => {
-          const existingIds = new Set(current.map((item) => item.id));
-          const merged = [...current];
-          for (const item of nextSample) {
-            if (!existingIds.has(item.id)) {
-              merged.push(item);
-            }
-          }
-          return merged;
-        });
+        setSampleImages((current) => appendUniqueImages(current, nextSample));
       } catch (loadError) {
         setError((loadError as Error).message);
       } finally {
@@ -1963,16 +1721,7 @@ export default function App() {
         if (nextBatch.length === 0) {
           return;
         }
-        setNonFavoriteImages((current) => {
-          const existingIds = new Set(current.map((item) => item.id));
-          const merged = [...current];
-          for (const item of nextBatch) {
-            if (!existingIds.has(item.id)) {
-              merged.push(item);
-            }
-          }
-          return merged;
-        });
+        setNonFavoriteImages((current) => appendUniqueImages(current, nextBatch));
       } catch (loadError) {
         setError((loadError as Error).message);
       } finally {
@@ -2001,16 +1750,7 @@ export default function App() {
         if (nextBatch.length === 0) {
           return;
         }
-        setFavoriteImages((current) => {
-          const existingIds = new Set(current.map((item) => item.id));
-          const merged = [...current];
-          for (const item of nextBatch) {
-            if (!existingIds.has(item.id)) {
-              merged.push(item);
-            }
-          }
-          return merged;
-        });
+        setFavoriteImages((current) => appendUniqueImages(current, nextBatch));
       } catch (loadError) {
         setError((loadError as Error).message);
       } finally {
@@ -3007,13 +2747,7 @@ export default function App() {
         }
         let mergedResult: DriveImage[] | null = null;
         setSlideshowImages((current) => {
-          const existingIds = new Set(current.map((item) => item.id));
-          const merged = [...current];
-          for (const item of batch) {
-            if (!existingIds.has(item.id)) {
-              merged.push(item);
-            }
-          }
+          const merged = appendUniqueImages(current, batch);
           if (options?.openModal && merged.length > 0 && current.length === 0) {
             openModal(merged[0].id, merged, 'Slideshow');
           }
@@ -3131,16 +2865,7 @@ export default function App() {
           sampleHistorySetRef.current = setId;
           setModalItems(updated);
           modalItemsLengthRef.current = updated.length;
-          setSampleImages((current) => {
-            const existingIds = new Set(current.map((item) => item.id));
-            const merged = [...current];
-            for (const item of deduped) {
-              if (!existingIds.has(item.id)) {
-                merged.push(item);
-              }
-            }
-            return merged;
-          });
+          setSampleImages((current) => appendUniqueImages(current, deduped));
           const nextIndex = updated.length - deduped.length;
           setModalFullSrc(null);
           setModalFullImageId(null);
@@ -3196,16 +2921,7 @@ export default function App() {
           const updated = [...modalItems, ...deduped];
           setModalItems(updated);
           modalItemsLengthRef.current = updated.length;
-          setNonFavoriteImages((current) => {
-            const existingIds = new Set(current.map((item) => item.id));
-            const merged = [...current];
-            for (const item of deduped) {
-              if (!existingIds.has(item.id)) {
-                merged.push(item);
-              }
-            }
-            return merged;
-          });
+          setNonFavoriteImages((current) => appendUniqueImages(current, deduped));
           const nextIndex = updated.length - deduped.length;
           setModalFullSrc(null);
           setModalFullImageId(null);
@@ -3254,16 +2970,7 @@ export default function App() {
           const updated = [...modalItems, ...deduped];
           setModalItems(updated);
           modalItemsLengthRef.current = updated.length;
-          setFavoriteImages((current) => {
-            const existingIds = new Set(current.map((item) => item.id));
-            const merged = [...current];
-            for (const item of deduped) {
-              if (!existingIds.has(item.id)) {
-                merged.push(item);
-              }
-            }
-            return merged;
-          });
+          setFavoriteImages((current) => appendUniqueImages(current, deduped));
           const nextIndex = updated.length - deduped.length;
           setModalFullSrc(null);
           setModalFullImageId(null);

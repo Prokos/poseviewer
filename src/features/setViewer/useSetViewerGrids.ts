@@ -26,6 +26,8 @@ type ResolveSetImages = (
 
 type ViewerGridKind = 'sample' | 'favorites' | 'nonfavorites';
 
+type ViewerSortMode = 'random' | 'chronological';
+
 type ViewerGridConfig = {
   label: string;
   filterMode: 'all' | 'favorites' | 'nonfavorites';
@@ -39,6 +41,7 @@ type UseSetViewerGridsArgs = {
   activeSet: PoseSet | null;
   isConnected: boolean;
   setViewerTab: SetViewerTab;
+  viewerSort: ViewerSortMode;
   resolveSetImages: ResolveSetImages;
   setError: (message: string) => void;
   setViewerIndexProgress: (value: string) => void;
@@ -49,6 +52,7 @@ export function useSetViewerGrids({
   activeSet,
   isConnected,
   setViewerTab,
+  viewerSort,
   resolveSetImages,
   setError,
   setViewerIndexProgress,
@@ -65,6 +69,16 @@ export function useSetViewerGrids({
   const sampleSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const favoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const nonFavoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
+  const orderedListsRef = useRef<
+    Map<
+      string,
+      {
+        mode: ViewerSortMode;
+        favorites: DriveImage[];
+        nonfavorites: DriveImage[];
+      }
+    >
+  >(new Map());
 
   const samplePageSize = useMemo(
     () => Math.max(1, Math.ceil(sampleBaseCount / sampleColumns) * sampleColumns),
@@ -80,6 +94,36 @@ export function useSetViewerGrids({
     []
   );
 
+  const buildOrderedLists = useCallback(
+    (setId: string, images: DriveImage[], favoriteIds: string[]) => {
+      const favorites = filterImagesByFavoriteStatus(images, favoriteIds, 'favorites');
+      const nonfavorites = filterImagesByFavoriteStatus(images, favoriteIds, 'nonfavorites');
+      const orderedFavorites = viewerSort === 'random' ? shuffleItems(favorites) : favorites;
+      const orderedNonFavorites =
+        viewerSort === 'random' ? shuffleItems(nonfavorites) : nonfavorites;
+      const next = {
+        mode: viewerSort,
+        favorites: orderedFavorites,
+        nonfavorites: orderedNonFavorites,
+      };
+      orderedListsRef.current.set(setId, next);
+      return next;
+    },
+    [viewerSort]
+  );
+
+  const getOrderedLists = useCallback(
+    async (set: PoseSet) => {
+      const cached = orderedListsRef.current.get(set.id);
+      if (cached && cached.mode === viewerSort) {
+        return cached;
+      }
+      const images = await resolveSetImages(set, true);
+      return buildOrderedLists(set.id, images, set.favoriteImageIds ?? []);
+    },
+    [buildOrderedLists, resolveSetImages, viewerSort]
+  );
+
   const updateFavoriteImagesFromSource = useCallback(
     (
       setId: string,
@@ -87,21 +131,20 @@ export function useSetViewerGrids({
       favoriteIds: string[],
       options?: { keepLength?: boolean }
     ) => {
-      const favorites = filterImagesByFavoriteStatus(images, favoriteIds, 'favorites');
-      if (favorites.length === 0) {
+      const ordered = buildOrderedLists(setId, images, favoriteIds);
+      if (ordered.favorites.length === 0) {
         setFavoriteImages([]);
         favoriteSeenRef.current.set(setId, new Set());
         return;
       }
       const targetLength =
         options?.keepLength && favoriteImages.length > 0
-          ? Math.min(favoriteImages.length, favorites.length)
-          : Math.min(samplePageSize, favorites.length);
+          ? Math.min(favoriteImages.length, ordered.favorites.length)
+          : Math.min(samplePageSize, ordered.favorites.length);
       favoriteSeenRef.current.set(setId, new Set());
-      const next = pickNext.favorites(setId, favorites, targetLength);
-      setFavoriteImages(next);
+      setFavoriteImages(ordered.favorites.slice(0, targetLength));
     },
-    [favoriteImages.length, pickNext, samplePageSize]
+    [buildOrderedLists, favoriteImages.length, samplePageSize]
   );
 
   const hydrateSetExtras = useCallback(
@@ -150,6 +193,10 @@ export function useSetViewerGrids({
     );
   }, [activeSet?.favoriteImageIds, activeSet?.id]);
 
+  useEffect(() => {
+    orderedListsRef.current.clear();
+  }, [viewerSort]);
+
   const getViewerGridConfig = useCallback(
     (kind: ViewerGridKind): ViewerGridConfig => {
       if (kind === 'sample') {
@@ -185,7 +232,7 @@ export function useSetViewerGrids({
   );
 
   const loadViewerGridBatch = useCallback(
-    async (kind: ViewerGridKind, count: number) => {
+    async (kind: ViewerGridKind, count: number, options?: { replace?: boolean }) => {
       if (!activeSet || !isConnected || count <= 0) {
         return;
       }
@@ -193,21 +240,36 @@ export function useSetViewerGrids({
       config.setIsLoading(true);
       setViewerIndexProgress(config.label);
       try {
-        const images = await resolveSetImages(activeSet, true);
-        const filtered = filterImagesByFavoriteStatus(
-          images,
-          activeSet.favoriteImageIds ?? [],
-          config.filterMode
-        );
-        if (filtered.length === 0) {
+        if (kind === 'sample') {
+          const images = await resolveSetImages(activeSet, true);
+          const filtered = filterImagesByFavoriteStatus(
+            images,
+            activeSet.favoriteImageIds ?? [],
+            config.filterMode
+          );
+          if (filtered.length === 0) {
+            config.setImages([]);
+            return;
+          }
+          const nextBatch = config.pickBatch(activeSet.id, filtered, count);
+          if (nextBatch.length === 0) {
+            return;
+          }
+          config.setImages((current) => appendUniqueImages(current, nextBatch));
+          return;
+        }
+        const ordered = await getOrderedLists(activeSet);
+        const list = kind === 'favorites' ? ordered.favorites : ordered.nonfavorites;
+        if (list.length === 0) {
           config.setImages([]);
           return;
         }
-        const nextBatch = config.pickBatch(activeSet.id, filtered, count);
-        if (nextBatch.length === 0) {
-          return;
-        }
-        config.setImages((current) => appendUniqueImages(current, nextBatch));
+        config.setImages((current) => {
+          const nextLength = options?.replace
+            ? Math.min(count, list.length)
+            : Math.min(current.length + count, list.length);
+          return list.slice(0, nextLength);
+        });
       } catch (loadError) {
         setError((loadError as Error).message);
       } finally {
@@ -215,7 +277,15 @@ export function useSetViewerGrids({
         setViewerIndexProgress('');
       }
     },
-    [activeSet, getViewerGridConfig, isConnected, resolveSetImages, setError, setViewerIndexProgress]
+    [
+      activeSet,
+      getOrderedLists,
+      getViewerGridConfig,
+      isConnected,
+      resolveSetImages,
+      setError,
+      setViewerIndexProgress,
+    ]
   );
 
   const loadViewerGridAll = useCallback(
@@ -227,22 +297,28 @@ export function useSetViewerGrids({
       config.setIsLoading(true);
       setViewerIndexProgress(config.label);
       try {
-        const images = await resolveSetImages(activeSet, true);
-        const filtered = filterImagesByFavoriteStatus(
-          images,
-          activeSet.favoriteImageIds ?? [],
-          config.filterMode
-        );
-        if (filtered.length === 0) {
-          config.setImages([]);
+        if (kind === 'sample') {
+          const images = await resolveSetImages(activeSet, true);
+          const filtered = filterImagesByFavoriteStatus(
+            images,
+            activeSet.favoriteImageIds ?? [],
+            config.filterMode
+          );
+          if (filtered.length === 0) {
+            config.setImages([]);
+            return;
+          }
+          const shuffled = shuffleItems(filtered);
+          config.setImages(shuffled);
+          config.seenRef.current.set(
+            activeSet.id,
+            new Set(shuffled.map((image) => image.id))
+          );
           return;
         }
-        const shuffled = shuffleItems(filtered);
-        config.setImages(shuffled);
-        config.seenRef.current.set(
-          activeSet.id,
-          new Set(shuffled.map((image) => image.id))
-        );
+        const ordered = await getOrderedLists(activeSet);
+        const list = kind === 'favorites' ? ordered.favorites : ordered.nonfavorites;
+        config.setImages(list);
       } catch (loadError) {
         setError((loadError as Error).message);
       } finally {
@@ -250,7 +326,15 @@ export function useSetViewerGrids({
         setViewerIndexProgress('');
       }
     },
-    [activeSet, getViewerGridConfig, isConnected, resolveSetImages, setError, setViewerIndexProgress]
+    [
+      activeSet,
+      getOrderedLists,
+      getViewerGridConfig,
+      isConnected,
+      resolveSetImages,
+      setError,
+      setViewerIndexProgress,
+    ]
   );
 
   const handleLoadMoreSample = useCallback(async () => {
@@ -276,6 +360,22 @@ export function useSetViewerGrids({
   const handleLoadAllNonFavorites = useCallback(async () => {
     await loadViewerGridAll('nonfavorites');
   }, [loadViewerGridAll]);
+
+  const handleResetFavorites = useCallback(async () => {
+    if (!activeSet || !isConnected) {
+      return;
+    }
+    setFavoriteImages([]);
+    await loadViewerGridBatch('favorites', samplePageSize, { replace: true });
+  }, [activeSet, isConnected, loadViewerGridBatch, samplePageSize]);
+
+  const handleResetNonFavorites = useCallback(async () => {
+    if (!activeSet || !isConnected) {
+      return;
+    }
+    setNonFavoriteImages([]);
+    await loadViewerGridBatch('nonfavorites', samplePageSize, { replace: true });
+  }, [activeSet, isConnected, loadViewerGridBatch, samplePageSize]);
 
   useEffect(() => {
     if (setViewerTab !== 'samples' || !activeSet || isLoadingSample) {
@@ -304,7 +404,7 @@ export function useSetViewerGrids({
       return;
     }
     if (favoriteImages.length === 0) {
-      void loadViewerGridBatch('favorites', samplePageSize);
+      void loadViewerGridBatch('favorites', samplePageSize, { replace: true });
       return;
     }
     if (sampleColumns <= 1 || favoriteImages.length === 0) {
@@ -331,7 +431,7 @@ export function useSetViewerGrids({
       return;
     }
     if (nonFavoriteImages.length === 0) {
-      void loadViewerGridBatch('nonfavorites', samplePageSize);
+      void loadViewerGridBatch('nonfavorites', samplePageSize, { replace: true });
       return;
     }
     if (sampleColumns <= 1 || nonFavoriteImages.length === 0) {
@@ -412,5 +512,7 @@ export function useSetViewerGrids({
     handleLoadAllFavorites,
     handleLoadMoreNonFavorites,
     handleLoadAllNonFavorites,
+    handleResetFavorites,
+    handleResetNonFavorites,
   };
 }

@@ -196,6 +196,40 @@ button.ghost:hover:not(:disabled) {
   border-bottom: 1px solid rgba(31, 28, 23, 0.16);
 }
 
+.subtabs-spacer {
+  flex: 1;
+}
+
+.viewer-sort-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding-bottom: 6px;
+}
+
+.viewer-sort-button {
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 0.75rem;
+  border: 1px solid rgba(31, 28, 23, 0.18);
+  background: rgba(250, 247, 241, 0.8);
+  color: var(--muted);
+}
+
+.viewer-sort-button:hover {
+  background: rgba(31, 28, 23, 0.08);
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.viewer-sort-button.is-active {
+  background: rgba(108, 125, 94, 0.22);
+  color: var(--ink);
+  border-color: rgba(108, 125, 94, 0.55);
+  font-weight: 600;
+}
+
 .subtab {
   border-radius: 10px 10px 0 0;
   padding: 8px 14px;

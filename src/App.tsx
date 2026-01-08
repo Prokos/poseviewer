@@ -27,7 +27,7 @@ import {
 } from './metadata';
 import type { DriveImage } from './drive/types';
 import { normalizeTags } from './utils/tags';
-import { pickRandom } from './utils/random';
+import { pickRandom, shuffleItems } from './utils/random';
 import { formatDownloadProgress, formatIndexProgress, startIndexTimer } from './utils/progress';
 import { createProxyThumbUrl } from './utils/driveUrls';
 import {
@@ -144,7 +144,8 @@ export default function App() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [setViewerTab, setSetViewerTab] = useState<
     'samples' | 'favorites' | 'nonfavorites' | 'all'
-  >('samples');
+  >('all');
+  const [viewerSort, setViewerSort] = useState<'random' | 'chronological'>('random');
   const [allColumns, setAllColumns] = useState(1);
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
@@ -157,6 +158,9 @@ export default function App() {
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
   const allGridRef = useRef<HTMLDivElement | null>(null);
+  const allImagesOrderRef = useRef<
+    Map<string, { mode: 'random' | 'chronological'; ordered: DriveImage[] }>
+  >(new Map());
   const metadataSaveTimeoutRef = useRef<number | null>(null);
   const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
   const pendingSaveResolveRef = useRef<(() => void) | null>(null);
@@ -611,7 +615,7 @@ export default function App() {
 
   useEffect(() => {
     if (activeSet) {
-      setSetViewerTab('samples');
+      setSetViewerTab('all');
     }
   }, [activeSet?.id]);
 
@@ -1093,6 +1097,40 @@ export default function App() {
     [getPrebuiltIndexForSet, isConnected, loadIndexItemsForSet]
   );
 
+  const getOrderedAllImages = useCallback(
+    (setId: string, images: DriveImage[]) => {
+      if (viewerSort === 'chronological') {
+        allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered: images });
+        return images;
+      }
+      const cached = allImagesOrderRef.current.get(setId);
+      if (cached && cached.mode === viewerSort) {
+        if (cached.ordered.length === images.length) {
+          return cached.ordered;
+        }
+        const currentIds = new Set(images.map((image) => image.id));
+        const missing = cached.ordered.some((image) => !currentIds.has(image.id));
+        if (missing) {
+          const reordered = shuffleItems(images);
+          allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered: reordered });
+          return reordered;
+        }
+        const known = new Set(cached.ordered.map((image) => image.id));
+        const additions = images.filter((image) => !known.has(image.id));
+        if (additions.length === 0) {
+          return cached.ordered;
+        }
+        const extended = cached.ordered.concat(shuffleItems(additions));
+        allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered: extended });
+        return extended;
+      }
+      const ordered = viewerSort === 'random' ? shuffleItems(images) : images;
+      allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered });
+      return ordered;
+    },
+    [viewerSort]
+  );
+
   const {
     sampleImages,
     setSampleImages,
@@ -1113,15 +1151,44 @@ export default function App() {
     handleLoadAllFavorites,
     handleLoadMoreNonFavorites,
     handleLoadAllNonFavorites,
+    handleResetFavorites,
+    handleResetNonFavorites,
   } = useSetViewerGrids({
     activeSet,
     isConnected,
     setViewerTab,
+    viewerSort,
     resolveSetImages,
     setError,
     setViewerIndexProgress,
     sampleBaseCount: 48,
   });
+
+  useEffect(() => {
+    allImagesOrderRef.current.clear();
+    if (!activeSet) {
+      return;
+    }
+    if (setViewerTab === 'all') {
+      setImageLimit(allPageSize);
+      void loadSetImages(activeSet, allPageSize, false);
+      return;
+    }
+    if (setViewerTab === 'favorites') {
+      void handleResetFavorites();
+      return;
+    }
+    if (setViewerTab === 'nonfavorites') {
+      void handleResetNonFavorites();
+    }
+  }, [
+    activeSet?.id,
+    allPageSize,
+    handleResetFavorites,
+    handleResetNonFavorites,
+    setViewerTab,
+    viewerSort,
+  ]);
 
   const {
     slideshowImages,
@@ -1221,13 +1288,15 @@ export default function App() {
           } else {
             setImageLoadStatus('Images: using local cache');
             updateFavoriteImagesFromSource(set.id, cached, favoriteIds, { keepLength: true });
-            setActiveImages(cached.slice(0, limit));
+            const ordered = getOrderedAllImages(set.id, cached);
+            setActiveImages(ordered.slice(0, limit));
             return;
           }
         } else {
           setImageLoadStatus('Images: using local cache');
           setFavoriteImages([]);
-          setActiveImages(cached.slice(0, limit));
+          const ordered = getOrderedAllImages(set.id, cached);
+          setActiveImages(ordered.slice(0, limit));
           return;
         }
       }
@@ -1241,7 +1310,8 @@ export default function App() {
           await handleUpdateSet(set.id, { indexFileId: prebuilt.fileId });
         }
         updateFavoriteImagesFromSource(set.id, images, favoriteIds, { keepLength: true });
-        setActiveImages(images.slice(0, limit));
+        const ordered = getOrderedAllImages(set.id, images);
+        setActiveImages(ordered.slice(0, limit));
         return;
       }
 
@@ -1281,7 +1351,8 @@ export default function App() {
           await handleUpdateSet(set.id, { indexFileId: index.fileId });
         }
         updateFavoriteImagesFromSource(set.id, images, favoriteIds, { keepLength: true });
-        setActiveImages(images.slice(0, limit));
+        const ordered = getOrderedAllImages(set.id, images);
+        setActiveImages(ordered.slice(0, limit));
         return;
       }
     } catch (loadError) {
@@ -1443,7 +1514,8 @@ export default function App() {
       );
       setSampleImages(pickNext.sample(set.id, refreshed, samplePageSize));
       if (activeImages.length > 0) {
-        setActiveImages(refreshed.slice(0, imageLimit));
+        const ordered = getOrderedAllImages(set.id, refreshed);
+        setActiveImages(ordered.slice(0, imageLimit));
       }
     } catch (refreshError) {
       setError((refreshError as Error).message);
@@ -1468,7 +1540,8 @@ export default function App() {
     await loadSetImages(activeSet, nextLimit, true);
     const nextCached = readImageListCache(activeSet.id);
     if (nextCached) {
-      prefetchThumbs(nextCached.slice(previousCount, nextLimit));
+      const ordered = getOrderedAllImages(activeSet.id, nextCached);
+      prefetchThumbs(ordered.slice(previousCount, nextLimit));
     }
   };
 
@@ -1483,8 +1556,9 @@ export default function App() {
       const cached = readImageListCache(activeSet.id);
       if (cached) {
         updateFavoriteImagesFromSource(activeSet.id, cached, favoriteIds, { keepLength: true });
-        setActiveImages(cached);
-        setImageLimit(cached.length);
+        const ordered = getOrderedAllImages(activeSet.id, cached);
+        setActiveImages(ordered);
+        setImageLimit(ordered.length);
         return;
       }
       if (viewerIndexTimerRef.current) {
@@ -1512,8 +1586,9 @@ export default function App() {
           setError('Image cache full. Cleared cache and continued without saving.');
         }
         updateFavoriteImagesFromSource(activeSet.id, images, favoriteIds, { keepLength: true });
-        setActiveImages(images);
-        setImageLimit(images.length);
+        const ordered = getOrderedAllImages(activeSet.id, images);
+        setActiveImages(ordered);
+        setImageLimit(ordered.length);
         if (activeSet.indexFileId !== index.fileId) {
           await handleUpdateSet(activeSet.id, { indexFileId: index.fileId });
         }
@@ -1567,6 +1642,13 @@ export default function App() {
     setSetViewerTab(tab);
   }, []);
 
+  const handleViewerSortChange = useCallback(
+    (value: 'random' | 'chronological') => {
+      setViewerSort(value);
+    },
+    []
+  );
+
   const handleUpdateSetName = useCallback(
     (value: string) => {
       if (!activeSet) {
@@ -1586,6 +1668,8 @@ export default function App() {
     isRefreshingSet,
     setViewerTab,
     onSetViewerTab: handleSetViewerTab,
+    viewerSort,
+    onViewerSortChange: handleViewerSortChange,
     viewerQuickTags,
     onToggleActiveSetTag: toggleActiveSetTag,
     favoriteIds,
@@ -1630,6 +1714,7 @@ export default function App() {
   const modalDeps = {
     activeSet,
     setsById,
+    viewerSort,
     activeImages,
     setActiveImages,
     setImageLimit,

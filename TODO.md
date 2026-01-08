@@ -10,8 +10,7 @@ improve design of connection status, just show one icon that either shows discon
 
 On create set page the directory component should have the same style as that from the set viewer page
 
-Set viewer should have three tabs: All Images, Favorites, Non-Favorites
-By default the tabs are randomly sorted, but there's a toggle to make them chronological. Switching the toggle reloads the first page of images based on the new toggle state.
+Add a hide button next to favorite in the modal. Pressing it removes the image from favorites if it was one, and it hides it everywhere. It can only be found in the set viewer under a hidden tab (which functions the same as the other tabs, just shows hidden images). On desktop you can press H as a shortcut, it has similar animations to the one for favoriting and unfavoriting.
 
 If all images are loaded on a tab  we dont need to show the load more or load all buttons anymore.
 

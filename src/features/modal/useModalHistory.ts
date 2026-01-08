@@ -20,6 +20,7 @@ type UseModalHistoryOptions = {
   modalIndex: number | null;
   modalItems: DriveImage[];
   setsById: Map<string, PoseSet>;
+  viewerSort: 'random' | 'chronological';
   slideshowImageSetRef: MutableRefObject<Map<string, string>>;
   resolveSetImages: (
     set: PoseSet,
@@ -48,6 +49,7 @@ export function useModalHistory({
   modalIndex,
   modalItems,
   setsById,
+  viewerSort,
   slideshowImageSetRef,
   resolveSetImages,
   setActiveImages,
@@ -67,7 +69,10 @@ export function useModalHistory({
   } | null>(null);
 
   const openModalChronologicalContext = useCallback(async () => {
-    if (!modalImageId || modalContextLabel === 'Set') {
+    if (!modalImageId) {
+      return;
+    }
+    if (modalContextLabel === 'Set' && viewerSort === 'chronological') {
       return;
     }
     const contextSetId =
@@ -101,15 +106,17 @@ export function useModalHistory({
       const start = Math.max(0, index - preload);
       const nextLimit = Math.max(end, allPageSize);
       prefetchThumbs(images.slice(start, end));
-      setImageLimit(nextLimit);
-      setActiveImages(images.slice(0, nextLimit));
-      if (activeSet?.id === contextSet.id) {
-        updateFavoriteImagesFromSource(
-          contextSet.id,
-          images,
-          contextSet.favoriteImageIds ?? [],
-          { keepLength: true }
-        );
+      if (viewerSort === 'chronological') {
+        setImageLimit(nextLimit);
+        setActiveImages(images.slice(0, nextLimit));
+        if (activeSet?.id === contextSet.id) {
+          updateFavoriteImagesFromSource(
+            contextSet.id,
+            images,
+            contextSet.favoriteImageIds ?? [],
+            { keepLength: true }
+          );
+        }
       }
       applyModalContext({
         items: images.slice(0, nextLimit),
@@ -137,6 +144,7 @@ export function useModalHistory({
     setImageLimit,
     setsById,
     slideshowImageSetRef,
+    viewerSort,
     updateFavoriteImagesFromSource,
   ]);
 
@@ -144,16 +152,9 @@ export function useModalHistory({
     if (!modalHistoryRef.current) {
       return;
     }
-    const current = {
-      items: modalItems,
-      label: modalContextLabel,
-      imageId: modalImageId,
-      index: modalIndex,
-      contextSetId: modalContextSetId,
-    };
     const previous = modalHistoryRef.current;
-    modalHistoryRef.current = current;
-    setModalHasHistory(true);
+    modalHistoryRef.current = null;
+    setModalHasHistory(false);
     applyModalContext(previous);
   }, [applyModalContext, modalContextLabel, modalContextSetId, modalImageId, modalIndex, modalItems]);
 

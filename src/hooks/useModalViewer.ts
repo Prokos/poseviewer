@@ -40,6 +40,7 @@ type LoadSlideshowBatch = (
 export type ModalDeps = {
   activeSet: PoseSet | null;
   setsById: Map<string, PoseSet>;
+  viewerSort: 'random' | 'chronological';
   activeImages: DriveImage[];
   setActiveImages: Dispatch<SetStateAction<DriveImage[]>>;
   setImageLimit: Dispatch<SetStateAction<number>>;
@@ -80,6 +81,7 @@ export type ModalViewerState = {
   modalContextLabel: string;
   modalContextSetId: string | null;
   modalSetId: string | null;
+  viewerSort: 'random' | 'chronological';
   modalIsFavorite: boolean;
   modalIsLoading: boolean;
   modalPulse: boolean;
@@ -129,6 +131,7 @@ export type ModalViewerState = {
 export function useModalViewer({
   activeSet,
   setsById,
+  viewerSort,
   activeImages,
   setActiveImages,
   setImageLimit,
@@ -424,6 +427,7 @@ export function useModalViewer({
     modalIndex,
     modalItems,
     setsById,
+    viewerSort,
     slideshowImageSetRef,
     resolveSetImages,
     setActiveImages,
@@ -782,6 +786,7 @@ export function useModalViewer({
     modalContextLabel,
     modalContextSetId,
     modalSetId,
+    viewerSort,
     modalIsFavorite,
     modalIsLoading,
     modalPulse,

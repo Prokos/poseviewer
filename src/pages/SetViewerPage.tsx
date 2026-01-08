@@ -13,30 +13,27 @@ export function SetViewerPage() {
     isRefreshingSet,
     setViewerTab,
     onSetViewerTab,
+    viewerSort,
+    onViewerSortChange,
     viewerQuickTags,
     onToggleActiveSetTag,
     favoriteIds,
     favoritesCount,
     nonFavoritesCount,
     allImagesCount,
-    sampleImages,
     favoriteImages,
     nonFavoriteImages,
     activeImages,
     viewerIndexProgress,
-    isLoadingSample,
     isLoadingFavorites,
     isLoadingNonFavorites,
     isLoadingImages,
     isLoadingMore,
     totalImagesKnown,
-    samplePendingExtra,
     nonFavoritesPendingExtra,
     favoritesPendingExtra,
     pendingExtra,
     remainingImages,
-    onLoadMoreSample,
-    onLoadAllSample,
     onLoadMoreNonFavorites,
     onLoadAllNonFavorites,
     onLoadMoreFavorites,
@@ -199,10 +196,10 @@ export function SetViewerPage() {
             <div className="subtabs">
               <button
                 type="button"
-                className={`subtab ${setViewerTab === 'samples' ? 'is-active' : ''}`}
-                onClick={() => onSetViewerTab('samples')}
+                className={`subtab ${setViewerTab === 'all' ? 'is-active' : ''}`}
+                onClick={() => onSetViewerTab('all')}
               >
-                Sample
+                All Images ({allImagesCount})
               </button>
               <button
                 type="button"
@@ -216,51 +213,27 @@ export function SetViewerPage() {
                 className={`subtab ${setViewerTab === 'nonfavorites' ? 'is-active' : ''}`}
                 onClick={() => onSetViewerTab('nonfavorites')}
               >
-                Non favorites{nonFavoritesCount !== undefined ? ` (${nonFavoritesCount})` : ''}
+                Non-Favorites{nonFavoritesCount !== undefined ? ` (${nonFavoritesCount})` : ''}
               </button>
-              <button
-                type="button"
-                className={`subtab ${setViewerTab === 'all' ? 'is-active' : ''}`}
-                onClick={() => onSetViewerTab('all')}
-              >
-                All images ({allImagesCount})
-              </button>
-            </div>
-            {setViewerTab === 'samples' ? (
-              <div className="preview">
-                {isLoadingSample ? (
-                  <div className="stack">
-                    <p className="empty">Loading sample…</p>
-                    {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
-                  </div>
-                ) : viewerIndexProgress ? (
-                  <p className="muted">{viewerIndexProgress}</p>
-                ) : sampleImages.length > 0 ? (
-                  <ImageGrid
-                    images={sampleImages}
-                    isConnected={isConnected}
-                    thumbSize={thumbSize}
-                    alt={activeSet.name}
-                    modalLabel="Sample"
-                    gridClassName="image-grid image-grid--zoom"
-                    gridRef={sampleGridRef}
-                    favoriteAction={favoriteAction}
-                    thumbnailAction={thumbnailAction}
-                  />
-                ) : (
-                  <p className="empty">No sample yet. Refresh to build a preview.</p>
-                )}
-                <GridLoadButtons
-                  variant="sample"
-                  isLoading={isLoadingSample}
-                  currentCount={sampleImages.length}
-                  pendingCount={samplePendingExtra}
-                  totalCount={totalImagesKnown}
-                  onLoadMore={onLoadMoreSample}
-                  onLoadAll={onLoadAllSample}
-                />
+              <div className="subtabs-spacer" aria-hidden="true" />
+              <div className="viewer-sort-toggle" role="group" aria-label="Image order">
+                <span className="muted">Order</span>
+                <button
+                  type="button"
+                  className={`viewer-sort-button ${viewerSort === 'random' ? 'is-active' : ''}`}
+                  onClick={() => onViewerSortChange('random')}
+                >
+                  Random
+                </button>
+                <button
+                  type="button"
+                  className={`viewer-sort-button ${viewerSort === 'chronological' ? 'is-active' : ''}`}
+                  onClick={() => onViewerSortChange('chronological')}
+                >
+                  Chronological
+                </button>
               </div>
-            ) : null}
+            </div>
             {setViewerTab === 'nonfavorites' ? (
               <div className="preview">
                 {isLoadingNonFavorites ? (

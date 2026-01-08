@@ -15,6 +15,8 @@ export type SetViewerContextValue = {
   isRefreshingSet: boolean;
   setViewerTab: 'samples' | 'favorites' | 'nonfavorites' | 'all';
   onSetViewerTab: (tab: 'samples' | 'favorites' | 'nonfavorites' | 'all') => void;
+  viewerSort: 'random' | 'chronological';
+  onViewerSortChange: (value: 'random' | 'chronological') => void;
   viewerQuickTags: ViewerQuickTags;
   onToggleActiveSetTag: (tag: string) => void;
   favoriteIds: string[];

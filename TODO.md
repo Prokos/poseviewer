@@ -14,9 +14,25 @@ Add a hide button next to favorite in the modal. Pressing it removes the image f
 
 If all images are loaded on a tab  we dont need to show the load more or load all buttons anymore.
 
+Persist choice of sorting on set overview page in localstorage
 
+Context button shouldnt show up in modal  from samples when creating a set (the button doesnt work either, so shouldnt we be able to just auto detect when we can show the button?)
 
+Panning back to 100% doesnt snap the image back to non-zoomed state
 
+clicking on a set should start at top of the page
+
+ability to permanently rotate images, and all images in a set at the same time
+
+favoriting gesture and button should be disabled in places where we cant favorite (e.g. sample modal from create a set)
+
+auto starting a slideshow should also enter fullscreen when opening modal
+
+smart random sorting for slideshows that prioritises not repeating sets at least not twice in a row - we dont hae to cycle through sets before we return to one, but reduced chance for chronological items in a set and the same set after one another would be good for overall slideshow quality
+
+there is abug with context, i went from sample or favorite to context, then a few images its correct but after some it breaks context and then im just lost somewhere random in the set, still chronologcail but not around the original image anymore? im not sure how it happens
+
+REFACTOR
 
   Context / Goals
 
@@ -89,3 +105,9 @@ If all images are loaded on a tab  we dont need to show the load more or load al
       - Loading labels remain correct.
       - Favorites/thumbnail actions still work.
       - Slideshow still loads/picks images the same way.
+
+
+
+Wyimaginowany
+
+vogue runway archive

@@ -96,15 +96,51 @@ export function useSetViewerGrids({
 
   const buildOrderedLists = useCallback(
     (setId: string, images: DriveImage[], favoriteIds: string[]) => {
+      const favoriteSet = new Set(favoriteIds);
+      if (viewerSort === 'chronological') {
+        const favorites = filterImagesByFavoriteStatus(images, favoriteIds, 'favorites');
+        const nonfavorites = filterImagesByFavoriteStatus(images, favoriteIds, 'nonfavorites');
+        const next = {
+          mode: viewerSort,
+          favorites,
+          nonfavorites,
+        };
+        orderedListsRef.current.set(setId, next);
+        return next;
+      }
+
+      const existing = orderedListsRef.current.get(setId);
+      if (existing && existing.mode === 'random') {
+        const imageById = new Map(images.map((image) => [image.id, image]));
+        const keepFavorites = existing.favorites.filter(
+          (image) => imageById.has(image.id) && favoriteSet.has(image.id)
+        );
+        const keepNonFavorites = existing.nonfavorites.filter(
+          (image) => imageById.has(image.id) && !favoriteSet.has(image.id)
+        );
+        const favoriteKnown = new Set(keepFavorites.map((image) => image.id));
+        const nonFavoriteKnown = new Set(keepNonFavorites.map((image) => image.id));
+        const missingFavorites = images.filter(
+          (image) => favoriteSet.has(image.id) && !favoriteKnown.has(image.id)
+        );
+        const missingNonFavorites = images.filter(
+          (image) => !favoriteSet.has(image.id) && !nonFavoriteKnown.has(image.id)
+        );
+        const next = {
+          mode: viewerSort,
+          favorites: keepFavorites.concat(shuffleItems(missingFavorites)),
+          nonfavorites: keepNonFavorites.concat(shuffleItems(missingNonFavorites)),
+        };
+        orderedListsRef.current.set(setId, next);
+        return next;
+      }
+
       const favorites = filterImagesByFavoriteStatus(images, favoriteIds, 'favorites');
       const nonfavorites = filterImagesByFavoriteStatus(images, favoriteIds, 'nonfavorites');
-      const orderedFavorites = viewerSort === 'random' ? shuffleItems(favorites) : favorites;
-      const orderedNonFavorites =
-        viewerSort === 'random' ? shuffleItems(nonfavorites) : nonfavorites;
       const next = {
         mode: viewerSort,
-        favorites: orderedFavorites,
-        nonfavorites: orderedNonFavorites,
+        favorites: shuffleItems(favorites),
+        nonfavorites: shuffleItems(nonfavorites),
       };
       orderedListsRef.current.set(setId, next);
       return next;
@@ -114,14 +150,10 @@ export function useSetViewerGrids({
 
   const getOrderedLists = useCallback(
     async (set: PoseSet) => {
-      const cached = orderedListsRef.current.get(set.id);
-      if (cached && cached.mode === viewerSort) {
-        return cached;
-      }
       const images = await resolveSetImages(set, true);
       return buildOrderedLists(set.id, images, set.favoriteImageIds ?? []);
     },
-    [buildOrderedLists, resolveSetImages, viewerSort]
+    [buildOrderedLists, resolveSetImages]
   );
 
   const updateFavoriteImagesFromSource = useCallback(

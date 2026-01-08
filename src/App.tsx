@@ -161,6 +161,8 @@ export default function App() {
   const allImagesOrderRef = useRef<
     Map<string, { mode: 'random' | 'chronological'; ordered: DriveImage[] }>
   >(new Map());
+  const resetFavoritesRef = useRef<null | (() => void)>(null);
+  const resetNonFavoritesRef = useRef<null | (() => void)>(null);
   const metadataSaveTimeoutRef = useRef<number | null>(null);
   const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
   const pendingSaveResolveRef = useRef<(() => void) | null>(null);
@@ -620,6 +622,9 @@ export default function App() {
   }, [activeSet?.id]);
 
   useEffect(() => {
+    if (!isConnected) {
+      return;
+    }
     if (setViewerTab !== 'all' || !activeSet || isLoadingImages || isLoadingMore) {
       return;
     }
@@ -646,6 +651,7 @@ export default function App() {
     activeImages.length,
     activeSet,
     allColumns,
+    isConnected,
     isLoadingImages,
     isLoadingMore,
     setViewerTab,
@@ -1165,6 +1171,15 @@ export default function App() {
   });
 
   useEffect(() => {
+    resetFavoritesRef.current = () => {
+      void handleResetFavorites();
+    };
+    resetNonFavoritesRef.current = () => {
+      void handleResetNonFavorites();
+    };
+  }, [handleResetFavorites, handleResetNonFavorites]);
+
+  useEffect(() => {
     allImagesOrderRef.current.clear();
     if (!activeSet) {
       return;
@@ -1175,20 +1190,13 @@ export default function App() {
       return;
     }
     if (setViewerTab === 'favorites') {
-      void handleResetFavorites();
+      resetFavoritesRef.current?.();
       return;
     }
     if (setViewerTab === 'nonfavorites') {
-      void handleResetNonFavorites();
+      resetNonFavoritesRef.current?.();
     }
-  }, [
-    activeSet?.id,
-    allPageSize,
-    handleResetFavorites,
-    handleResetNonFavorites,
-    setViewerTab,
-    viewerSort,
-  ]);
+  }, [activeSet?.id, allPageSize, setViewerTab, viewerSort]);
 
   const {
     slideshowImages,
@@ -1383,6 +1391,10 @@ export default function App() {
       setSampleImages([]);
       setNonFavoriteImages([]);
       setImageLoadStatus('');
+      if (setViewerTab === 'all') {
+        setImageLimit(allPageSize);
+        void loadSetImages(nextSet, allPageSize, false);
+      }
     }
     if (!set.indexFileId && nextSet.indexFileId) {
       await handleUpdateSet(set.id, { indexFileId: nextSet.indexFileId });

@@ -11,11 +11,11 @@ import type {
 } from 'react';
 import type { PoseSet } from '../metadata';
 import type { DriveImage } from '../drive/types';
-import { appendUniqueImages } from '../utils/imageSampling';
 import { useModalTimer } from '../features/modal/useModalTimer';
 import { useModalMedia } from '../features/modal/useModalMedia';
 import { useModalGestures } from '../features/modal/useModalGestures';
 import { useModalHistory } from '../features/modal/useModalHistory';
+import { useModalDataLoader } from '../features/modal/useModalDataLoader';
 
 type ResolveSetImages = (
   set: PoseSet,
@@ -171,10 +171,6 @@ export function useModalViewer({
   const goNextImageRef = useRef<(options?: { suppressControls?: boolean }) => void>(() => {});
   const sampleHistoryRef = useRef<DriveImage[]>([]);
   const sampleHistorySetRef = useRef<string | null>(null);
-  const sampleAppendInFlightRef = useRef(false);
-  const favoriteAppendInFlightRef = useRef(false);
-  const nonFavoriteAppendInFlightRef = useRef(false);
-  const slideshowAppendInFlightRef = useRef(false);
 
   const {
     modalTimerMs,
@@ -360,107 +356,35 @@ export function useModalViewer({
     [resetModalMediaState, triggerModalPulse]
   );
 
-  const appendModalBatch = useCallback(
-    async (options: {
-      inFlightRef: MutableRefObject<boolean>;
-      transformSource: (source: DriveImage[], setId: string) => DriveImage[];
-      pickNext: (setId: string, images: DriveImage[], count: number) => DriveImage[];
-      appendToList: (items: DriveImage[]) => void;
-      beforeAppend?: (setId: string) => boolean;
-      onUpdated?: (items: DriveImage[], setId: string) => void;
-      suppressControls?: boolean;
-    }) => {
-      if (!activeSet) {
-        return false;
-      }
-      if (options.inFlightRef.current) {
-        return false;
-      }
-      options.inFlightRef.current = true;
-      const setId = activeSet.id;
-      try {
-        if (options.beforeAppend && !options.beforeAppend(setId)) {
-          return false;
-        }
-        const source =
-          readImageListCache(setId) ?? (await resolveSetImages(activeSet, true));
-        if (!source || source.length === 0) {
-          return false;
-        }
-        const scopedSource = options.transformSource(source, setId);
-        if (scopedSource.length === 0) {
-          return false;
-        }
-        const nextBatch = options.pickNext(setId, scopedSource, samplePageSize);
-        if (nextBatch.length === 0) {
-          return false;
-        }
-        const existingIds = new Set(modalItems.map((item) => item.id));
-        const deduped = nextBatch.filter((item) => !existingIds.has(item.id));
-        if (deduped.length === 0) {
-          return false;
-        }
-        const updated = [...modalItems, ...deduped];
-        updateModalItems(updated);
-        options.appendToList(deduped);
-        options.onUpdated?.(updated, setId);
-        const nextIndex = updated.length - deduped.length;
-        setModalImageAtIndex(updated, nextIndex, {
-          suppressControls: options.suppressControls,
-        });
-        return true;
-      } catch (error) {
-        setError((error as Error).message);
-        return false;
-      } finally {
-        options.inFlightRef.current = false;
-      }
-    },
-    [
-      activeSet,
-      modalItems,
-      readImageListCache,
-      resolveSetImages,
-      samplePageSize,
-      setError,
-      setModalImageAtIndex,
-      updateModalItems,
-    ]
-  );
-
-  const appendSlideshowBatch = useCallback(
-    async (options?: { suppressControls?: boolean }) => {
-      if (slideshowAppendInFlightRef.current) {
-        return false;
-      }
-      slideshowAppendInFlightRef.current = true;
-      try {
-        const updated =
-          (await loadSlideshowBatch(slideshowPageSize)) ?? slideshowImagesRef.current;
-        const nextIndex = modalItems.length;
-        if (!updated[nextIndex]) {
-          return false;
-        }
-        updateModalItems(updated);
-        setModalImageAtIndex(updated, nextIndex, options);
-        return true;
-      } catch (error) {
-        setError((error as Error).message);
-        return false;
-      } finally {
-        slideshowAppendInFlightRef.current = false;
-      }
-    },
-    [
-      loadSlideshowBatch,
-      modalItems.length,
-      setError,
-      setModalImageAtIndex,
-      slideshowImagesRef,
-      slideshowPageSize,
-      updateModalItems,
-    ]
-  );
+  const {
+    appendSample,
+    appendFavorites,
+    appendNonFavorites,
+    appendSlideshow,
+    resetInFlight,
+  } = useModalDataLoader({
+    activeSet,
+    modalItems,
+    samplePageSize,
+    readImageListCache,
+    resolveSetImages,
+    setError,
+    setModalImageAtIndex,
+    updateModalItems,
+    filterFavorites,
+    filterNonFavorites,
+    pickNextSample,
+    pickNextFavorites,
+    pickNextNonFavorites,
+    setSampleImages,
+    setFavoriteImages,
+    setNonFavoriteImages,
+    sampleHistoryRef,
+    sampleHistorySetRef,
+    loadSlideshowBatch,
+    slideshowImagesRef,
+    slideshowPageSize,
+  });
 
   const applyModalContext = useCallback(
     (snapshot: {
@@ -545,10 +469,7 @@ export function useModalViewer({
     resetModalHistory();
     sampleHistoryRef.current = [];
     sampleHistorySetRef.current = null;
-    sampleAppendInFlightRef.current = false;
-    favoriteAppendInFlightRef.current = false;
-    nonFavoriteAppendInFlightRef.current = false;
-    slideshowAppendInFlightRef.current = false;
+    resetInFlight();
     if (modalPulseTimeout.current) {
       window.clearTimeout(modalPulseTimeout.current);
       modalPulseTimeout.current = null;
@@ -612,50 +533,19 @@ export function useModalViewer({
     const isLast = currentIndex + 1 >= modalItems.length;
     if (isLast) {
       if (modalContextLabel === 'Sample' && activeSet) {
-        void appendModalBatch({
-          inFlightRef: sampleAppendInFlightRef,
-          transformSource: (source) => source,
-          pickNext: pickNextSample,
-          appendToList: (items) => {
-            setSampleImages((current) => appendUniqueImages(current, items));
-          },
-          beforeAppend: (setId) =>
-            !sampleHistorySetRef.current || sampleHistorySetRef.current === setId,
-          onUpdated: (items, setId) => {
-            sampleHistoryRef.current = items;
-            sampleHistorySetRef.current = setId;
-          },
-          suppressControls: options?.suppressControls,
-        });
+        void appendSample({ suppressControls: options?.suppressControls });
         return;
       }
       if (modalContextLabel === 'Non favorites' && activeSet) {
-        void appendModalBatch({
-          inFlightRef: nonFavoriteAppendInFlightRef,
-          transformSource: (source) =>
-            filterNonFavorites(source, activeSet.favoriteImageIds ?? []),
-          pickNext: pickNextNonFavorites,
-          appendToList: (items) => {
-            setNonFavoriteImages((current) => appendUniqueImages(current, items));
-          },
-          suppressControls: options?.suppressControls,
-        });
+        void appendNonFavorites({ suppressControls: options?.suppressControls });
         return;
       }
       if (modalContextLabel === 'Favorites' && activeSet) {
-        void appendModalBatch({
-          inFlightRef: favoriteAppendInFlightRef,
-          transformSource: (source) => filterFavorites(source, activeSet.favoriteImageIds ?? []),
-          pickNext: pickNextFavorites,
-          appendToList: (items) => {
-            setFavoriteImages((current) => appendUniqueImages(current, items));
-          },
-          suppressControls: options?.suppressControls,
-        });
+        void appendFavorites({ suppressControls: options?.suppressControls });
         return;
       }
       if (modalContextLabel === 'Slideshow') {
-        void appendSlideshowBatch(options);
+        void appendSlideshow({ suppressControls: options?.suppressControls });
         return;
       }
       if (modalContextLabel === 'Set' && modalRemainingImages !== undefined && modalRemainingImages > 0) {

@@ -120,18 +120,6 @@ function parsePathState() {
   return { page: 'overview', setId: undefined };
 }
 
-function syncPathState(page: 'overview' | 'create' | 'set' | 'slideshow', setId?: string) {
-  let next = '/';
-  if (page === 'create') {
-    next = '/create';
-  } else if (page === 'slideshow') {
-    next = '/slideshow';
-  } else if (page === 'set' && setId) {
-    next = `/set/${encodeURIComponent(setId)}`;
-  }
-  window.history.replaceState(null, '', next);
-}
-
 function filterFavorites(images: DriveImage[], favoriteIds: string[]) {
   if (favoriteIds.length === 0) {
     return [];
@@ -539,6 +527,32 @@ export default function App() {
   const metadataDirtyRef = useRef(metadataDirty);
   const slideshowImagesRef = useRef<DriveImage[]>(slideshowImages);
   const updateQueueRef = useRef(Promise.resolve());
+  const lastHistoryPathRef = useRef<string | null>(null);
+  const skipHistoryRef = useRef(false);
+
+  const syncPathState = useCallback(
+    (page: 'overview' | 'create' | 'set' | 'slideshow', setId?: string) => {
+      let next = '/';
+      if (page === 'create') {
+        next = '/create';
+      } else if (page === 'slideshow') {
+        next = '/slideshow';
+      } else if (page === 'set' && setId) {
+        next = `/set/${encodeURIComponent(setId)}`;
+      }
+      if (lastHistoryPathRef.current === next) {
+        return;
+      }
+      if (skipHistoryRef.current) {
+        skipHistoryRef.current = false;
+        window.history.replaceState(null, '', next);
+      } else {
+        window.history.pushState(null, '', next);
+      }
+      lastHistoryPathRef.current = next;
+    },
+    []
+  );
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
@@ -1773,8 +1787,14 @@ export default function App() {
   }, [handleOpenSet, isLoadingMetadata, metadata.sets]);
 
   useEffect(() => {
+    const raw = window.location.pathname;
+    lastHistoryPathRef.current = raw.endsWith('/') && raw.length > 1 ? raw.slice(0, -1) : raw;
+  }, []);
+
+  useEffect(() => {
     const handlePop = () => {
       const next = parsePathState();
+      skipHistoryRef.current = true;
       if (next.page === 'set' && next.setId) {
         pendingSetIdRef.current = next.setId;
         pendingSetFetchAttemptedRef.current = false;
@@ -1801,7 +1821,7 @@ export default function App() {
       return;
     }
     syncPathState(page);
-  }, [activeSet, page]);
+  }, [activeSet, page, syncPathState]);
 
   useEffect(() => {
     if (page !== 'set') {

@@ -172,6 +172,9 @@ export function useModalViewer({
   const modalFavoritePulseTimeout = useRef<number | null>(null);
   const modalControlsTimeoutRef = useRef<number | null>(null);
   const modalShakeTimeoutRef = useRef<number | null>(null);
+  const modalHistoryEntryRef = useRef(false);
+  const ignoreNextPopRef = useRef(false);
+  const ignoreNextFullscreenRef = useRef(false);
   const goNextImageRef = useRef<(options?: { suppressControls?: boolean }) => void>(() => {});
   const sampleHistoryRef = useRef<DriveImage[]>([]);
   const sampleHistorySetRef = useRef<string | null>(null);
@@ -459,6 +462,34 @@ export function useModalViewer({
     modalControlsTimeoutRef,
   });
 
+  const openModalWithHistory = useCallback(
+    (imageId: string, items: DriveImage[], label: string) => {
+      if (!modalHistoryEntryRef.current) {
+        const nextState = { ...(window.history.state ?? {}), modal: true };
+        window.history.pushState(nextState, '');
+        modalHistoryEntryRef.current = true;
+      }
+      openModal(imageId, items, label);
+    },
+    [openModal]
+  );
+
+  const closeModalWithHistory = useCallback(
+    (source: 'manual' | 'popstate' | 'fullscreen') => {
+      const shouldIgnoreFullscreen = source !== 'fullscreen' && !!document.fullscreenElement;
+      if (shouldIgnoreFullscreen) {
+        ignoreNextFullscreenRef.current = true;
+      }
+      closeModal();
+      if (modalHistoryEntryRef.current && source !== 'popstate') {
+        ignoreNextPopRef.current = true;
+        window.history.back();
+      }
+      modalHistoryEntryRef.current = false;
+    },
+    [closeModal]
+  );
+
   const toggleFavoriteFromModal = useCallback(() => {
     if (!modalImage) {
       return;
@@ -615,12 +646,47 @@ export function useModalViewer({
     goPrevImage,
     goNextImage,
     onToggleFavoriteFromModal: toggleFavoriteFromModal,
-    onCloseModal: closeModal,
+    onCloseModal: () => closeModalWithHistory('manual'),
   });
 
   useEffect(() => {
     goNextImageRef.current = goNextImage;
   }, [goNextImage]);
+
+  useEffect(() => {
+    const handlePop = () => {
+      if (ignoreNextPopRef.current) {
+        ignoreNextPopRef.current = false;
+        return;
+      }
+      if (modalIndex !== null) {
+        closeModalWithHistory('popstate');
+      }
+    };
+    window.addEventListener('popstate', handlePop);
+    return () => {
+      window.removeEventListener('popstate', handlePop);
+    };
+  }, [closeModalWithHistory, modalIndex]);
+
+  useEffect(() => {
+    if (modalIndex === null) {
+      return;
+    }
+    const handleFullscreenChange = () => {
+      if (ignoreNextFullscreenRef.current) {
+        ignoreNextFullscreenRef.current = false;
+        return;
+      }
+      if (!document.fullscreenElement) {
+        closeModalWithHistory('fullscreen');
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, [closeModalWithHistory, modalIndex]);
 
   useEffect(() => {
     if (modalIndex === null) {
@@ -638,7 +704,7 @@ export function useModalViewer({
         }
       }
       if (event.key === 'Escape') {
-        closeModal();
+        closeModalWithHistory('manual');
       }
       if (event.key === 'ArrowRight') {
         goNextImage();
@@ -653,7 +719,7 @@ export function useModalViewer({
     };
   }, [
     activeSet,
-    closeModal,
+    closeModalWithHistory,
     goNextImage,
     goPrevImage,
     modalContextLabel,
@@ -759,8 +825,12 @@ export function useModalViewer({
     onToggleFavoriteFromModal: toggleFavoriteFromModal,
     onPrevImage: goPrevImage,
     onNextImage: goNextImage,
-    onCloseModal: closeModal,
+    onCloseModal: () => closeModalWithHistory('manual'),
   };
 
-  return { modalState, openModal, closeModal };
+  return {
+    modalState,
+    openModal: openModalWithHistory,
+    closeModal: () => closeModalWithHistory('manual'),
+  };
 }

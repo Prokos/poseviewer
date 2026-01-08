@@ -129,7 +129,7 @@ export default function App() {
   const [showHiddenFolders, setShowHiddenFolders] = useState(false);
   const [setFilter, setSetFilter] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [setSort, setSetSort] = useState('favs_desc');
+  const [setSort, setSetSort] = useState('random');
   const [slideshowIncludeTags, setSlideshowIncludeTags] = useState<string[]>([]);
   const [slideshowExcludeTags, setSlideshowExcludeTags] = useState<string[]>([]);
   const [slideshowFavoriteFilter, setSlideshowFavoriteFilter] = useState<
@@ -231,6 +231,10 @@ export default function App() {
     });
   }, [folderFilter, folderPaths, hiddenFolders, metadata.sets]);
 
+  const randomSortWeights = useMemo(() => {
+    return new Map(metadata.sets.map((set) => [set.id, Math.random()]));
+  }, [metadata.sets]);
+
   const filteredSets = useMemo(() => {
     const query = setFilter.trim().toLowerCase();
     const selected = selectedTags.map((tag) => tag.toLowerCase());
@@ -249,6 +253,11 @@ export default function App() {
     });
     const sorted = [...matches];
     switch (setSort) {
+      case 'random':
+        sorted.sort(
+          (a, b) => (randomSortWeights.get(a.id) ?? 0) - (randomSortWeights.get(b.id) ?? 0)
+        );
+        break;
       case 'added_asc':
         break;
       case 'images_asc':
@@ -275,7 +284,7 @@ export default function App() {
         break;
     }
     return sorted;
-  }, [metadata.sets, selectedTags, setFilter, setSort]);
+  }, [metadata.sets, randomSortWeights, selectedTags, setFilter, setSort]);
 
   const setsById = useMemo(() => {
     return new Map(metadata.sets.map((set) => [set.id, set]));
@@ -612,7 +621,7 @@ export default function App() {
     }
     if (activeImages.length === 0) {
       setImageLimit(allPageSize);
-      void loadSetImages(activeSet, allPageSize, true);
+      void loadSetImages(activeSet, allPageSize, false);
       return;
     }
     if (allColumns <= 1 || activeImages.length === 0) {
@@ -1293,13 +1302,17 @@ export default function App() {
       !set.indexFileId && prebuiltIndexRef.current?.folderId === set.rootFolderId
         ? { ...set, indexFileId: prebuiltIndexRef.current.fileId ?? undefined }
         : set;
+    const isSameSet = activeSet?.id === nextSet.id;
     setActiveSet(nextSet);
     setPage('set');
-    setImageLimit(0);
-    setActiveImages([]);
-    setFavoriteImages([]);
-    setSampleImages([]);
-    setImageLoadStatus('');
+    if (!isSameSet) {
+      setImageLimit(0);
+      setActiveImages([]);
+      setFavoriteImages([]);
+      setSampleImages([]);
+      setNonFavoriteImages([]);
+      setImageLoadStatus('');
+    }
     if (!set.indexFileId && nextSet.indexFileId) {
       await handleUpdateSet(set.id, { indexFileId: nextSet.indexFileId });
     }
@@ -1550,16 +1563,9 @@ export default function App() {
       ? Math.max(0, Math.min(samplePageSize, nonFavoritesRemaining))
       : samplePageSize;
 
-  const handleSetViewerTab = useCallback(
-    (tab: 'samples' | 'favorites' | 'nonfavorites' | 'all') => {
-      setSetViewerTab(tab);
-      if (tab === 'all' && activeSet && activeImages.length === 0 && !isLoadingImages) {
-        setImageLimit(allPageSize);
-        void loadSetImages(activeSet, allPageSize, false);
-      }
-    },
-    [activeImages.length, activeSet, allPageSize, isLoadingImages]
-  );
+  const handleSetViewerTab = useCallback((tab: 'samples' | 'favorites' | 'nonfavorites' | 'all') => {
+    setSetViewerTab(tab);
+  }, []);
 
   const handleUpdateSetName = useCallback(
     (value: string) => {

@@ -55,6 +55,7 @@ export function OverviewPage({
           <label className="field field--inline">
             <span>Sort sets</span>
             <select value={setSort} onChange={(event) => onSetSortChange(event.target.value)}>
+              <option value="random">Random</option>
               <option value="added_desc">Added (newest)</option>
               <option value="added_asc">Added (oldest)</option>
               <option value="images_desc">Images (high to low)</option>

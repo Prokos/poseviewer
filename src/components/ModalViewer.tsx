@@ -22,6 +22,7 @@ export function ModalViewer() {
     viewerSort,
     modalIsFavorite,
     modalIsLoading,
+    modalLoadingCount,
     modalPulse,
     modalFavoritePulse,
     modalFullSrc,
@@ -69,6 +70,10 @@ export function ModalViewer() {
   if (!modalImage) {
     return null;
   }
+  const showLoading = modalLoadingCount > 0;
+  const loadingLabel = `Loading ${modalLoadingCount} image${
+    modalLoadingCount === 1 ? '' : 's'
+  }`;
 
   return (
     <div className="modal" onClick={onCloseModal}>
@@ -187,6 +192,9 @@ export function ModalViewer() {
             key={`thumb-${modalImage.id}`}
             src={createProxyThumbUrl(modalImage.id, thumbSize)}
             alt={modalImage.name}
+            loading="eager"
+            decoding="async"
+            fetchpriority="high"
           />
           <img
             className={`modal-full ${modalFullImageId === modalImage.id ? 'is-loaded' : ''} ${
@@ -195,13 +203,14 @@ export function ModalViewer() {
             key={`full-${modalImage.id}`}
             src={modalFullSrc ?? undefined}
             alt={modalImage.name}
+            decoding="async"
             onLoad={onModalFullLoad}
           />
         </div>
-        <div className={`modal-status ${modalIsLoading ? 'is-visible' : ''}`}>
+        <div className={`modal-status ${showLoading ? 'is-visible' : ''}`}>
           <div className={`modal-status-inner ${modalPulse ? 'pulse' : ''}`}>
             <IconLoader2 size={20} />
-            <span>Loading image</span>
+            <span>{loadingLabel}</span>
           </div>
         </div>
         {modalContextLabel && modalIndex !== null ? (

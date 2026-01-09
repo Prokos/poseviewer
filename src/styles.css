@@ -1357,8 +1357,7 @@ button.ghost:hover:not(:disabled) {
 .modal-content.is-controls-hidden .modal-close,
 .modal-content.is-controls-hidden .modal-favorite,
 .modal-content.is-controls-hidden .modal-nav,
-.modal-content.is-controls-hidden .modal-counter,
-.modal-content.is-controls-hidden .modal-status {
+.modal-content.is-controls-hidden .modal-counter {
   opacity: 0;
   pointer-events: none;
 }

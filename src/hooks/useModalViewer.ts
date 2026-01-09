@@ -84,6 +84,7 @@ export type ModalViewerState = {
   viewerSort: 'random' | 'chronological';
   modalIsFavorite: boolean;
   modalIsLoading: boolean;
+  modalLoadingCount: number;
   modalPulse: boolean;
   modalFavoritePulse: null | 'add' | 'remove';
   modalFullSrc: string | null;
@@ -202,6 +203,7 @@ export function useModalViewer({
 
   const {
     modalIsLoading,
+    modalLoadingCount,
     modalFullSrc,
     modalFullImageId,
     modalFullAnimate,
@@ -798,6 +800,7 @@ export function useModalViewer({
     viewerSort,
     modalIsFavorite,
     modalIsLoading,
+    modalLoadingCount,
     modalPulse,
     modalFavoritePulse,
     modalFullSrc,

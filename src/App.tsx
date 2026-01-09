@@ -57,6 +57,8 @@ const IMAGE_PAGE_SIZE = 96;
 const THUMB_SIZE = 320;
 const CARD_THUMB_SIZE = 500;
 const VIEWER_THUMB_SIZE = CARD_THUMB_SIZE;
+const THUMB_PREFETCH_MAX_IN_FLIGHT = 4;
+const THUMB_PREFETCH_MAX_QUEUE = 120;
 const emptyFolders: FolderPath[] = [];
 
 function parsePathState() {
@@ -145,7 +147,7 @@ export default function App() {
   const [setViewerTab, setSetViewerTab] = useState<
     'samples' | 'favorites' | 'nonfavorites' | 'all'
   >('all');
-  const [viewerSort, setViewerSort] = useState<'random' | 'chronological'>('random');
+  const [viewerSort, setViewerSort] = useLocalStorage<'random' | 'chronological'>('poseviewer-viewer-sort','random');
   const [allColumns, setAllColumns] = useState(1);
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
@@ -172,6 +174,9 @@ export default function App() {
   const pendingSetIdRef = useRef<string | null>(null);
   const pendingSetFetchAttemptedRef = useRef(false);
   const prefetchedThumbsRef = useRef<Set<string>>(new Set());
+  const thumbPrefetchQueueRef = useRef<string[]>([]);
+  const thumbPrefetchQueuedRef = useRef<Set<string>>(new Set());
+  const thumbPrefetchInFlightRef = useRef(0);
   const prebuiltIndexRef = useRef<{
     folderId: string;
     items: { id: string; name: string }[];
@@ -1220,16 +1225,62 @@ export default function App() {
     slideshowPageSize,
   });
 
-  const prefetchThumbs = useCallback((images: DriveImage[]) => {
-    for (const image of images) {
-      if (prefetchedThumbsRef.current.has(image.id)) {
+  const flushThumbPrefetch = useCallback(() => {
+    while (
+      thumbPrefetchInFlightRef.current < THUMB_PREFETCH_MAX_IN_FLIGHT &&
+      thumbPrefetchQueueRef.current.length > 0
+    ) {
+      const nextId = thumbPrefetchQueueRef.current.shift();
+      if (!nextId) {
         continue;
       }
+      thumbPrefetchQueuedRef.current.delete(nextId);
+      if (prefetchedThumbsRef.current.has(nextId)) {
+        continue;
+      }
+      prefetchedThumbsRef.current.add(nextId);
+      thumbPrefetchInFlightRef.current += 1;
       const preload = new Image();
-      preload.src = createProxyThumbUrl(image.id, THUMB_SIZE);
-      prefetchedThumbsRef.current.add(image.id);
+      preload.decoding = 'async';
+      preload.loading = 'lazy';
+      preload.src = createProxyThumbUrl(nextId, THUMB_SIZE);
+      const finalize = () => {
+        thumbPrefetchInFlightRef.current = Math.max(
+          0,
+          thumbPrefetchInFlightRef.current - 1
+        );
+        flushThumbPrefetch();
+      };
+      preload.onload = finalize;
+      preload.onerror = () => {
+        prefetchedThumbsRef.current.delete(nextId);
+        finalize();
+      };
     }
   }, []);
+
+  const prefetchThumbs = useCallback(
+    (images: DriveImage[]) => {
+      if (thumbPrefetchQueueRef.current.length >= THUMB_PREFETCH_MAX_QUEUE) {
+        return;
+      }
+      for (const image of images) {
+        if (prefetchedThumbsRef.current.has(image.id)) {
+          continue;
+        }
+        if (thumbPrefetchQueuedRef.current.has(image.id)) {
+          continue;
+        }
+        thumbPrefetchQueueRef.current.push(image.id);
+        thumbPrefetchQueuedRef.current.add(image.id);
+        if (thumbPrefetchQueueRef.current.length >= THUMB_PREFETCH_MAX_QUEUE) {
+          break;
+        }
+      }
+      flushThumbPrefetch();
+    },
+    [flushThumbPrefetch]
+  );
 
   const handleSetThumbnail = async (setId: string, fileId: string) => {
     await handleUpdateSet(setId, { thumbnailFileId: fileId, thumbnailPos: 50 });

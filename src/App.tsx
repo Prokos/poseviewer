@@ -129,7 +129,7 @@ export default function App() {
   const [showHiddenFolders, setShowHiddenFolders] = useState(false);
   const [setFilter, setSetFilter] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [setSort, setSetSort] = useState('random');
+  const [setSort, setSetSort] = useLocalStorage('poseviewer-set-sort', 'random');
   const [slideshowIncludeTags, setSlideshowIncludeTags] = useState<string[]>([]);
   const [slideshowExcludeTags, setSlideshowExcludeTags] = useState<string[]>([]);
   const [slideshowFavoriteFilter, setSlideshowFavoriteFilter] = useState<

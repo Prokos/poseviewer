@@ -1,6 +1,7 @@
 import { IconDotsVertical, IconFolder, IconPhoto, IconHeart } from '@tabler/icons-react';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from '../components/ImageThumb';
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
 import { ImageGrid } from '../components/ImageGrid';
 import { GridLoadButtons } from '../components/GridLoadButtons';
 import { useSetViewer } from '../features/setViewer/SetViewerContext';
@@ -42,6 +43,7 @@ export function SetViewerPage() {
     onLoadAllPreloaded,
     onToggleFavoriteImage,
     onSetThumbnail,
+    onSetThumbnailPosition,
     onUpdateSetName,
     onRefreshSet,
     onDeleteSet,
@@ -50,6 +52,89 @@ export function SetViewerPage() {
     sampleGridRef,
     allGridRef,
   } = useSetViewer();
+  const thumbRef = useRef<HTMLDivElement | null>(null);
+  const [thumbPos, setThumbPos] = useState(activeSet?.thumbnailPos ?? 50);
+  const thumbPosRef = useRef(thumbPos);
+  const isDraggingRef = useRef(false);
+
+  useEffect(() => {
+    const nextPos = activeSet?.thumbnailPos ?? 50;
+    setThumbPos(nextPos);
+    thumbPosRef.current = nextPos;
+  }, [activeSet?.id, activeSet?.thumbnailFileId, activeSet?.thumbnailPos]);
+
+  const computeThumbPos = useCallback((clientY: number) => {
+    const bounds = thumbRef.current?.getBoundingClientRect();
+    if (!bounds) {
+      return thumbPosRef.current;
+    }
+    const y = clientY - bounds.top;
+    const raw = y / bounds.height;
+    const clamped = Math.min(1, Math.max(0, raw));
+    const start = 0.2;
+    const end = 0.8;
+    if (clamped <= start) {
+      return 0;
+    }
+    if (clamped >= end) {
+      return 100;
+    }
+    return ((clamped - start) / (end - start)) * 100;
+  }, []);
+
+  const handleThumbPointerDown = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!activeSet?.thumbnailFileId) {
+        return;
+      }
+      event.preventDefault();
+      isDraggingRef.current = true;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      const nextPos = computeThumbPos(event.clientY);
+      thumbPosRef.current = nextPos;
+      setThumbPos(nextPos);
+    },
+    [activeSet?.thumbnailFileId, computeThumbPos]
+  );
+
+  const handleThumbPointerMove = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!isDraggingRef.current) {
+        return;
+      }
+      event.preventDefault();
+      const nextPos = computeThumbPos(event.clientY);
+      thumbPosRef.current = nextPos;
+      setThumbPos(nextPos);
+    },
+    [computeThumbPos]
+  );
+
+  const handleThumbPointerUp = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!isDraggingRef.current) {
+        return;
+      }
+      event.preventDefault();
+      isDraggingRef.current = false;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      if (activeSet) {
+        onSetThumbnailPosition(activeSet.id, thumbPosRef.current);
+      }
+    },
+    [activeSet, onSetThumbnailPosition]
+  );
+
+  const handleThumbPointerCancel = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!isDraggingRef.current) {
+        return;
+      }
+      isDraggingRef.current = false;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    },
+    []
+  );
   const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
   const favoriteAction = activeSet
     ? {
@@ -78,6 +163,13 @@ export function SetViewerPage() {
                     fileId={activeSet.thumbnailFileId}
                     alt={activeSet.name}
                     size={viewerThumbSize}
+                    thumbPos={thumbPos}
+                    hoverScroll={false}
+                    containerRef={thumbRef}
+                    onPointerDown={handleThumbPointerDown}
+                    onPointerMove={handleThumbPointerMove}
+                    onPointerUp={handleThumbPointerUp}
+                    onPointerCancel={handleThumbPointerCancel}
                   />
                 ) : (
                   <div className="thumb thumb--empty">No thumbnail</div>

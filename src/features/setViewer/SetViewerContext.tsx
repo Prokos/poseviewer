@@ -49,6 +49,7 @@ export type SetViewerContextValue = {
   onLoadAllPreloaded: () => void | Promise<void>;
   onToggleFavoriteImage: (setId: string, imageId: string) => void;
   onSetThumbnail: (setId: string, imageId: string) => void;
+  onSetThumbnailPosition: (setId: string, pos: number) => void;
   onUpdateSetName: (value: string) => void;
   onRefreshSet: (set: PoseSet) => void;
   onDeleteSet: (set: PoseSet) => void;

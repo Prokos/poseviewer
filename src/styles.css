@@ -882,6 +882,11 @@ button.ghost:hover:not(:disabled) {
 
 .viewer-thumb .thumb {
   border-radius: 12px;
+  cursor: grab;
+}
+
+.viewer-thumb .thumb:active {
+  cursor: grabbing;
 }
 
 .viewer-thumb .tag.ghost {

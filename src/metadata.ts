@@ -7,6 +7,7 @@ export type PoseSet = {
   rootPath: string;
   tags: string[];
   thumbnailFileId?: string;
+  thumbnailPos?: number;
   indexFileId?: string;
   imageCount?: number;
   favoriteImageIds?: string[];

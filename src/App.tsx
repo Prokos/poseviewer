@@ -1232,8 +1232,15 @@ export default function App() {
   }, []);
 
   const handleSetThumbnail = async (setId: string, fileId: string) => {
-    await handleUpdateSet(setId, { thumbnailFileId: fileId });
+    await handleUpdateSet(setId, { thumbnailFileId: fileId, thumbnailPos: 50 });
   };
+
+  const handleSetThumbnailPosition = useCallback(
+    (setId: string, pos: number) => {
+      void handleUpdateSet(setId, { thumbnailPos: pos });
+    },
+    [handleUpdateSet]
+  );
 
   const handleDeleteSet = async (setToDelete: PoseSet) => {
     if (!isConnected || !rootId) {
@@ -1714,6 +1721,7 @@ export default function App() {
     onLoadAllPreloaded: handleLoadAllPreloaded,
     onToggleFavoriteImage: toggleFavoriteImage,
     onSetThumbnail: handleSetThumbnail,
+    onSetThumbnailPosition: handleSetThumbnailPosition,
     onUpdateSetName: handleUpdateSetName,
     onRefreshSet: handleRefreshSet,
     onDeleteSet: handleDeleteSet,

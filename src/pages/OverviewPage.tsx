@@ -108,6 +108,7 @@ export function OverviewPage({
                     fileId={set.thumbnailFileId}
                     alt={set.name}
                     size={cardThumbSize}
+                    thumbPos={set.thumbnailPos}
                   />
                 ) : (
                   <div className="thumb thumb--empty">No thumbnail</div>

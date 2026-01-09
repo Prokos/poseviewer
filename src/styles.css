@@ -728,6 +728,7 @@ button.ghost:hover:not(:disabled) {
   object-fit: cover;
   object-position: center var(--thumb-pos, 50%);
   display: block;
+  transition: object-position 120ms ease-out;
 }
 
 .thumb--empty {

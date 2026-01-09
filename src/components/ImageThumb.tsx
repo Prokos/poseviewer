@@ -48,7 +48,7 @@ export function ImageThumb({
 
   return (
     <div
-      className="thumb"
+      className={`thumb`}
       ref={setRef}
       style={{ ['--thumb-pos' as string]: `${resolvedPos}%` }}
       onDragStart={(event) => event.preventDefault()}

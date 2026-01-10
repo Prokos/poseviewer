@@ -2,7 +2,7 @@ import { IconHeart, IconHeartFilled, IconPhotoStar } from '@tabler/icons-react';
 import type { RefObject } from 'react';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from './ImageThumb';
-import { useModal } from '../features/modal/ModalContext';
+import { useModalActions } from '../features/modal/ModalContext';
 
 type FavoriteAction = {
   isActive: (image: DriveImage) => boolean;
@@ -39,7 +39,7 @@ export function ImageGrid({
   favoriteAction,
   thumbnailAction,
 }: ImageGridProps) {
-  const { openModal } = useModal();
+  const { openModal } = useModalActions();
   const resolveAlt = (image: DriveImage) => (typeof alt === 'string' ? alt : alt(image));
 
   return (

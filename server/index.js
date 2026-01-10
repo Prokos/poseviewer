@@ -28,9 +28,9 @@ const MAX_MEDIA_CACHE_BYTES = Number(process.env.MEDIA_CACHE_MAX_MB ?? 10000) * 
 const MAX_THUMB_CACHE_BYTES = Number(process.env.THUMB_CACHE_MAX_MB ?? 2000) * 1024 * 1024;
 const DEFAULT_SIZE = 320;
 const MAX_SIZE = 1600;
-const MAX_MEDIA_CONCURRENCY = Number(process.env.MEDIA_CONCURRENCY ?? 6);
+const MAX_MEDIA_CONCURRENCY = Number(process.env.MEDIA_CONCURRENCY ?? 20);
 const MAX_MEDIA_QUEUE = Number(process.env.MEDIA_QUEUE ?? 120);
-const MAX_THUMB_CONCURRENCY = Number(process.env.THUMB_CONCURRENCY ?? 6);
+const MAX_THUMB_CONCURRENCY = Number(process.env.THUMB_CONCURRENCY ?? 20);
 const MAX_THUMB_QUEUE = Number(process.env.THUMB_QUEUE ?? 50);
 const MEDIA_TIMEOUT_MS = Number(process.env.MEDIA_TIMEOUT_MS ?? 20000);
 

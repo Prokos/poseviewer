@@ -39,6 +39,12 @@ export function useModalMedia({
     new Map()
   );
 
+  const cancelPrefetches = useCallback(() => {
+    modalPrefetchAbortRef.current.forEach((controller) => controller.abort());
+    modalPrefetchAbortRef.current.clear();
+    setModalPrefetchCount(0);
+  }, []);
+
   const resetModalMediaState = useCallback(() => {
     setModalFullSrc(null);
     setModalFullImageId(null);
@@ -98,21 +104,51 @@ export function useModalMedia({
     }
   }, []);
 
-  const fetchImageBlob = useCallback(async (url: string, signal: AbortSignal) => {
-    const response = await fetch(url, { signal, cache: 'force-cache' });
-    if (!response.ok) {
-      throw new Error(`Image load failed: ${response.status}`);
-    }
-    const contentLength = response.headers.get('content-length');
-    const blob = await response.blob();
-    if (contentLength) {
-      const expected = Number(contentLength);
-      if (Number.isFinite(expected) && expected > 0 && blob.size !== expected) {
-        throw new Error('Image load incomplete');
+  const waitForRetry = useCallback((ms: number, signal: AbortSignal) => {
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
       }
-    }
-    return blob;
+      const timeout = window.setTimeout(() => {
+        signal.removeEventListener('abort', handleAbort);
+        resolve();
+      }, ms);
+      const handleAbort = () => {
+        window.clearTimeout(timeout);
+        signal.removeEventListener('abort', handleAbort);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal.addEventListener('abort', handleAbort, { once: true });
+    });
   }, []);
+
+  const fetchImageBlob = useCallback(async (url: string, signal: AbortSignal) => {
+    let lastStatus = 0;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch(url, { signal, cache: 'force-cache' });
+      if (response.status === 429) {
+        lastStatus = response.status;
+        if (attempt < 2) {
+          await waitForRetry(200 * 2 ** attempt, signal);
+          continue;
+        }
+      }
+      if (!response.ok) {
+        throw new Error(`Image load failed: ${response.status}`);
+      }
+      const contentLength = response.headers.get('content-length');
+      const blob = await response.blob();
+      if (contentLength) {
+        const expected = Number(contentLength);
+        if (Number.isFinite(expected) && expected > 0 && blob.size !== expected) {
+          throw new Error('Image load incomplete');
+        }
+      }
+      return blob;
+    }
+    throw new Error(`Image load failed: ${lastStatus || 429}`);
+  }, [waitForRetry]);
 
   const prefetchModalImage = useCallback(
     (imageId?: string) => {
@@ -204,6 +240,7 @@ export function useModalMedia({
     setModalFullSrc(null);
     modalFullDelayRef.current = window.setTimeout(() => {
       setModalIsLoading(true);
+      cancelPrefetches();
       const controller = new AbortController();
       modalFullAbortRef.current = controller;
       const url = createProxyMediaUrl(modalImageId);
@@ -229,10 +266,22 @@ export function useModalMedia({
         });
       modalFullDelayRef.current = null;
     }, modalFullDelayMs);
-  }, [fetchImageBlob, modalImageId, modalLoadKey, setError, storeModalFullCache]);
+  }, [
+    cancelPrefetches,
+    fetchImageBlob,
+    modalImageId,
+    modalLoadKey,
+    setError,
+    storeModalFullCache,
+  ]);
 
   useEffect(() => {
-    if (modalIndex === null || modalIndex < 0 || modalItems.length === 0) {
+    if (
+      modalIndex === null ||
+      modalIndex < 0 ||
+      modalItems.length === 0 ||
+      modalFullImageId !== modalImageId
+    ) {
       return;
     }
     const range = 3;
@@ -262,7 +311,7 @@ export function useModalMedia({
     });
     setModalPrefetchCount(modalPrefetchAbortRef.current.size);
     nextIds.forEach((id) => prefetchModalImage(id));
-  }, [modalIndex, modalItems, prefetchModalImage]);
+  }, [modalFullImageId, modalImageId, modalIndex, modalItems, prefetchModalImage]);
 
   useEffect(() => {
     if (modalIndex === null || modalItems.length === 0) {

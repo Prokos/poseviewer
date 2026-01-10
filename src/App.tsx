@@ -46,6 +46,7 @@ import { CreateSetPage } from './pages/CreateSetPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { SlideshowPage } from './pages/SlideshowPage';
 import { SetViewerPage } from './pages/SetViewerPage';
+import { ModalActionsProvider } from './features/modal/ModalContext';
 import { ModalStateProvider } from './features/modal/ModalStateProvider';
 import { useSetViewerGrids } from './features/setViewer/useSetViewerGrids';
 import { SetViewerProvider } from './features/setViewer/SetViewerContext';
@@ -195,6 +196,12 @@ export default function App() {
   const openModalRef = useRef<
     (imageId: string, images: DriveImage[], label: string, index?: number) => void
   >(() => {});
+  const openModal = useCallback(
+    (imageId: string, images: DriveImage[], label: string, index?: number) => {
+      openModalRef.current(imageId, images, label, index);
+    },
+    []
+  );
   const updateQueueRef = useRef(Promise.resolve());
   const lastHistoryPathRef = useRef<string | null>(null);
   const skipHistoryRef = useRef(false);
@@ -1844,6 +1851,8 @@ export default function App() {
     setError,
   };
 
+  const modalActions = useMemo(() => ({ openModal }), [openModal]);
+
   const slideshowValue = {
     isConnected,
     slideshowSets,
@@ -1888,109 +1897,112 @@ export default function App() {
   }, []);
 
   return (
-    <ModalStateProvider
-      deps={modalDeps}
-      thumbSize={THUMB_SIZE}
-      onOpenModalReady={(modalOpen) => {
-        openModalRef.current = modalOpen;
-      }}
-    >
-      <div className={`app ${isLoadingMetadata ? 'app--loading' : ''}`}>
-        <AppHeader
-          page={page}
-          activeSet={activeSet}
-          isConnected={isConnected}
-          onConnect={handleConnect}
-          onNavigate={setPage}
-        />
-        {isLoadingMetadata ? (
-          <div className="loading-overlay loading-overlay--full">
-            <div className="loading-card">Loading metadata…</div>
-          </div>
+    <>
+      <ModalActionsProvider value={modalActions}>
+        <div className={`app ${isLoadingMetadata ? 'app--loading' : ''}`}>
+          <AppHeader
+            page={page}
+            activeSet={activeSet}
+            isConnected={isConnected}
+            onConnect={handleConnect}
+            onNavigate={setPage}
+          />
+          {isLoadingMetadata ? (
+            <div className="loading-overlay loading-overlay--full">
+              <div className="loading-card">Loading metadata…</div>
+            </div>
+          ) : null}
+
+        {page === 'create' ? (
+          <CreateSetPage
+            isConnected={isConnected}
+            rootId={rootId}
+            isScanning={isScanning}
+            scanCount={scanCount}
+            scanPath={scanPath}
+            folderFilter={folderFilter}
+            onFolderFilterChange={setFolderFilter}
+            hiddenFolders={hiddenFolders}
+            showHiddenFolders={showHiddenFolders}
+            onToggleHiddenFolders={() => setShowHiddenFolders((value) => !value)}
+            onShowFolder={handleShowFolder}
+            filteredFolders={filteredFolders}
+            selectedFolder={selectedFolder}
+            onSelectFolder={handleSelectFolder}
+            onHideFolder={handleHideFolder}
+            error={error}
+            isSaving={isSaving}
+            setName={setName}
+            onSetNameChange={setSetName}
+            setTags={setTags}
+            onSetTagsChange={setSetTags}
+            availableTags={availableTags}
+            sortedQuickTags={sortedQuickTags}
+            selectedCreateTags={selectedCreateTags}
+            onToggleCreateTag={toggleCreateTag}
+            previewImages={previewImages}
+            previewCount={previewCount}
+            isLoadingPreview={isLoadingPreview}
+            previewIndexProgress={previewIndexProgress}
+            onRefreshPreview={handleRefreshPreview}
+            onCreateSet={handleCreateSet}
+            onScanFolders={handleScan}
+            thumbSize={THUMB_SIZE}
+          />
         ) : null}
 
-      {page === 'create' ? (
-        <CreateSetPage
-          isConnected={isConnected}
-          rootId={rootId}
-          isScanning={isScanning}
-          scanCount={scanCount}
-          scanPath={scanPath}
-          folderFilter={folderFilter}
-          onFolderFilterChange={setFolderFilter}
-          hiddenFolders={hiddenFolders}
-          showHiddenFolders={showHiddenFolders}
-          onToggleHiddenFolders={() => setShowHiddenFolders((value) => !value)}
-          onShowFolder={handleShowFolder}
-          filteredFolders={filteredFolders}
-          selectedFolder={selectedFolder}
-          onSelectFolder={handleSelectFolder}
-          onHideFolder={handleHideFolder}
-          error={error}
-          isSaving={isSaving}
-          setName={setName}
-          onSetNameChange={setSetName}
-          setTags={setTags}
-          onSetTagsChange={setSetTags}
-          availableTags={availableTags}
-          sortedQuickTags={sortedQuickTags}
-          selectedCreateTags={selectedCreateTags}
-          onToggleCreateTag={toggleCreateTag}
-          previewImages={previewImages}
-          previewCount={previewCount}
-          isLoadingPreview={isLoadingPreview}
-          previewIndexProgress={previewIndexProgress}
-          onRefreshPreview={handleRefreshPreview}
-          onCreateSet={handleCreateSet}
-          onScanFolders={handleScan}
-          thumbSize={THUMB_SIZE}
-        />
-      ) : null}
+        {page === 'overview' ? (
+          <OverviewPage
+            isConnected={isConnected}
+            setFilter={setFilter}
+            onSetFilterChange={setSetFilter}
+            setSort={setSort}
+            onSetSortChange={setSetSort}
+            selectedTags={selectedTags}
+            sortedTags={sortedTags}
+            tagCounts={tagCounts}
+            onToggleFilterTag={toggleFilterTag}
+            onClearFilters={clearSetFilters}
+            filteredSets={filteredSets}
+            totalSets={metadata.sets.length}
+            onOpenSet={handleOpenSet}
+            cardThumbSize={CARD_THUMB_SIZE}
+          />
+        ) : null}
 
-      {page === 'overview' ? (
-        <OverviewPage
-          isConnected={isConnected}
-          setFilter={setFilter}
-          onSetFilterChange={setSetFilter}
-          setSort={setSort}
-          onSetSortChange={setSetSort}
-          selectedTags={selectedTags}
-          sortedTags={sortedTags}
-          tagCounts={tagCounts}
-          onToggleFilterTag={toggleFilterTag}
-          onClearFilters={clearSetFilters}
-          filteredSets={filteredSets}
-          totalSets={metadata.sets.length}
-          onOpenSet={handleOpenSet}
-          cardThumbSize={CARD_THUMB_SIZE}
-        />
-      ) : null}
+        {page === 'slideshow' ? (
+          <SlideshowProvider value={slideshowValue}>
+            <SlideshowPage />
+          </SlideshowProvider>
+        ) : null}
 
-      {page === 'slideshow' ? (
-        <SlideshowProvider value={slideshowValue}>
-          <SlideshowPage />
-        </SlideshowProvider>
-      ) : null}
+        {page === 'set' ? (
+          <SetViewerProvider value={setViewerValue}>
+            <SetViewerPage />
+          </SetViewerProvider>
+        ) : null}
 
-      {page === 'set' ? (
-        <SetViewerProvider value={setViewerValue}>
-          <SetViewerPage />
-        </SetViewerProvider>
-      ) : null}
-
-        <ToastStack toasts={toasts} />
-        <ScrollControls
-          canScrollUp={canScrollUp}
-          canScrollDown={canScrollDown}
-          onScrollTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          onScrollBottom={() =>
-            window.scrollTo({
-              top: document.documentElement.scrollHeight,
-              behavior: 'smooth',
-            })
-          }
-        />
-      </div>
-    </ModalStateProvider>
+          <ToastStack toasts={toasts} />
+          <ScrollControls
+            canScrollUp={canScrollUp}
+            canScrollDown={canScrollDown}
+            onScrollTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            onScrollBottom={() =>
+              window.scrollTo({
+                top: document.documentElement.scrollHeight,
+                behavior: 'smooth',
+              })
+            }
+          />
+        </div>
+      </ModalActionsProvider>
+      <ModalStateProvider
+        deps={modalDeps}
+        thumbSize={THUMB_SIZE}
+        onOpenModalReady={(modalOpen) => {
+          openModalRef.current = modalOpen;
+        }}
+      />
+    </>
   );
 }

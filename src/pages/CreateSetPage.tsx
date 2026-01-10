@@ -1,7 +1,7 @@
 import type { FolderPath } from '../drive/scan';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from '../components/ImageThumb';
-import { useModal } from '../features/modal/ModalContext';
+import { useModalActions } from '../features/modal/ModalContext';
 
 type CreateSetPageProps = {
   isConnected: boolean;
@@ -74,7 +74,7 @@ export function CreateSetPage({
   onScanFolders,
   thumbSize,
 }: CreateSetPageProps) {
-  const { openModal } = useModal();
+  const { openModal } = useModalActions();
   return (
     <section className="columns">
       <div className="panel">

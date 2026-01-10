@@ -10,7 +10,7 @@ import {
   IconX,
 } from '@tabler/icons-react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
-import { useModal } from '../features/modal/ModalContext';
+import { useModalState } from '../features/modal/ModalContext';
 
 export function ModalViewer() {
   const {
@@ -66,7 +66,7 @@ export function ModalViewer() {
     onNextImage,
     onCloseModal,
     thumbSize,
-  } = useModal();
+  } = useModalState();
   if (!modalImage) {
     return null;
   }
@@ -207,12 +207,12 @@ export function ModalViewer() {
             onLoad={onModalFullLoad}
           />
         </div>
-        <div className={`modal-status ${showLoading ? 'is-visible' : ''}`}>
+        {/* <div className={`modal-status ${showLoading ? 'is-visible' : ''}`}>
           <div className={`modal-status-inner ${modalPulse ? 'pulse' : ''}`}>
             <IconLoader2 size={20} />
             <span>{loadingLabel}</span>
           </div>
-        </div>
+        </div> */}
         {modalContextLabel && modalIndex !== null ? (
           <div className="modal-counter">
             {modalContextLabel} {modalIndex + 1}/{modalItems.length}

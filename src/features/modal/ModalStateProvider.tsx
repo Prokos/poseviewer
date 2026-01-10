@@ -1,6 +1,5 @@
-import { useEffect } from 'react';
-import type { ReactNode } from 'react';
-import { ModalProvider } from './ModalContext';
+import { useEffect, useMemo } from 'react';
+import { ModalStateContextProvider } from './ModalContext';
 import { ModalViewer } from '../../components/ModalViewer';
 import type { DriveImage } from '../../drive/types';
 import { useModalViewer, type ModalDeps } from '../../hooks/useModalViewer';
@@ -11,14 +10,12 @@ type ModalStateProviderProps = {
   onOpenModalReady?: (
     openModal: (imageId: string, images: DriveImage[], label: string, index?: number) => void
   ) => void;
-  children: ReactNode;
 };
 
 export function ModalStateProvider({
   deps,
   thumbSize,
   onOpenModalReady,
-  children,
 }: ModalStateProviderProps) {
   const { modalState, openModal, closeModal } = useModalViewer(deps);
 
@@ -28,17 +25,18 @@ export function ModalStateProvider({
     }
   }, [onOpenModalReady, openModal]);
 
-  const value = {
-    ...modalState,
-    openModal,
-    closeModal,
-    thumbSize,
-  };
+  const stateValue = useMemo(
+    () => ({
+      ...modalState,
+      onCloseModal: closeModal,
+      thumbSize,
+    }),
+    [closeModal, modalState, thumbSize]
+  );
 
   return (
-    <ModalProvider value={value}>
-      {children}
+    <ModalStateContextProvider value={stateValue}>
       <ModalViewer />
-    </ModalProvider>
+    </ModalStateContextProvider>
   );
 }

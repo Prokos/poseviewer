@@ -526,6 +526,17 @@ export function useModalViewer({
     triggerFavoritePulse,
   ]);
 
+  const resolveCurrentIndex = useCallback(() => {
+    if (modalIndex !== null && modalItems[modalIndex]?.id === modalImageId) {
+      return modalIndex;
+    }
+    if (!modalImageId) {
+      return modalIndex;
+    }
+    const foundIndex = modalItems.findIndex((image) => image.id === modalImageId);
+    return foundIndex === -1 ? null : foundIndex;
+  }, [modalImageId, modalIndex, modalItems]);
+
   const goNextImage = (options?: { suppressControls?: boolean }) => {
     const now = performance.now();
     if (now - modalNavThrottleRef.current < 50) {
@@ -539,10 +550,7 @@ export function useModalViewer({
     if (options?.suppressControls) {
       setModalControlsVisible(false);
     }
-    const currentId = modalImageId;
-    const currentIndex = currentId
-      ? modalItems.findIndex((image) => image.id === currentId)
-      : modalIndex;
+    const currentIndex = resolveCurrentIndex();
     if (currentIndex === null || currentIndex === -1) {
       triggerModalShake();
       return;
@@ -622,10 +630,7 @@ export function useModalViewer({
       triggerModalShake();
       return;
     }
-    const currentId = modalImageId;
-    const currentIndex = currentId
-      ? modalItems.findIndex((image) => image.id === currentId)
-      : modalIndex;
+    const currentIndex = resolveCurrentIndex();
     if (currentIndex === null || currentIndex === -1) {
       triggerModalShake();
       return;

@@ -44,7 +44,7 @@ export function ImageGrid({
 
   return (
     <div className={gridClassName} ref={gridRef}>
-      {images.map((image) => {
+      {images.map((image, index) => {
         const isFavorite = favoriteAction?.isActive(image) ?? false;
         const canToggleFavorite = favoriteAction ? !favoriteAction.disabled?.(image) : false;
         const isThumbnail = thumbnailAction?.isActive(image) ?? false;
@@ -54,7 +54,7 @@ export function ImageGrid({
             <button
               type="button"
               className="image-button"
-              onClick={() => openModal(image.id, images, modalLabel)}
+              onClick={() => openModal(image.id, images, modalLabel, index)}
             >
               <ImageThumb
                 isConnected={isConnected}

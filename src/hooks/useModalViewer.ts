@@ -179,6 +179,7 @@ export function useModalViewer({
   const modalHistoryEntryRef = useRef(false);
   const ignoreNextPopRef = useRef(false);
   const ignoreNextFullscreenRef = useRef(false);
+  const modalNavThrottleRef = useRef(0);
   const goNextImageRef = useRef<(options?: { suppressControls?: boolean }) => void>(() => {});
   const sampleHistoryRef = useRef<DriveImage[]>([]);
   const sampleHistorySetRef = useRef<string | null>(null);
@@ -368,6 +369,7 @@ export function useModalViewer({
     [resetModalMediaState, triggerModalPulse]
   );
 
+
   const {
     appendSample,
     appendFavorites,
@@ -469,13 +471,13 @@ export function useModalViewer({
   });
 
   const openModalWithHistory = useCallback(
-    (imageId: string, items: DriveImage[], label: string) => {
+    (imageId: string, items: DriveImage[], label: string, index?: number) => {
       if (!modalHistoryEntryRef.current) {
         const nextState = { ...(window.history.state ?? {}), modal: true };
         window.history.pushState(nextState, '');
         modalHistoryEntryRef.current = true;
       }
-      openModal(imageId, items, label);
+      openModal(imageId, items, label, index);
     },
     [openModal]
   );
@@ -525,6 +527,11 @@ export function useModalViewer({
   ]);
 
   const goNextImage = (options?: { suppressControls?: boolean }) => {
+    const now = performance.now();
+    if (now - modalNavThrottleRef.current < 50) {
+      return;
+    }
+    modalNavThrottleRef.current = now;
     if (modalItems.length === 0) {
       triggerModalShake();
       return;
@@ -606,6 +613,11 @@ export function useModalViewer({
   };
 
   const goPrevImage = () => {
+    const now = performance.now();
+    if (now - modalNavThrottleRef.current < 50) {
+      return;
+    }
+    modalNavThrottleRef.current = now;
     if (modalItems.length === 0) {
       triggerModalShake();
       return;

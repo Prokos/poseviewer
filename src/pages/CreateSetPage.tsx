@@ -226,7 +226,7 @@ export function CreateSetPage({
                         key={image.id}
                         type="button"
                         className="image-button"
-                        onClick={() => openModal(image.id, previewImages, 'Preview')}
+                        onClick={() => openModal(image.id, previewImages, 'Preview', index)}
                       >
                         <ImageThumb
                           isConnected={isConnected}

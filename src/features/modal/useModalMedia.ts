@@ -77,7 +77,7 @@ export function useModalMedia({
   }, []);
 
   useEffect(() => {
-    setModalLoadingCount(modalIsLoading ? 1 + modalPrefetchCount : 0);
+    setModalLoadingCount(modalIsLoading ? 1 : modalPrefetchCount);
   }, [modalIsLoading, modalPrefetchCount]);
 
   const storeModalFullCache = useCallback((imageId: string, url: string) => {

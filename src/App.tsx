@@ -57,8 +57,8 @@ const IMAGE_PAGE_SIZE = 96;
 const THUMB_SIZE = 320;
 const CARD_THUMB_SIZE = 500;
 const VIEWER_THUMB_SIZE = CARD_THUMB_SIZE;
-const THUMB_PREFETCH_MAX_IN_FLIGHT = 4;
-const THUMB_PREFETCH_MAX_QUEUE = 120;
+const THUMB_PREFETCH_MAX_IN_FLIGHT = 3;
+const THUMB_PREFETCH_MAX_QUEUE = 80;
 const emptyFolders: FolderPath[] = [];
 
 function parsePathState() {
@@ -177,6 +177,8 @@ export default function App() {
   const thumbPrefetchQueueRef = useRef<string[]>([]);
   const thumbPrefetchQueuedRef = useRef<Set<string>>(new Set());
   const thumbPrefetchInFlightRef = useRef(0);
+  const thumbPrefetchDesiredRef = useRef<Set<string>>(new Set());
+  const thumbPrefetchAbortRef = useRef<Map<string, AbortController>>(new Map());
   const prebuiltIndexRef = useRef<{
     folderId: string;
     items: { id: string; name: string }[];
@@ -191,7 +193,7 @@ export default function App() {
   const metadataInfoRef = useRef<MetadataInfo>(metadataInfo);
   const metadataDirtyRef = useRef(metadataDirty);
   const openModalRef = useRef<
-    (imageId: string, images: DriveImage[], label: string) => void
+    (imageId: string, images: DriveImage[], label: string, index?: number) => void
   >(() => {});
   const updateQueueRef = useRef(Promise.resolve());
   const lastHistoryPathRef = useRef<string | null>(null);
@@ -1238,44 +1240,80 @@ export default function App() {
       if (prefetchedThumbsRef.current.has(nextId)) {
         continue;
       }
+      if (!thumbPrefetchDesiredRef.current.has(nextId)) {
+        continue;
+      }
       prefetchedThumbsRef.current.add(nextId);
       thumbPrefetchInFlightRef.current += 1;
-      const preload = new Image();
-      preload.decoding = 'async';
-      preload.loading = 'lazy';
-      preload.src = createProxyThumbUrl(nextId, THUMB_SIZE);
+      const controller = new AbortController();
+      thumbPrefetchAbortRef.current.set(nextId, controller);
+      const url = createProxyThumbUrl(nextId, THUMB_SIZE);
       const finalize = () => {
         thumbPrefetchInFlightRef.current = Math.max(
           0,
           thumbPrefetchInFlightRef.current - 1
         );
+        thumbPrefetchAbortRef.current.delete(nextId);
         flushThumbPrefetch();
       };
-      preload.onload = finalize;
-      preload.onerror = () => {
-        prefetchedThumbsRef.current.delete(nextId);
-        finalize();
-      };
+      fetch(url, { signal: controller.signal })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`Thumb preload failed: ${response.status}`);
+          }
+          return response.blob();
+        })
+        .then(() => {
+          finalize();
+        })
+        .catch((error) => {
+          if ((error as Error).name === 'AbortError') {
+            prefetchedThumbsRef.current.delete(nextId);
+            finalize();
+            return;
+          }
+          prefetchedThumbsRef.current.delete(nextId);
+          finalize();
+        });
     }
   }, []);
 
   const prefetchThumbs = useCallback(
     (images: DriveImage[]) => {
-      if (thumbPrefetchQueueRef.current.length >= THUMB_PREFETCH_MAX_QUEUE) {
-        return;
-      }
+      const nextDesired = new Set<string>();
       for (const image of images) {
-        if (prefetchedThumbsRef.current.has(image.id)) {
+        nextDesired.add(image.id);
+      }
+      thumbPrefetchDesiredRef.current = nextDesired;
+
+      thumbPrefetchQueueRef.current = thumbPrefetchQueueRef.current.filter((id) =>
+        nextDesired.has(id)
+      );
+      thumbPrefetchQueuedRef.current.forEach((id) => {
+        if (!nextDesired.has(id)) {
+          thumbPrefetchQueuedRef.current.delete(id);
+        }
+      });
+
+      thumbPrefetchAbortRef.current.forEach((controller, id) => {
+        if (!nextDesired.has(id)) {
+          controller.abort();
+          thumbPrefetchAbortRef.current.delete(id);
+        }
+      });
+
+      for (const id of nextDesired) {
+        if (prefetchedThumbsRef.current.has(id)) {
           continue;
         }
-        if (thumbPrefetchQueuedRef.current.has(image.id)) {
+        if (thumbPrefetchQueuedRef.current.has(id)) {
           continue;
         }
-        thumbPrefetchQueueRef.current.push(image.id);
-        thumbPrefetchQueuedRef.current.add(image.id);
         if (thumbPrefetchQueueRef.current.length >= THUMB_PREFETCH_MAX_QUEUE) {
           break;
         }
+        thumbPrefetchQueueRef.current.push(id);
+        thumbPrefetchQueuedRef.current.add(id);
       }
       flushThumbPrefetch();
     },
@@ -1608,11 +1646,6 @@ export default function App() {
     }
     setImageLimit(nextLimit);
     await loadSetImages(activeSet, nextLimit, true);
-    const nextCached = readImageListCache(activeSet.id);
-    if (nextCached) {
-      const ordered = getOrderedAllImages(activeSet.id, nextCached);
-      prefetchThumbs(ordered.slice(previousCount, nextLimit));
-    }
   };
 
   const handleLoadAllPreloaded = async () => {

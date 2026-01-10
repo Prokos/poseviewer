@@ -24,7 +24,9 @@ type UseSlideshowStateArgs = {
   resolveSetImages: ResolveSetImages;
   setViewerIndexProgress: (value: string) => void;
   setError: (message: string) => void;
-  openModalRef: MutableRefObject<(imageId: string, images: DriveImage[], label: string) => void>;
+  openModalRef: MutableRefObject<
+    (imageId: string, images: DriveImage[], label: string, index?: number) => void
+  >;
   slideshowPageSize: number;
 };
 

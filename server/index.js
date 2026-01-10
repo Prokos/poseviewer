@@ -23,22 +23,102 @@ const THUMB_CACHE_DIR = path.join(CACHE_DIR, 'thumbs');
 const MEDIA_CACHE_DIR = path.join(CACHE_DIR, 'media');
 const TOKEN_CACHE_PATH = path.join(CACHE_DIR, 'oauth.json');
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_CLEANUP_INTERVAL_MS = Number(process.env.CACHE_CLEANUP_MS ?? 60 * 60 * 1000);
+const MAX_MEDIA_CACHE_BYTES = Number(process.env.MEDIA_CACHE_MAX_MB ?? 10000) * 1024 * 1024;
+const MAX_THUMB_CACHE_BYTES = Number(process.env.THUMB_CACHE_MAX_MB ?? 2000) * 1024 * 1024;
 const DEFAULT_SIZE = 320;
 const MAX_SIZE = 1600;
 const MAX_MEDIA_CONCURRENCY = Number(process.env.MEDIA_CONCURRENCY ?? 6);
+const MAX_MEDIA_QUEUE = Number(process.env.MEDIA_QUEUE ?? 120);
+const MAX_THUMB_CONCURRENCY = Number(process.env.THUMB_CONCURRENCY ?? 6);
+const MAX_THUMB_QUEUE = Number(process.env.THUMB_QUEUE ?? 50);
 const MEDIA_TIMEOUT_MS = Number(process.env.MEDIA_TIMEOUT_MS ?? 20000);
 
 await fs.mkdir(THUMB_CACHE_DIR, { recursive: true });
 await fs.mkdir(MEDIA_CACHE_DIR, { recursive: true });
 
-function createSemaphore(limit) {
+async function pruneCacheDir(dir, dataExt, maxBytes) {
+  let entries = [];
+  let totalBytes = 0;
+  const expiredBefore = Date.now() - CACHE_TTL_MS;
+  try {
+    const files = await fs.readdir(dir, { withFileTypes: true });
+    const dataFiles = files.filter((entry) => entry.isFile() && entry.name.endsWith(dataExt));
+    for (const entry of dataFiles) {
+      const dataPath = path.join(dir, entry.name);
+      const metaPath = path.join(dir, `${entry.name.replace(dataExt, '')}.json`);
+      try {
+        const stat = await fs.stat(dataPath);
+        const size = stat.size;
+        totalBytes += size;
+        entries.push({
+          dataPath,
+          metaPath,
+          size,
+          mtimeMs: stat.mtimeMs,
+        });
+      } catch {
+        // Ignore missing stat failures.
+      }
+    }
+  } catch {
+    return;
+  }
+
+  const expired = entries.filter((entry) => entry.mtimeMs < expiredBefore);
+  for (const entry of expired) {
+    try {
+      await fs.rm(entry.dataPath, { force: true });
+      await fs.rm(entry.metaPath, { force: true });
+    } catch {
+      // Ignore cleanup failures.
+    }
+  }
+
+  entries = entries.filter((entry) => entry.mtimeMs >= expiredBefore);
+  totalBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+  if (totalBytes <= maxBytes) {
+    return;
+  }
+
+  entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const entry of entries) {
+    if (totalBytes <= maxBytes) {
+      break;
+    }
+    try {
+      await fs.rm(entry.dataPath, { force: true });
+      await fs.rm(entry.metaPath, { force: true });
+    } catch {
+      // Ignore cleanup failures.
+    } finally {
+      totalBytes -= entry.size;
+    }
+  }
+}
+
+async function pruneAllCaches() {
+  await pruneCacheDir(MEDIA_CACHE_DIR, '.bin', MAX_MEDIA_CACHE_BYTES);
+  await pruneCacheDir(THUMB_CACHE_DIR, '.webp', MAX_THUMB_CACHE_BYTES);
+}
+
+void pruneAllCaches();
+setInterval(() => {
+  void pruneAllCaches();
+}, CACHE_CLEANUP_INTERVAL_MS);
+
+function createSemaphore(limit, maxQueue = Infinity) {
   let active = 0;
   const queue = [];
   const acquire = () =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
       if (active < limit) {
         active += 1;
         resolve();
+        return;
+      }
+      if (queue.length >= maxQueue) {
+        reject(new Error('Queue full'));
         return;
       }
       queue.push(resolve);
@@ -54,15 +134,27 @@ function createSemaphore(limit) {
   return { acquire, release };
 }
 
-const mediaSemaphore = createSemaphore(MAX_MEDIA_CONCURRENCY);
+const mediaSemaphore = createSemaphore(MAX_MEDIA_CONCURRENCY, MAX_MEDIA_QUEUE);
+const thumbSemaphore = createSemaphore(MAX_THUMB_CONCURRENCY, MAX_THUMB_QUEUE);
 
-async function fetchWithTimeout(url, options, timeoutMs) {
+async function fetchWithTimeout(url, options, timeoutMs, signal) {
   const controller = new AbortController();
+  const handleAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', handleAbort, { once: true });
+    }
+  }
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
+    if (signal) {
+      signal.removeEventListener('abort', handleAbort);
+    }
   }
 }
 
@@ -166,13 +258,14 @@ async function getAccessToken() {
   return data.access_token;
 }
 
-async function fetchDriveThumbnail(fileId, token, size) {
+async function fetchDriveThumbnail(fileId, token, size, signal) {
   const metaResponse = await fetch(
     `${DRIVE_BASE}/files/${fileId}?fields=thumbnailLink&supportsAllDrives=true`,
     {
       headers: {
         Authorization: `Bearer ${token}`,
       },
+      signal,
     }
   );
 
@@ -200,7 +293,7 @@ async function fetchDriveThumbnail(fileId, token, size) {
     thumbUrl.searchParams.set('access_token', token);
   }
 
-  const thumbResponse = await fetch(thumbUrl.toString());
+  const thumbResponse = await fetch(thumbUrl.toString(), { signal });
   if (!thumbResponse.ok) {
     return null;
   }
@@ -211,6 +304,23 @@ async function fetchDriveThumbnail(fileId, token, size) {
 }
 
 app.get('/api/thumb/:fileId', async (req, res) => {
+  const controller = new AbortController();
+  const handleClose = () => {
+    controller.abort();
+  };
+  req.on('close', handleClose);
+  req.on('aborted', handleClose);
+  res.on('close', handleClose);
+  try {
+    await thumbSemaphore.acquire();
+  } catch {
+    res.status(429).json({ error: 'Thumb queue full.' });
+    return;
+  }
+  if (controller.signal.aborted) {
+    thumbSemaphore.release();
+    return;
+  }
   const sizeParam = Number(req.query.size);
   const size = clampSize(sizeParam || DEFAULT_SIZE);
   const { fileId } = req.params;
@@ -218,6 +328,7 @@ app.get('/api/thumb/:fileId', async (req, res) => {
 
   if (!token) {
     res.status(401).json({ error: 'Missing access token.' });
+    thumbSemaphore.release();
     return;
   }
 
@@ -228,6 +339,7 @@ app.get('/api/thumb/:fileId', async (req, res) => {
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'HIT');
     res.type(cached.meta.contentType || 'image/webp').send(cached.data);
+    thumbSemaphore.release();
     return;
   }
 
@@ -236,15 +348,19 @@ app.get('/api/thumb/:fileId', async (req, res) => {
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'HIT');
     res.type('image/webp').send(legacyCached);
+    thumbSemaphore.release();
     return;
   }
 
   try {
-    const thumbResult = await fetchDriveThumbnail(fileId, token, size);
+    const thumbResult = await fetchDriveThumbnail(fileId, token, size, controller.signal);
     if (thumbResult) {
       await writeCacheWithMeta(cachePath, cacheMetaPath, thumbResult.data, {
         contentType: thumbResult.contentType,
       });
+      if (controller.signal.aborted) {
+        return;
+      }
       res.set('Cache-Control', 'public, max-age=86400');
       res.set('X-Cache', 'MISS');
       res.type(thumbResult.contentType).send(thumbResult.data);
@@ -259,6 +375,7 @@ app.get('/api/thumb/:fileId', async (req, res) => {
           headers: {
             Authorization: `Bearer ${token}`,
           },
+          signal: controller.signal,
         }
       );
 
@@ -271,6 +388,9 @@ app.get('/api/thumb/:fileId', async (req, res) => {
       const arrayBuffer = await response.arrayBuffer();
       buffer = Buffer.from(arrayBuffer);
     }
+    if (controller.signal.aborted) {
+      return;
+    }
     const output = await sharp(buffer)
       .resize({ width: size, withoutEnlargement: true })
       .webp({ quality: 80 })
@@ -280,20 +400,46 @@ app.get('/api/thumb/:fileId', async (req, res) => {
       contentType: 'image/webp',
     });
 
+    if (controller.signal.aborted) {
+      return;
+    }
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'MISS');
     res.type('image/webp').send(output);
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return;
+    }
     res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
+  } finally {
+    thumbSemaphore.release();
   }
 });
 
 app.get('/api/media/:fileId', async (req, res) => {
+  const controller = new AbortController();
+  const handleClose = () => {
+    controller.abort();
+  };
+  req.on('close', handleClose);
+  req.on('aborted', handleClose);
+  res.on('close', handleClose);
+  try {
+    await mediaSemaphore.acquire();
+  } catch {
+    res.status(429).json({ error: 'Media queue full.' });
+    return;
+  }
+  if (controller.signal.aborted) {
+    mediaSemaphore.release();
+    return;
+  }
   const { fileId } = req.params;
   const token = await getAccessToken();
 
   if (!token) {
     res.status(401).json({ error: 'Missing access token.' });
+    mediaSemaphore.release();
     return;
   }
 
@@ -304,11 +450,11 @@ app.get('/api/media/:fileId', async (req, res) => {
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'HIT');
     res.type(cached.meta.contentType || 'application/octet-stream').send(cached.data);
+    mediaSemaphore.release();
     return;
   }
 
   try {
-    await mediaSemaphore.acquire();
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
     let response;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -320,7 +466,8 @@ app.get('/api/media/:fileId', async (req, res) => {
               Authorization: `Bearer ${token}`,
             },
           },
-          MEDIA_TIMEOUT_MS
+          MEDIA_TIMEOUT_MS,
+          controller.signal
         );
         break;
       } catch (error) {
@@ -343,6 +490,9 @@ app.get('/api/media/:fileId', async (req, res) => {
 
     const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
     const arrayBuffer = await response.arrayBuffer();
+    if (controller.signal.aborted) {
+      return;
+    }
     const buffer = Buffer.from(arrayBuffer);
 
     await writeCacheWithMeta(cachePath, metaPath, buffer, { contentType });
@@ -351,6 +501,9 @@ app.get('/api/media/:fileId', async (req, res) => {
     res.set('X-Cache', 'MISS');
     res.type(contentType).send(buffer);
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return;
+    }
     res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
   } finally {
     mediaSemaphore.release();

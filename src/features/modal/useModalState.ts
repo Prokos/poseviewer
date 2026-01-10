@@ -59,10 +59,13 @@ export function useModalState({
   modalControlsTimeoutRef,
 }: UseModalStateOptions) {
   const openModal = useCallback(
-    (imageId: string, items: DriveImage[], label: string) => {
+    (imageId: string, items: DriveImage[], label: string, index?: number) => {
       requestViewerFullscreen();
       scheduleModalControlsHide(true);
-      const index = items.findIndex((image) => image.id === imageId);
+      const resolvedIndex =
+        typeof index === 'number'
+          ? Math.min(Math.max(0, index), items.length - 1)
+          : items.findIndex((image) => image.id === imageId);
       updateModalItems(items);
       setModalContextLabel(label);
       setModalContextSetId(label === 'Set' && activeSet ? activeSet.id : null);
@@ -75,7 +78,7 @@ export function useModalState({
         sampleHistorySetRef.current = null;
       }
       setModalImageId(imageId);
-      setModalIndex(index >= 0 ? index : null);
+      setModalIndex(resolvedIndex >= 0 ? resolvedIndex : null);
       triggerModalPulse();
     },
     [

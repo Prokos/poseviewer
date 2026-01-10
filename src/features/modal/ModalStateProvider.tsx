@@ -9,7 +9,7 @@ type ModalStateProviderProps = {
   deps: ModalDeps;
   thumbSize: number;
   onOpenModalReady?: (
-    openModal: (imageId: string, images: DriveImage[], label: string) => void
+    openModal: (imageId: string, images: DriveImage[], label: string, index?: number) => void
   ) => void;
   children: ReactNode;
 };

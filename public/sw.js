@@ -57,12 +57,6 @@ self.addEventListener('fetch', (event) => {
         const cache = await caches.open(THUMB_CACHE);
         const cached = await cache.match(request);
         if (cached) {
-          event.waitUntil(
-            fetch(request)
-              .then((response) => cacheResponse(THUMB_CACHE, request, response))
-              .then(() => enforceLimit(THUMB_CACHE, MAX_THUMB_ENTRIES))
-              .catch(() => null)
-          );
           return cached;
         }
         const response = await fetch(request);

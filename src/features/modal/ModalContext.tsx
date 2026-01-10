@@ -4,7 +4,7 @@ import type { DriveImage } from '../../drive/types';
 import type { ModalViewerState } from '../../hooks/useModalViewer';
 
 type ModalContextValue = ModalViewerState & {
-  openModal: (imageId: string, images: DriveImage[], label: string) => void;
+  openModal: (imageId: string, images: DriveImage[], label: string, index?: number) => void;
   closeModal: () => void;
   thumbSize: number;
 };

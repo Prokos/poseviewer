@@ -1,9 +1,6 @@
-get rid of the 5 col breakpoint
-
+get rid of the 5 col breakpoints
 
 Refresh sample on create set card should refresh the images not the index
-
-
 
 remove search bar from set overview page, improve design of clear filters button and sorting dropdown
 

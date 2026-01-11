@@ -27,7 +27,7 @@ import {
 } from './metadata';
 import type { DriveImage } from './drive/types';
 import { normalizeTags } from './utils/tags';
-import { pickRandom, shuffleItems } from './utils/random';
+import { hashStringToUnit, pickRandom, shuffleItems, shuffleItemsSeeded } from './utils/random';
 import { formatDownloadProgress, formatIndexProgress, startIndexTimer } from './utils/progress';
 import { createProxyThumbUrl } from './utils/driveUrls';
 import {
@@ -133,6 +133,11 @@ export default function App() {
   const [setFilter, setSetFilter] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [setSort, setSetSort] = useLocalStorage('poseviewer-set-sort', 'random');
+  const defaultSetSortSeed = useMemo(() => `${Math.random()}`, []);
+  const [setSortSeed, setSetSortSeed] = useLocalStorage(
+    'poseviewer-set-sort-seed',
+    defaultSetSortSeed
+  );
   const [slideshowIncludeTags, setSlideshowIncludeTags] = useState<string[]>([]);
   const [slideshowExcludeTags, setSlideshowExcludeTags] = useState<string[]>([]);
   const [slideshowFavoriteFilter, setSlideshowFavoriteFilter] = useState<
@@ -148,7 +153,15 @@ export default function App() {
   const [setViewerTab, setSetViewerTab] = useState<
     'samples' | 'favorites' | 'nonfavorites' | 'all'
   >('all');
-  const [viewerSort, setViewerSort] = useLocalStorage<'random' | 'chronological'>('poseviewer-viewer-sort','random');
+  const [viewerSort, setViewerSort] = useLocalStorage<'random' | 'chronological'>(
+    'poseviewer-viewer-sort',
+    'random'
+  );
+  const defaultViewerSortSeed = useMemo(() => `${Math.random()}`, []);
+  const [viewerSortSeed, setViewerSortSeed] = useLocalStorage(
+    'poseviewer-viewer-sort-seed',
+    defaultViewerSortSeed
+  );
   const [allColumns, setAllColumns] = useState(1);
   const [previewImages, setPreviewImages] = useState<DriveImage[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
@@ -162,7 +175,7 @@ export default function App() {
   const [canScrollDown, setCanScrollDown] = useState(false);
   const allGridRef = useRef<HTMLDivElement | null>(null);
   const allImagesOrderRef = useRef<
-    Map<string, { mode: 'random' | 'chronological'; ordered: DriveImage[] }>
+    Map<string, { mode: 'random' | 'chronological'; ordered: DriveImage[]; seed: string | null }>
   >(new Map());
   const resetFavoritesRef = useRef<null | (() => void)>(null);
   const resetNonFavoritesRef = useRef<null | (() => void)>(null);
@@ -251,9 +264,10 @@ export default function App() {
     });
   }, [folderFilter, folderPaths, hiddenFolders, metadata.sets]);
 
-  const randomSortWeights = useMemo(() => {
-    return new Map(metadata.sets.map((set) => [set.id, Math.random()]));
-  }, [metadata.sets]);
+  const setRandomWeight = useCallback(
+    (setId: string) => hashStringToUnit(`${setSortSeed}|${setId}`),
+    [setSortSeed]
+  );
 
   const filteredSets = useMemo(() => {
     const query = setFilter.trim().toLowerCase();
@@ -274,9 +288,7 @@ export default function App() {
     const sorted = [...matches];
     switch (setSort) {
       case 'random':
-        sorted.sort(
-          (a, b) => (randomSortWeights.get(a.id) ?? 0) - (randomSortWeights.get(b.id) ?? 0)
-        );
+        sorted.sort((a, b) => setRandomWeight(a.id) - setRandomWeight(b.id));
         break;
       case 'added_asc':
         break;
@@ -304,7 +316,23 @@ export default function App() {
         break;
     }
     return sorted;
-  }, [metadata.sets, randomSortWeights, selectedTags, setFilter, setSort]);
+  }, [metadata.sets, selectedTags, setFilter, setRandomWeight, setSort]);
+
+  const prevSetSortRef = useRef(setSort);
+  useEffect(() => {
+    if (setSort === 'random' && prevSetSortRef.current !== 'random') {
+      setSetSortSeed(`${Math.random()}`);
+    }
+    prevSetSortRef.current = setSort;
+  }, [setSort, setSetSortSeed]);
+
+  const prevViewerSortRef = useRef(viewerSort);
+  useEffect(() => {
+    if (viewerSort === 'random' && prevViewerSortRef.current !== 'random') {
+      setViewerSortSeed(`${Math.random()}`);
+    }
+    prevViewerSortRef.current = viewerSort;
+  }, [setViewerSortSeed, viewerSort]);
 
   const setsById = useMemo(() => {
     return new Map(metadata.sets.map((set) => [set.id, set]));
@@ -1120,19 +1148,23 @@ export default function App() {
   const getOrderedAllImages = useCallback(
     (setId: string, images: DriveImage[]) => {
       if (viewerSort === 'chronological') {
-        allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered: images });
+        allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered: images, seed: null });
         return images;
       }
       const cached = allImagesOrderRef.current.get(setId);
-      if (cached && cached.mode === viewerSort) {
+      if (cached && cached.mode === viewerSort && cached.seed === viewerSortSeed) {
         if (cached.ordered.length === images.length) {
           return cached.ordered;
         }
         const currentIds = new Set(images.map((image) => image.id));
         const missing = cached.ordered.some((image) => !currentIds.has(image.id));
         if (missing) {
-          const reordered = shuffleItems(images);
-          allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered: reordered });
+          const reordered = shuffleItemsSeeded(images, `${viewerSortSeed}|${setId}`);
+          allImagesOrderRef.current.set(setId, {
+            mode: viewerSort,
+            ordered: reordered,
+            seed: viewerSortSeed,
+          });
           return reordered;
         }
         const known = new Set(cached.ordered.map((image) => image.id));
@@ -1140,15 +1172,28 @@ export default function App() {
         if (additions.length === 0) {
           return cached.ordered;
         }
-        const extended = cached.ordered.concat(shuffleItems(additions));
-        allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered: extended });
+        const extended = cached.ordered.concat(
+          shuffleItemsSeeded(additions, `${viewerSortSeed}|${setId}|append`)
+        );
+        allImagesOrderRef.current.set(setId, {
+          mode: viewerSort,
+          ordered: extended,
+          seed: viewerSortSeed,
+        });
         return extended;
       }
-      const ordered = viewerSort === 'random' ? shuffleItems(images) : images;
-      allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered });
+      const ordered =
+        viewerSort === 'random'
+          ? shuffleItemsSeeded(images, `${viewerSortSeed}|${setId}`)
+          : images;
+      allImagesOrderRef.current.set(setId, {
+        mode: viewerSort,
+        ordered,
+        seed: viewerSort === 'random' ? viewerSortSeed : null,
+      });
       return ordered;
     },
-    [viewerSort]
+    [viewerSort, viewerSortSeed]
   );
 
   const {
@@ -1178,6 +1223,7 @@ export default function App() {
     isConnected,
     setViewerTab,
     viewerSort,
+    viewerSortSeed,
     resolveSetImages,
     setError,
     setViewerIndexProgress,

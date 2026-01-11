@@ -15,7 +15,7 @@ import {
   createBatchPicker,
   filterImagesByFavoriteStatus,
 } from '../../utils/imageSampling';
-import { shuffleItems } from '../../utils/random';
+import { shuffleItemsSeeded } from '../../utils/random';
 
 type SetViewerTab = 'samples' | 'favorites' | 'nonfavorites' | 'all';
 
@@ -42,6 +42,7 @@ type UseSetViewerGridsArgs = {
   isConnected: boolean;
   setViewerTab: SetViewerTab;
   viewerSort: ViewerSortMode;
+  viewerSortSeed: string;
   resolveSetImages: ResolveSetImages;
   setError: (message: string) => void;
   setViewerIndexProgress: (value: string) => void;
@@ -53,6 +54,7 @@ export function useSetViewerGrids({
   isConnected,
   setViewerTab,
   viewerSort,
+  viewerSortSeed,
   resolveSetImages,
   setError,
   setViewerIndexProgress,
@@ -128,8 +130,12 @@ export function useSetViewerGrids({
         );
         const next = {
           mode: viewerSort,
-          favorites: keepFavorites.concat(shuffleItems(missingFavorites)),
-          nonfavorites: keepNonFavorites.concat(shuffleItems(missingNonFavorites)),
+          favorites: keepFavorites.concat(
+            shuffleItemsSeeded(missingFavorites, `${viewerSortSeed}|${setId}|favorites`)
+          ),
+          nonfavorites: keepNonFavorites.concat(
+            shuffleItemsSeeded(missingNonFavorites, `${viewerSortSeed}|${setId}|nonfavorites`)
+          ),
         };
         orderedListsRef.current.set(setId, next);
         return next;
@@ -139,13 +145,13 @@ export function useSetViewerGrids({
       const nonfavorites = filterImagesByFavoriteStatus(images, favoriteIds, 'nonfavorites');
       const next = {
         mode: viewerSort,
-        favorites: shuffleItems(favorites),
-        nonfavorites: shuffleItems(nonfavorites),
+        favorites: shuffleItemsSeeded(favorites, `${viewerSortSeed}|${setId}|favorites`),
+        nonfavorites: shuffleItemsSeeded(nonfavorites, `${viewerSortSeed}|${setId}|nonfavorites`),
       };
       orderedListsRef.current.set(setId, next);
       return next;
     },
-    [viewerSort]
+    [viewerSort, viewerSortSeed]
   );
 
   const getOrderedLists = useCallback(
@@ -340,7 +346,7 @@ export function useSetViewerGrids({
             config.setImages([]);
             return;
           }
-          const shuffled = shuffleItems(filtered);
+          const shuffled = shuffleItemsSeeded(filtered, `${viewerSortSeed}|${activeSet.id}|sample`);
           config.setImages(shuffled);
           config.seenRef.current.set(
             activeSet.id,

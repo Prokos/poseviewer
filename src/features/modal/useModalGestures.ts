@@ -463,15 +463,17 @@ export function useModalGestures({
     if (pinchStartRef.current) {
       pinchStartRef.current = null;
       scheduleModalTimerResume();
+      if (modalZoom <= 1.05) {
+        resetZoomPan();
+      }
       return;
     }
     if (oneHandZoomRef.current) {
       const shouldReset = !oneHandZoomMovedRef.current;
       oneHandZoomRef.current = null;
       oneHandZoomMovedRef.current = false;
-      if (shouldReset) {
-        setModalZoom(1);
-        setModalPan({ x: 0, y: 0 });
+      if (shouldReset || modalZoom <= 1.05) {
+        resetZoomPan();
       }
       scheduleModalTimerResume();
       return;

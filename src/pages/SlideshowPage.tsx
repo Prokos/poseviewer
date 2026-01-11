@@ -23,6 +23,7 @@ export function SlideshowPage() {
     slideshowImageSetMap,
     setsById,
     onToggleFavoriteImage,
+    onToggleHiddenImage,
     thumbSize,
     onLoadMoreSlideshow,
     slideshowPageSize,
@@ -37,6 +38,20 @@ export function SlideshowPage() {
       const setId = slideshowImageSetMap.get(image.id);
       if (setId) {
         onToggleFavoriteImage(setId, image.id);
+      }
+    },
+    disabled: (image: DriveImage) => !slideshowImageSetMap.get(image.id),
+  };
+  const hideAction = {
+    isActive: (image: DriveImage) => {
+      const setId = slideshowImageSetMap.get(image.id);
+      const set = setId ? setsById.get(setId) : undefined;
+      return set?.hiddenImageIds?.includes(image.id) ?? false;
+    },
+    onToggle: (image: DriveImage) => {
+      const setId = slideshowImageSetMap.get(image.id);
+      if (setId) {
+        onToggleHiddenImage(setId, image.id);
       }
     },
     disabled: (image: DriveImage) => !slideshowImageSetMap.get(image.id),
@@ -142,6 +157,7 @@ export function SlideshowPage() {
               modalLabel="Slideshow"
               gridClassName="image-grid image-grid--zoom"
               favoriteAction={favoriteAction}
+              hideAction={hideAction}
             />
             <GridLoadButtons
               variant="slideshow"

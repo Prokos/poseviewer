@@ -3,6 +3,7 @@ import type { DriveImage } from '../drive/types';
 
 export type SeenMap = Map<string, Set<string>>;
 export type FavoriteFilterMode = 'all' | 'favorites' | 'nonfavorites';
+export type HiddenFilterMode = 'all' | 'hidden' | 'visible';
 
 export function pickNextBatch(
   setId: string,
@@ -53,6 +54,23 @@ export function filterImagesByFavoriteStatus(
   const favorites = new Set(favoriteIds);
   return images.filter((image) =>
     mode === 'favorites' ? favorites.has(image.id) : !favorites.has(image.id)
+  );
+}
+
+export function filterImagesByHiddenStatus(
+  images: DriveImage[],
+  hiddenIds: string[],
+  mode: HiddenFilterMode
+) {
+  if (mode === 'all') {
+    return images;
+  }
+  if (hiddenIds.length === 0) {
+    return mode === 'hidden' ? [] : images;
+  }
+  const hidden = new Set(hiddenIds);
+  return images.filter((image) =>
+    mode === 'hidden' ? hidden.has(image.id) : !hidden.has(image.id)
   );
 }
 

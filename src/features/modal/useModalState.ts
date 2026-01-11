@@ -19,6 +19,7 @@ type UseModalStateOptions = {
   triggerModalPulse: () => void;
   setModalPulse: Dispatch<SetStateAction<boolean>>;
   setModalFavoritePulse: Dispatch<SetStateAction<null | 'add' | 'remove'>>;
+  setModalHiddenPulse: Dispatch<SetStateAction<null | 'hide' | 'unhide'>>;
   setModalZoom: Dispatch<SetStateAction<number>>;
   setModalPan: Dispatch<SetStateAction<{ x: number; y: number }>>;
   resetModalTimerState: () => void;
@@ -28,6 +29,7 @@ type UseModalStateOptions = {
   resetInFlight: () => void;
   modalPulseTimeoutRef: MutableRefObject<number | null>;
   modalFavoritePulseTimeoutRef: MutableRefObject<number | null>;
+  modalHiddenPulseTimeoutRef: MutableRefObject<number | null>;
   modalControlsTimeoutRef: MutableRefObject<number | null>;
 };
 
@@ -47,6 +49,7 @@ export function useModalState({
   triggerModalPulse,
   setModalPulse,
   setModalFavoritePulse,
+  setModalHiddenPulse,
   setModalZoom,
   setModalPan,
   resetModalTimerState,
@@ -56,6 +59,7 @@ export function useModalState({
   resetInFlight,
   modalPulseTimeoutRef,
   modalFavoritePulseTimeoutRef,
+  modalHiddenPulseTimeoutRef,
   modalControlsTimeoutRef,
 }: UseModalStateOptions) {
   const openModal = useCallback(
@@ -105,6 +109,7 @@ export function useModalState({
     setModalContextSetId(null);
     setModalPulse(false);
     setModalFavoritePulse(null);
+    setModalHiddenPulse(null);
     resetModalMediaState();
     stopModalLoading();
     setModalZoom(1);
@@ -121,6 +126,10 @@ export function useModalState({
     if (modalFavoritePulseTimeoutRef.current) {
       window.clearTimeout(modalFavoritePulseTimeoutRef.current);
       modalFavoritePulseTimeoutRef.current = null;
+    }
+    if (modalHiddenPulseTimeoutRef.current) {
+      window.clearTimeout(modalHiddenPulseTimeoutRef.current);
+      modalHiddenPulseTimeoutRef.current = null;
     }
     if (modalControlsTimeoutRef.current) {
       window.clearTimeout(modalControlsTimeoutRef.current);

@@ -1,10 +1,16 @@
-import { IconHeart, IconHeartFilled, IconPhotoStar } from '@tabler/icons-react';
+import { IconEye, IconEyeOff, IconHeart, IconHeartFilled, IconPhotoStar } from '@tabler/icons-react';
 import type { RefObject } from 'react';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from './ImageThumb';
 import { useModalActions } from '../features/modal/ModalContext';
 
 type FavoriteAction = {
+  isActive: (image: DriveImage) => boolean;
+  onToggle: (image: DriveImage) => void;
+  disabled?: (image: DriveImage) => boolean;
+};
+
+type HideAction = {
   isActive: (image: DriveImage) => boolean;
   onToggle: (image: DriveImage) => void;
   disabled?: (image: DriveImage) => boolean;
@@ -25,6 +31,8 @@ type ImageGridProps = {
   gridClassName?: string;
   gridRef?: RefObject<HTMLDivElement>;
   favoriteAction?: FavoriteAction;
+  hideAction?: HideAction;
+  showHiddenAction?: boolean;
   thumbnailAction?: ThumbnailAction;
   highlightedImageId?: string | null;
 };
@@ -38,6 +46,8 @@ export function ImageGrid({
   gridClassName = 'image-grid',
   gridRef,
   favoriteAction,
+  hideAction,
+  showHiddenAction = false,
   thumbnailAction,
   highlightedImageId,
 }: ImageGridProps) {
@@ -49,6 +59,8 @@ export function ImageGrid({
       {images.map((image, index) => {
         const isFavorite = favoriteAction?.isActive(image) ?? false;
         const canToggleFavorite = favoriteAction ? !favoriteAction.disabled?.(image) : false;
+        const isHidden = hideAction?.isActive(image) ?? false;
+        const canToggleHidden = hideAction ? !hideAction.disabled?.(image) : false;
         const isThumbnail = thumbnailAction?.isActive(image) ?? false;
         const canSetThumbnail = thumbnailAction ? !thumbnailAction.disabled?.(image) : false;
         const isHighlighted = highlightedImageId === image.id;
@@ -80,6 +92,18 @@ export function ImageGrid({
                 disabled={!canToggleFavorite}
               >
                 {isFavorite ? <IconHeartFilled size={16} /> : <IconHeart size={16} />}
+              </button>
+            ) : null}
+            {hideAction && (!isHidden || showHiddenAction) ? (
+              <button
+                type="button"
+                className="thumb-action thumb-action--hide"
+                onClick={() => hideAction.onToggle(image)}
+                aria-pressed={isHidden}
+                aria-label={isHidden ? 'Unhide image' : 'Hide image'}
+                disabled={!canToggleHidden}
+              >
+                {isHidden ? <IconEye size={16} /> : <IconEyeOff size={16} />}
               </button>
             ) : null}
             {thumbnailAction ? (

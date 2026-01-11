@@ -35,6 +35,7 @@ type UseModalHistoryOptions = {
     setId: string,
     images: DriveImage[],
     favoriteIds: string[],
+    hiddenIds: string[],
     options?: { keepLength?: boolean }
   ) => void;
   applyModalContext: ApplyModalSnapshot;
@@ -76,6 +77,7 @@ export function useModalHistory({
       modalContextLabel !== 'Set' &&
       modalContextLabel !== 'Favorites' &&
       modalContextLabel !== 'Non favorites' &&
+      modalContextLabel !== 'Hidden' &&
       modalContextLabel !== 'Slideshow'
     ) {
       return;
@@ -114,18 +116,19 @@ export function useModalHistory({
       const start = Math.max(0, index - preload);
       const nextLimit = Math.max(end, allPageSize);
       prefetchThumbs(images.slice(start, end));
-      if (viewerSort === 'chronological') {
-        setImageLimit(nextLimit);
-        setActiveImages(images.slice(0, nextLimit));
-        if (activeSet?.id === contextSet.id) {
-          updateFavoriteImagesFromSource(
-            contextSet.id,
-            images,
-            contextSet.favoriteImageIds ?? [],
-            { keepLength: true }
-          );
+        if (viewerSort === 'chronological') {
+          setImageLimit(nextLimit);
+          setActiveImages(images.slice(0, nextLimit));
+          if (activeSet?.id === contextSet.id) {
+            updateFavoriteImagesFromSource(
+              contextSet.id,
+              images,
+              contextSet.favoriteImageIds ?? [],
+              contextSet.hiddenImageIds ?? [],
+              { keepLength: true }
+            );
+          }
         }
-      }
       applyModalContext({
         items: images.slice(0, nextLimit),
         label: 'Set',

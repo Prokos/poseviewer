@@ -26,14 +26,21 @@ type UseModalDataLoaderOptions = {
     favoriteIds: string[],
     mode: 'favorites' | 'nonfavorites' | 'all'
   ) => DriveImage[];
+  filterImagesByHiddenStatus: (
+    images: DriveImage[],
+    hiddenIds: string[],
+    mode: 'hidden' | 'visible' | 'all'
+  ) => DriveImage[];
   pickNext: {
     sample: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     favorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     nonFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+    hidden: (setId: string, images: DriveImage[], count: number) => DriveImage[];
   };
   setSampleImages: Dispatch<SetStateAction<DriveImage[]>>;
   setFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
   setNonFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
+  setHiddenImages: Dispatch<SetStateAction<DriveImage[]>>;
   sampleHistoryRef: MutableRefObject<DriveImage[]>;
   sampleHistorySetRef: MutableRefObject<string | null>;
   loadSlideshowBatch: (
@@ -54,10 +61,12 @@ export function useModalDataLoader({
   setModalImageAtIndex,
   updateModalItems,
   filterImagesByFavoriteStatus,
+  filterImagesByHiddenStatus,
   pickNext,
   setSampleImages,
   setFavoriteImages,
   setNonFavoriteImages,
+  setHiddenImages,
   sampleHistoryRef,
   sampleHistorySetRef,
   loadSlideshowBatch,
@@ -67,6 +76,7 @@ export function useModalDataLoader({
   const sampleAppendInFlightRef = useRef(false);
   const favoriteAppendInFlightRef = useRef(false);
   const nonFavoriteAppendInFlightRef = useRef(false);
+  const hiddenAppendInFlightRef = useRef(false);
   const slideshowAppendInFlightRef = useRef(false);
 
   const appendModalBatch = useCallback(
@@ -141,7 +151,8 @@ export function useModalDataLoader({
     async (options?: { suppressControls?: boolean }) => {
       return appendModalBatch({
         inFlightRef: sampleAppendInFlightRef,
-        transformSource: (source) => source,
+        transformSource: (source) =>
+          filterImagesByHiddenStatus(source, activeSet?.hiddenImageIds ?? [], 'visible'),
         pickNext: pickNext.sample,
         appendToList: (items) => {
           setSampleImages((current) => appendUniqueImages(current, items));
@@ -157,6 +168,8 @@ export function useModalDataLoader({
     },
     [
       appendModalBatch,
+      filterImagesByHiddenStatus,
+      activeSet?.hiddenImageIds,
       pickNext,
       sampleHistoryRef,
       sampleHistorySetRef,
@@ -168,8 +181,18 @@ export function useModalDataLoader({
     async (options?: { suppressControls?: boolean }) => {
       return appendModalBatch({
         inFlightRef: nonFavoriteAppendInFlightRef,
-        transformSource: (source) =>
-          filterImagesByFavoriteStatus(source, activeSet?.favoriteImageIds ?? [], 'nonfavorites'),
+        transformSource: (source) => {
+          const visible = filterImagesByHiddenStatus(
+            source,
+            activeSet?.hiddenImageIds ?? [],
+            'visible'
+          );
+          return filterImagesByFavoriteStatus(
+            visible,
+            activeSet?.favoriteImageIds ?? [],
+            'nonfavorites'
+          );
+        },
         pickNext: pickNext.nonFavorites,
         appendToList: (items) => {
           setNonFavoriteImages((current) => appendUniqueImages(current, items));
@@ -179,8 +202,10 @@ export function useModalDataLoader({
     },
     [
       activeSet?.favoriteImageIds,
+      activeSet?.hiddenImageIds,
       appendModalBatch,
       filterImagesByFavoriteStatus,
+      filterImagesByHiddenStatus,
       pickNext,
       setNonFavoriteImages,
     ]
@@ -190,8 +215,14 @@ export function useModalDataLoader({
     async (options?: { suppressControls?: boolean }) => {
       return appendModalBatch({
         inFlightRef: favoriteAppendInFlightRef,
-        transformSource: (source) =>
-          filterImagesByFavoriteStatus(source, activeSet?.favoriteImageIds ?? [], 'favorites'),
+        transformSource: (source) => {
+          const visible = filterImagesByHiddenStatus(
+            source,
+            activeSet?.hiddenImageIds ?? [],
+            'visible'
+          );
+          return filterImagesByFavoriteStatus(visible, activeSet?.favoriteImageIds ?? [], 'favorites');
+        },
         pickNext: pickNext.favorites,
         appendToList: (items) => {
           setFavoriteImages((current) => appendUniqueImages(current, items));
@@ -201,10 +232,34 @@ export function useModalDataLoader({
     },
     [
       activeSet?.favoriteImageIds,
+      activeSet?.hiddenImageIds,
       appendModalBatch,
       filterImagesByFavoriteStatus,
+      filterImagesByHiddenStatus,
       pickNext,
       setFavoriteImages,
+    ]
+  );
+
+  const appendHidden = useCallback(
+    async (options?: { suppressControls?: boolean }) => {
+      return appendModalBatch({
+        inFlightRef: hiddenAppendInFlightRef,
+        transformSource: (source) =>
+          filterImagesByHiddenStatus(source, activeSet?.hiddenImageIds ?? [], 'hidden'),
+        pickNext: pickNext.hidden,
+        appendToList: (items) => {
+          setHiddenImages((current) => appendUniqueImages(current, items));
+        },
+        suppressControls: options?.suppressControls,
+      });
+    },
+    [
+      activeSet?.hiddenImageIds,
+      appendModalBatch,
+      filterImagesByHiddenStatus,
+      pickNext,
+      setHiddenImages,
     ]
   );
 
@@ -246,6 +301,7 @@ export function useModalDataLoader({
     sampleAppendInFlightRef.current = false;
     favoriteAppendInFlightRef.current = false;
     nonFavoriteAppendInFlightRef.current = false;
+    hiddenAppendInFlightRef.current = false;
     slideshowAppendInFlightRef.current = false;
   }, []);
 
@@ -253,6 +309,7 @@ export function useModalDataLoader({
     appendSample,
     appendFavorites,
     appendNonFavorites,
+    appendHidden,
     appendSlideshow,
     resetInFlight,
   };

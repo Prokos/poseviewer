@@ -25,6 +25,18 @@ type GridLoadButtonsProps =
       onLoadAll: () => void | Promise<void>;
     }
   | {
+      variant: 'hidden';
+      isLoading: boolean;
+      currentCount: number;
+      pendingCount: number;
+      totalCount: number;
+      remainingCount: number;
+      showLoadMore?: boolean;
+      showLoadAll?: boolean;
+      onLoadMore: () => void | Promise<void>;
+      onLoadAll: () => void | Promise<void>;
+    }
+  | {
       variant: 'nonfavorites';
       isLoading: boolean;
       currentCount: number;
@@ -67,6 +79,15 @@ function renderLoadMoreLabel(props: GridLoadButtonsProps) {
     }
     return `All favorites loaded (${props.currentCount})`;
   }
+  if (props.variant === 'hidden') {
+    if (props.isLoading) {
+      return `Loading... (+${props.pendingCount}) • ${props.currentCount}/${props.totalCount}`;
+    }
+    if (props.remainingCount > 0) {
+      return `Load more hidden (+${props.pendingCount}) • ${props.currentCount}/${props.totalCount}`;
+    }
+    return `All hidden loaded (${props.currentCount})`;
+  }
 
   if (props.variant === 'slideshow') {
     return props.isLoading
@@ -94,6 +115,11 @@ function renderLoadMoreLabel(props: GridLoadButtonsProps) {
 
 function renderLoadAllLabel(props: GridLoadButtonsProps) {
   if (props.variant === 'favorites') {
+    return props.isLoading
+      ? `Loading all ${props.totalCount}...`
+      : `Load all remaining ${props.remainingCount}`;
+  }
+  if (props.variant === 'hidden') {
     return props.isLoading
       ? `Loading all ${props.totalCount}...`
       : `Load all remaining ${props.remainingCount}`;
@@ -137,12 +163,13 @@ export function GridLoadButtons(props: GridLoadButtonsProps) {
     (props.showLoadAll ?? true) &&
     (props.variant === 'sample' ||
       props.variant === 'favorites' ||
+      props.variant === 'hidden' ||
       props.variant === 'nonfavorites' ||
       (props.variant === 'all' && props.onLoadAll && props.remainingCount !== undefined));
 
   const moreLabel = renderLoadMoreLabel(props);
   const moreDisabled =
-    props.variant === 'favorites'
+    props.variant === 'favorites' || props.variant === 'hidden'
       ? props.isLoading || props.remainingCount === 0
       : props.variant === 'slideshow'
         ? props.isLoading || props.disabled
@@ -150,7 +177,7 @@ export function GridLoadButtons(props: GridLoadButtonsProps) {
 
   const allLabel = showLoadAll ? renderLoadAllLabel(props) : '';
   const allDisabled =
-    props.variant === 'favorites'
+    props.variant === 'favorites' || props.variant === 'hidden'
       ? props.isLoading || props.remainingCount === 0
       : props.isLoading;
 

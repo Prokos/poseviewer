@@ -11,6 +11,7 @@ export type PoseSet = {
   indexFileId?: string;
   imageCount?: number;
   favoriteImageIds?: string[];
+  hiddenImageIds?: string[];
   updatedAt?: number;
 };
 
@@ -108,6 +109,7 @@ export function createPoseSet(partial: Omit<PoseSet, 'id'>): PoseSet {
   return {
     id: nextId,
     favoriteImageIds: [],
+    hiddenImageIds: [],
     updatedAt: Date.now(),
     ...partial,
   };

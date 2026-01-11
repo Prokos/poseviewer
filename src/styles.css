@@ -720,7 +720,7 @@ button.ghost:hover:not(:disabled) {
 
 .thumb {
   width: 100%;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 1;
   border-radius: 4px;
   background: rgba(31, 28, 23, 0.08);
   position: relative;
@@ -826,6 +826,11 @@ button.ghost:hover:not(:disabled) {
   right: 8px;
 }
 
+.thumb-action--hide {
+  left: auto;
+  right: 44px;
+}
+
 .image-tile:hover .thumb-action,
 .image-tile:focus-within .thumb-action {
   opacity: 1;
@@ -843,6 +848,14 @@ button.ghost:hover:not(:disabled) {
 
 .thumb-action--favorite.is-active {
   background: rgba(167, 74, 63, 0.95);
+  color: var(--white);
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.thumb-action--hide.is-active {
+  background: rgba(58, 62, 64, 0.95);
   color: var(--white);
   opacity: 1;
   pointer-events: auto;
@@ -1280,7 +1293,8 @@ button.ghost:hover:not(:disabled) {
 .modal-timer-button,
 .modal-info-button,
 .modal-close,
-.modal-favorite {
+.modal-favorite,
+.modal-hide {
   position: relative;
 }
 
@@ -1288,7 +1302,8 @@ button.ghost:hover:not(:disabled) {
 .modal-timer-button::before,
 .modal-info-button::before,
 .modal-close::before,
-.modal-favorite::before {
+.modal-favorite::before,
+.modal-hide::before {
   content: '';
   position: absolute;
   inset: -8px;
@@ -1458,7 +1473,28 @@ button.ghost:hover:not(:disabled) {
   z-index: 2;
 }
 
+.modal-hide {
+  position: absolute;
+  top: calc(14px + var(--modal-safe-top));
+  left: calc(68px + var(--modal-safe-left));
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  padding: 8px 12px;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.7);
+  opacity: 0.85;
+  transition: opacity 0.5s ease;
+  z-index: 2;
+}
+
 .modal-favorite:hover {
+  border-color: rgba(255, 255, 255, 0.9);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.modal-hide:hover {
   border-color: rgba(255, 255, 255, 0.9);
   color: rgba(255, 255, 255, 0.9);
 }
@@ -1467,7 +1503,21 @@ button.ghost:hover:not(:disabled) {
   color: #d15647;
 }
 
+.modal-hide.is-active {
+  color: rgba(255, 255, 255, 0.95);
+}
+
 .modal-favorite-pop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 3;
+  animation: favorite-pop 0.52s ease;
+}
+
+.modal-hide-pop {
   position: absolute;
   inset: 0;
   display: grid;
@@ -1485,7 +1535,20 @@ button.ghost:hover:not(:disabled) {
   color: rgba(255, 255, 255, 0.65);
 }
 
+.modal-hide-pop.is-hide {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.modal-hide-pop.is-unhide {
+  color: rgba(255, 255, 255, 0.65);
+}
+
 .modal-favorite-pop svg {
+  width: 30vmin;
+  height: 30vmin;
+}
+
+.modal-hide-pop svg {
   width: 30vmin;
   height: 30vmin;
 }
@@ -1537,6 +1600,7 @@ button.ghost:hover:not(:disabled) {
 
 .modal-content.is-controls-hidden .modal-close,
 .modal-content.is-controls-hidden .modal-favorite,
+.modal-content.is-controls-hidden .modal-hide,
 .modal-content.is-controls-hidden .modal-nav,
 .modal-content.is-controls-hidden .modal-counter {
   opacity: 0;
@@ -1865,14 +1929,14 @@ button.ghost:hover:not(:disabled) {
 
 @media (max-width: 1024px) {
   .card-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
 }
 
 @media (max-width: 640px) {
   .card-grid {
-    grid-template-columns: repeat(1, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
 }

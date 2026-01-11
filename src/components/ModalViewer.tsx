@@ -2,6 +2,8 @@ import {
   IconArrowLeft,
   IconArrowRight,
   IconClock,
+  IconEye,
+  IconEyeOff,
   IconHeart,
   IconHeartFilled,
   IconInfoCircle,
@@ -28,10 +30,12 @@ export function ModalViewer() {
     isModalInfoOpen,
     viewerSort,
     modalIsFavorite,
+    modalIsHidden,
     modalIsLoading,
     modalLoadingCount,
     modalPulse,
     modalFavoritePulse,
+    modalHiddenPulse,
     modalIsRotating,
     modalRotateProgress,
     modalFullSrc,
@@ -52,6 +56,7 @@ export function ModalViewer() {
     modalTotalImagesKnown,
     totalImages,
     favoritesCount,
+    hiddenCount,
     nonFavoritesCount,
     canGoPrevModal,
     canGoNextModal,
@@ -73,6 +78,7 @@ export function ModalViewer() {
     onOpenChronologicalContext,
     onRestoreModalContext,
     onToggleFavoriteFromModal,
+    onToggleHiddenFromModal,
     onRotateModalImage,
     onPrevImage,
     onNextImage,
@@ -271,11 +277,29 @@ export function ModalViewer() {
             {modalIsFavorite ? <IconHeartFilled size={18} /> : <IconHeart size={18} />}
           </button>
         ) : null}
+        {modalSetId ? (
+          <button
+            type="button"
+            className={`modal-hide ${modalIsHidden ? 'is-active' : ''}`}
+            onClick={onToggleHiddenFromModal}
+            aria-pressed={modalIsHidden}
+            aria-label={modalIsHidden ? 'Unhide image' : 'Hide image'}
+          >
+            {modalIsHidden ? <IconEye size={18} /> : <IconEyeOff size={18} />}
+          </button>
+        ) : null}
         {modalFavoritePulse ? (
           <div
             className={`modal-favorite-pop ${modalFavoritePulse === 'add' ? 'is-add' : 'is-remove'}`}
           >
             {modalFavoritePulse === 'add' ? <IconHeartFilled size={1} /> : <IconHeart size={1} />}
+          </div>
+        ) : null}
+        {modalHiddenPulse ? (
+          <div
+            className={`modal-hide-pop ${modalHiddenPulse === 'hide' ? 'is-hide' : 'is-unhide'}`}
+          >
+            {modalHiddenPulse === 'hide' ? <IconEyeOff size={1} /> : <IconEye size={1} />}
           </div>
         ) : null}
         <div
@@ -330,6 +354,8 @@ export function ModalViewer() {
                   ? ` [${favoritesCount}]`
                   : modalContextLabel === 'Non favorites' && nonFavoritesCount !== undefined
                     ? ` [${nonFavoritesCount}]`
+                    : modalContextLabel === 'Hidden'
+                      ? ` [${hiddenCount}]`
                     : ''}
           </div>
         ) : null}

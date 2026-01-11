@@ -14,23 +14,24 @@ import {
   appendUniqueImages,
   createBatchPicker,
   filterImagesByFavoriteStatus,
+  filterImagesByHiddenStatus,
 } from '../../utils/imageSampling';
 import { shuffleItemsSeeded } from '../../utils/random';
 
-type SetViewerTab = 'samples' | 'favorites' | 'nonfavorites' | 'all';
+type SetViewerTab = 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all';
 
 type ResolveSetImages = (
   set: PoseSet,
   buildIfMissing: boolean
 ) => Promise<DriveImage[]>;
 
-type ViewerGridKind = 'sample' | 'favorites' | 'nonfavorites';
+type ViewerGridKind = 'sample' | 'favorites' | 'nonfavorites' | 'hidden';
 
 type ViewerSortMode = 'random' | 'chronological';
 
 type ViewerGridConfig = {
   label: string;
-  filterMode: 'all' | 'favorites' | 'nonfavorites';
+  filterMode: 'all' | 'favorites' | 'nonfavorites' | 'hidden';
   setImages: Dispatch<SetStateAction<DriveImage[]>>;
   setIsLoading: Dispatch<SetStateAction<boolean>>;
   seenRef: MutableRefObject<Map<string, Set<string>>>;
@@ -63,14 +64,17 @@ export function useSetViewerGrids({
   const [sampleImages, setSampleImages] = useState<DriveImage[]>([]);
   const [nonFavoriteImages, setNonFavoriteImages] = useState<DriveImage[]>([]);
   const [favoriteImages, setFavoriteImages] = useState<DriveImage[]>([]);
+  const [hiddenImages, setHiddenImages] = useState<DriveImage[]>([]);
   const [isLoadingSample, setIsLoadingSample] = useState(false);
   const [isLoadingFavorites, setIsLoadingFavorites] = useState(false);
   const [isLoadingNonFavorites, setIsLoadingNonFavorites] = useState(false);
+  const [isLoadingHidden, setIsLoadingHidden] = useState(false);
   const [sampleColumns, setSampleColumns] = useState(1);
   const sampleGridRef = useRef<HTMLDivElement | null>(null);
   const sampleSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const favoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const nonFavoriteSeenRef = useRef<Map<string, Set<string>>>(new Map());
+  const hiddenSeenRef = useRef<Map<string, Set<string>>>(new Map());
   const orderedListsRef = useRef<
     Map<
       string,
@@ -78,6 +82,7 @@ export function useSetViewerGrids({
         mode: ViewerSortMode;
         favorites: DriveImage[];
         nonfavorites: DriveImage[];
+        hidden: DriveImage[];
       }
     >
   >(new Map());
@@ -92,20 +97,25 @@ export function useSetViewerGrids({
       sample: createBatchPicker(sampleSeenRef.current),
       nonFavorites: createBatchPicker(nonFavoriteSeenRef.current),
       favorites: createBatchPicker(favoriteSeenRef.current),
+      hidden: createBatchPicker(hiddenSeenRef.current),
     }),
     []
   );
 
   const buildOrderedLists = useCallback(
-    (setId: string, images: DriveImage[], favoriteIds: string[]) => {
+    (setId: string, images: DriveImage[], favoriteIds: string[], hiddenIds: string[]) => {
       const favoriteSet = new Set(favoriteIds);
+      const hiddenSet = new Set(hiddenIds);
+      const visibleImages = filterImagesByHiddenStatus(images, hiddenIds, 'visible');
+      const hiddenImages = filterImagesByHiddenStatus(images, hiddenIds, 'hidden');
       if (viewerSort === 'chronological') {
-        const favorites = filterImagesByFavoriteStatus(images, favoriteIds, 'favorites');
-        const nonfavorites = filterImagesByFavoriteStatus(images, favoriteIds, 'nonfavorites');
+        const favorites = filterImagesByFavoriteStatus(visibleImages, favoriteIds, 'favorites');
+        const nonfavorites = filterImagesByFavoriteStatus(visibleImages, favoriteIds, 'nonfavorites');
         const next = {
           mode: viewerSort,
           favorites,
           nonfavorites,
+          hidden: hiddenImages,
         };
         orderedListsRef.current.set(setId, next);
         return next;
@@ -115,18 +125,27 @@ export function useSetViewerGrids({
       if (existing && existing.mode === 'random') {
         const imageById = new Map(images.map((image) => [image.id, image]));
         const keepFavorites = existing.favorites.filter(
-          (image) => imageById.has(image.id) && favoriteSet.has(image.id)
+          (image) =>
+            imageById.has(image.id) && favoriteSet.has(image.id) && !hiddenSet.has(image.id)
         );
         const keepNonFavorites = existing.nonfavorites.filter(
-          (image) => imageById.has(image.id) && !favoriteSet.has(image.id)
+          (image) =>
+            imageById.has(image.id) && !favoriteSet.has(image.id) && !hiddenSet.has(image.id)
+        );
+        const keepHidden = existing.hidden.filter(
+          (image) => imageById.has(image.id) && hiddenSet.has(image.id)
         );
         const favoriteKnown = new Set(keepFavorites.map((image) => image.id));
         const nonFavoriteKnown = new Set(keepNonFavorites.map((image) => image.id));
-        const missingFavorites = images.filter(
+        const hiddenKnown = new Set(keepHidden.map((image) => image.id));
+        const missingFavorites = visibleImages.filter(
           (image) => favoriteSet.has(image.id) && !favoriteKnown.has(image.id)
         );
-        const missingNonFavorites = images.filter(
+        const missingNonFavorites = visibleImages.filter(
           (image) => !favoriteSet.has(image.id) && !nonFavoriteKnown.has(image.id)
+        );
+        const missingHidden = hiddenImages.filter(
+          (image) => !hiddenKnown.has(image.id)
         );
         const next = {
           mode: viewerSort,
@@ -136,17 +155,21 @@ export function useSetViewerGrids({
           nonfavorites: keepNonFavorites.concat(
             shuffleItemsSeeded(missingNonFavorites, `${viewerSortSeed}|${setId}|nonfavorites`)
           ),
+          hidden: keepHidden.concat(
+            shuffleItemsSeeded(missingHidden, `${viewerSortSeed}|${setId}|hidden`)
+          ),
         };
         orderedListsRef.current.set(setId, next);
         return next;
       }
 
-      const favorites = filterImagesByFavoriteStatus(images, favoriteIds, 'favorites');
-      const nonfavorites = filterImagesByFavoriteStatus(images, favoriteIds, 'nonfavorites');
+      const favorites = filterImagesByFavoriteStatus(visibleImages, favoriteIds, 'favorites');
+      const nonfavorites = filterImagesByFavoriteStatus(visibleImages, favoriteIds, 'nonfavorites');
       const next = {
         mode: viewerSort,
         favorites: shuffleItemsSeeded(favorites, `${viewerSortSeed}|${setId}|favorites`),
         nonfavorites: shuffleItemsSeeded(nonfavorites, `${viewerSortSeed}|${setId}|nonfavorites`),
+        hidden: shuffleItemsSeeded(hiddenImages, `${viewerSortSeed}|${setId}|hidden`),
       };
       orderedListsRef.current.set(setId, next);
       return next;
@@ -157,7 +180,12 @@ export function useSetViewerGrids({
   const getOrderedLists = useCallback(
     async (set: PoseSet) => {
       const images = await resolveSetImages(set, true);
-      return buildOrderedLists(set.id, images, set.favoriteImageIds ?? []);
+      return buildOrderedLists(
+        set.id,
+        images,
+        set.favoriteImageIds ?? [],
+        set.hiddenImageIds ?? []
+      );
     },
     [buildOrderedLists, resolveSetImages]
   );
@@ -167,9 +195,10 @@ export function useSetViewerGrids({
       setId: string,
       images: DriveImage[],
       favoriteIds: string[],
+      hiddenIds: string[],
       options?: { keepLength?: boolean }
     ) => {
-      const ordered = buildOrderedLists(setId, images, favoriteIds);
+      const ordered = buildOrderedLists(setId, images, favoriteIds, hiddenIds);
       if (ordered.favorites.length === 0) {
         setFavoriteImages([]);
         favoriteSeenRef.current.set(setId, new Set());
@@ -185,24 +214,69 @@ export function useSetViewerGrids({
     [buildOrderedLists, favoriteImages.length, samplePageSize]
   );
 
+  const updateHiddenImagesFromSource = useCallback(
+    (
+      setId: string,
+      images: DriveImage[],
+      favoriteIds: string[],
+      hiddenIds: string[],
+      options?: { keepLength?: boolean }
+    ) => {
+      const ordered = buildOrderedLists(setId, images, favoriteIds, hiddenIds);
+      if (ordered.hidden.length === 0) {
+        setHiddenImages([]);
+        hiddenSeenRef.current.set(setId, new Set());
+        return;
+      }
+      const targetLength =
+        options?.keepLength && hiddenImages.length > 0
+          ? Math.min(hiddenImages.length, ordered.hidden.length)
+          : Math.min(samplePageSize, ordered.hidden.length);
+      hiddenSeenRef.current.set(setId, new Set());
+      setHiddenImages(ordered.hidden.slice(0, targetLength));
+    },
+    [buildOrderedLists, hiddenImages.length, samplePageSize]
+  );
+
   const hydrateSetExtras = useCallback(
     async (set: PoseSet, buildIfMissing: boolean) => {
       setIsLoadingSample(true);
       setViewerIndexProgress('Loading index…');
       try {
         const images = await resolveSetImages(set, buildIfMissing);
-        updateFavoriteImagesFromSource(set.id, images, set.favoriteImageIds ?? []);
-        setSampleImages(pickNext.sample(set.id, images, samplePageSize));
+        updateFavoriteImagesFromSource(
+          set.id,
+          images,
+          set.favoriteImageIds ?? [],
+          set.hiddenImageIds ?? []
+        );
+        updateHiddenImagesFromSource(
+          set.id,
+          images,
+          set.favoriteImageIds ?? [],
+          set.hiddenImageIds ?? []
+        );
+        const visible = filterImagesByHiddenStatus(images, set.hiddenImageIds ?? [], 'visible');
+        setSampleImages(pickNext.sample(set.id, visible, samplePageSize));
       } catch (loadError) {
         setError((loadError as Error).message);
         setFavoriteImages([]);
+        setHiddenImages([]);
         setSampleImages([]);
       } finally {
         setIsLoadingSample(false);
         setViewerIndexProgress('');
       }
     },
-    [pickNext, resolveSetImages, samplePageSize, setError, setViewerIndexProgress, updateFavoriteImagesFromSource]
+    [
+      pickNext,
+      resolveSetImages,
+      samplePageSize,
+      setError,
+      setViewerIndexProgress,
+      updateFavoriteImagesFromSource,
+      updateHiddenImagesFromSource,
+    ]
   );
 
   const hydratedSetIdRef = useRef<string | null>(null);
@@ -227,9 +301,22 @@ export function useSetViewerGrids({
       return;
     }
     setNonFavoriteImages((current) =>
-      filterImagesByFavoriteStatus(current, activeSet.favoriteImageIds ?? [], 'nonfavorites')
+      filterImagesByFavoriteStatus(
+        filterImagesByHiddenStatus(current, activeSet.hiddenImageIds ?? [], 'visible'),
+        activeSet.favoriteImageIds ?? [],
+        'nonfavorites'
+      )
     );
-  }, [activeSet?.favoriteImageIds, activeSet?.id]);
+    setFavoriteImages((current) =>
+      filterImagesByHiddenStatus(current, activeSet.hiddenImageIds ?? [], 'visible')
+    );
+    setSampleImages((current) =>
+      filterImagesByHiddenStatus(current, activeSet.hiddenImageIds ?? [], 'visible')
+    );
+    setHiddenImages((current) =>
+      filterImagesByHiddenStatus(current, activeSet.hiddenImageIds ?? [], 'hidden')
+    );
+  }, [activeSet?.favoriteImageIds, activeSet?.hiddenImageIds, activeSet?.id]);
 
   useEffect(() => {
     orderedListsRef.current.clear();
@@ -257,6 +344,16 @@ export function useSetViewerGrids({
           pickBatch: pickNext.favorites,
         };
       }
+      if (kind === 'hidden') {
+        return {
+          label: 'Loading hidden…',
+          filterMode: 'hidden',
+          setImages: setHiddenImages,
+          setIsLoading: setIsLoadingHidden,
+          seenRef: hiddenSeenRef,
+          pickBatch: pickNext.hidden,
+        };
+      }
       return {
         label: 'Loading images…',
         filterMode: 'nonfavorites',
@@ -266,7 +363,7 @@ export function useSetViewerGrids({
         pickBatch: pickNext.nonFavorites,
       };
     },
-    [pickNext.favorites, pickNext.nonFavorites, pickNext.sample]
+    [pickNext.favorites, pickNext.hidden, pickNext.nonFavorites, pickNext.sample]
   );
 
   const loadViewerGridBatch = useCallback(
@@ -280,10 +377,15 @@ export function useSetViewerGrids({
       try {
         if (kind === 'sample') {
           const images = await resolveSetImages(activeSet, true);
-          const filtered = filterImagesByFavoriteStatus(
+          const visible = filterImagesByHiddenStatus(
             images,
+            activeSet.hiddenImageIds ?? [],
+            'visible'
+          );
+          const filtered = filterImagesByFavoriteStatus(
+            visible,
             activeSet.favoriteImageIds ?? [],
-            config.filterMode
+            config.filterMode === 'hidden' ? 'all' : config.filterMode
           );
           if (filtered.length === 0) {
             config.setImages([]);
@@ -297,7 +399,12 @@ export function useSetViewerGrids({
           return;
         }
         const ordered = await getOrderedLists(activeSet);
-        const list = kind === 'favorites' ? ordered.favorites : ordered.nonfavorites;
+        const list =
+          kind === 'favorites'
+            ? ordered.favorites
+            : kind === 'hidden'
+              ? ordered.hidden
+              : ordered.nonfavorites;
         if (list.length === 0) {
           config.setImages([]);
           return;
@@ -337,10 +444,15 @@ export function useSetViewerGrids({
       try {
         if (kind === 'sample') {
           const images = await resolveSetImages(activeSet, true);
-          const filtered = filterImagesByFavoriteStatus(
+          const visible = filterImagesByHiddenStatus(
             images,
+            activeSet.hiddenImageIds ?? [],
+            'visible'
+          );
+          const filtered = filterImagesByFavoriteStatus(
+            visible,
             activeSet.favoriteImageIds ?? [],
-            config.filterMode
+            config.filterMode === 'hidden' ? 'all' : config.filterMode
           );
           if (filtered.length === 0) {
             config.setImages([]);
@@ -355,7 +467,12 @@ export function useSetViewerGrids({
           return;
         }
         const ordered = await getOrderedLists(activeSet);
-        const list = kind === 'favorites' ? ordered.favorites : ordered.nonfavorites;
+        const list =
+          kind === 'favorites'
+            ? ordered.favorites
+            : kind === 'hidden'
+              ? ordered.hidden
+              : ordered.nonfavorites;
         config.setImages(list);
       } catch (loadError) {
         setError((loadError as Error).message);
@@ -387,6 +504,10 @@ export function useSetViewerGrids({
     await loadViewerGridBatch('favorites', samplePageSize);
   }, [loadViewerGridBatch, samplePageSize]);
 
+  const handleLoadMoreHidden = useCallback(async () => {
+    await loadViewerGridBatch('hidden', samplePageSize);
+  }, [loadViewerGridBatch, samplePageSize]);
+
   const handleLoadAllSample = useCallback(async () => {
     await loadViewerGridAll('sample');
   }, [loadViewerGridAll]);
@@ -397,6 +518,10 @@ export function useSetViewerGrids({
 
   const handleLoadAllNonFavorites = useCallback(async () => {
     await loadViewerGridAll('nonfavorites');
+  }, [loadViewerGridAll]);
+
+  const handleLoadAllHidden = useCallback(async () => {
+    await loadViewerGridAll('hidden');
   }, [loadViewerGridAll]);
 
   const handleResetFavorites = useCallback(async () => {
@@ -413,6 +538,14 @@ export function useSetViewerGrids({
     }
     setNonFavoriteImages([]);
     await loadViewerGridBatch('nonfavorites', samplePageSize, { replace: true });
+  }, [activeSet, isConnected, loadViewerGridBatch, samplePageSize]);
+
+  const handleResetHidden = useCallback(async () => {
+    if (!activeSet || !isConnected) {
+      return;
+    }
+    setHiddenImages([]);
+    await loadViewerGridBatch('hidden', samplePageSize, { replace: true });
   }, [activeSet, isConnected, loadViewerGridBatch, samplePageSize]);
 
   useEffect(() => {
@@ -492,6 +625,33 @@ export function useSetViewerGrids({
   ]);
 
   useEffect(() => {
+    if (setViewerTab !== 'hidden' || !activeSet || isLoadingHidden) {
+      return;
+    }
+    if (hiddenImages.length === 0) {
+      void loadViewerGridBatch('hidden', samplePageSize, { replace: true });
+      return;
+    }
+    if (sampleColumns <= 1 || hiddenImages.length === 0) {
+      return;
+    }
+    const remainder = hiddenImages.length % sampleColumns;
+    if (remainder === 0) {
+      return;
+    }
+    const fill = sampleColumns - remainder;
+    void loadViewerGridBatch('hidden', fill);
+  }, [
+    activeSet,
+    hiddenImages.length,
+    isLoadingHidden,
+    loadViewerGridBatch,
+    sampleColumns,
+    samplePageSize,
+    setViewerTab,
+  ]);
+
+  useEffect(() => {
     if (setViewerTab !== 'favorites' || !activeSet) {
       return;
     }
@@ -505,6 +665,14 @@ export function useSetViewerGrids({
     }
     nonFavoriteSeenRef.current.set(activeSet.id, new Set());
     setNonFavoriteImages([]);
+  }, [activeSet?.id, setViewerTab]);
+
+  useEffect(() => {
+    if (setViewerTab !== 'hidden' || !activeSet) {
+      return;
+    }
+    hiddenSeenRef.current.set(activeSet.id, new Set());
+    setHiddenImages([]);
   }, [activeSet?.id, setViewerTab]);
 
   useEffect(() => {
@@ -537,20 +705,27 @@ export function useSetViewerGrids({
     setFavoriteImages,
     nonFavoriteImages,
     setNonFavoriteImages,
+    hiddenImages,
+    setHiddenImages,
     isLoadingSample,
     isLoadingFavorites,
     isLoadingNonFavorites,
+    isLoadingHidden,
     samplePageSize,
     sampleGridRef,
     pickNext,
     updateFavoriteImagesFromSource,
+    updateHiddenImagesFromSource,
     handleLoadMoreSample,
     handleLoadAllSample,
     handleLoadMoreFavorites,
     handleLoadAllFavorites,
     handleLoadMoreNonFavorites,
     handleLoadAllNonFavorites,
+    handleLoadMoreHidden,
+    handleLoadAllHidden,
     handleResetFavorites,
     handleResetNonFavorites,
+    handleResetHidden,
   };
 }

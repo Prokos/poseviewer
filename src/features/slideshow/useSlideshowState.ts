@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import type { DriveImage } from '../../drive/types';
 import type { PoseSet } from '../../metadata';
-import { appendUniqueImages, filterImagesByFavoriteStatus } from '../../utils/imageSampling';
+import {
+  appendUniqueImages,
+  filterImagesByFavoriteStatus,
+  filterImagesByHiddenStatus,
+} from '../../utils/imageSampling';
 import { pickRandom } from '../../utils/random';
 
 type SlideshowTagFilters = {
@@ -79,15 +83,18 @@ export function useSlideshowState({
     }
     const shouldSkipSet = (set: PoseSet) => {
       const favorites = set.favoriteImageIds?.length ?? 0;
+      const hidden = set.hiddenImageIds?.length ?? 0;
+      const visibleTotal =
+        typeof set.imageCount === 'number' ? Math.max(0, set.imageCount - hidden) : undefined;
       if (slideshowFavoriteFilter === 'favorites') {
         return favorites === 0;
       }
       if (slideshowFavoriteFilter === 'nonfavorites') {
-        if (typeof set.imageCount === 'number') {
-          return set.imageCount - favorites <= 0;
+        if (typeof visibleTotal === 'number') {
+          return visibleTotal - favorites <= 0;
         }
       }
-      if (typeof set.imageCount === 'number' && set.imageCount <= 0) {
+      if (typeof visibleTotal === 'number' && visibleTotal <= 0) {
         return true;
       }
       return false;
@@ -102,25 +109,30 @@ export function useSlideshowState({
     const handleSet = async (set: PoseSet) => {
       const images = await resolveSetImages(set, true, { suppressProgress: true });
       if (images.length > 0) {
+        const visible = filterImagesByHiddenStatus(
+          images,
+          set.hiddenImageIds ?? [],
+          'visible'
+        );
         if (slideshowFavoriteFilter === 'favorites') {
           const favorites = set.favoriteImageIds ?? [];
-          const filtered = filterImagesByFavoriteStatus(images, favorites, 'favorites');
+          const filtered = filterImagesByFavoriteStatus(visible, favorites, 'favorites');
           for (const image of filtered) {
             map.set(image.id, set.id);
           }
           results.push(...filtered);
         } else if (slideshowFavoriteFilter === 'nonfavorites') {
           const favorites = set.favoriteImageIds ?? [];
-          const filtered = filterImagesByFavoriteStatus(images, favorites, 'nonfavorites');
+          const filtered = filterImagesByFavoriteStatus(visible, favorites, 'nonfavorites');
           for (const image of filtered) {
             map.set(image.id, set.id);
           }
           results.push(...filtered);
         } else {
-          for (const image of images) {
+          for (const image of visible) {
             map.set(image.id, set.id);
           }
-          results.push(...images);
+          results.push(...visible);
         }
       }
       processed += 1;

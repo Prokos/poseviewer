@@ -30,6 +30,7 @@ type UpdateFavoritesFromSource = (
   setId: string,
   images: DriveImage[],
   favoriteIds: string[],
+  hiddenIds: string[],
   options?: { keepLength?: boolean }
 ) => void;
 
@@ -51,22 +52,30 @@ export type ModalDeps = {
   setFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
   setSampleImages: Dispatch<SetStateAction<DriveImage[]>>;
   setNonFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
+  setHiddenImages: Dispatch<SetStateAction<DriveImage[]>>;
   readImageListCache: (setId: string) => DriveImage[] | null;
   filterImagesByFavoriteStatus: (
     images: DriveImage[],
     favoriteIds: string[],
     mode: FavoriteFilterMode
   ) => DriveImage[];
+  filterImagesByHiddenStatus: (
+    images: DriveImage[],
+    hiddenIds: string[],
+    mode: 'hidden' | 'visible' | 'all'
+  ) => DriveImage[];
   pickNext: {
     sample: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     favorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     nonFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
+    hidden: (setId: string, images: DriveImage[], count: number) => DriveImage[];
   };
   resolveSetImages: ResolveSetImages;
   updateFavoriteImagesFromSource: UpdateFavoritesFromSource;
   handleLoadMoreImages: () => Promise<void>;
   isLoadingMore: boolean;
   toggleFavoriteImage: (setId: string, imageId: string) => void | Promise<void>;
+  toggleHiddenImage: (setId: string, imageId: string) => void | Promise<void>;
   loadSlideshowBatch: LoadSlideshowBatch;
   slideshowImagesRef: MutableRefObject<DriveImage[]>;
   slideshowImageSetRef: MutableRefObject<Map<string, string>>;
@@ -87,10 +96,12 @@ export type ModalViewerState = {
   isModalInfoOpen: boolean;
   viewerSort: 'random' | 'chronological';
   modalIsFavorite: boolean;
+  modalIsHidden: boolean;
   modalIsLoading: boolean;
   modalLoadingCount: number;
   modalPulse: boolean;
   modalFavoritePulse: null | 'add' | 'remove';
+  modalHiddenPulse: null | 'hide' | 'unhide';
   modalIsRotating: boolean;
   modalRotateProgress: null | {
     scope: 'single' | 'batch';
@@ -116,6 +127,7 @@ export type ModalViewerState = {
   modalTotalImagesKnown?: number;
   totalImages: number;
   favoritesCount: number;
+  hiddenCount: number;
   nonFavoritesCount?: number;
   canGoPrevModal: boolean;
   canGoNextModal: boolean;
@@ -137,6 +149,7 @@ export type ModalViewerState = {
   onOpenChronologicalContext: () => void;
   onRestoreModalContext: () => void;
   onToggleFavoriteFromModal: () => void;
+  onToggleHiddenFromModal: () => void;
   onRotateModalImage: (angle: 90 | -90) => void;
   onPrevImage: () => void;
   onNextImage: (options?: { suppressControls?: boolean }) => void;
@@ -156,11 +169,13 @@ export function useModalViewer({
   setFavoriteImages,
   setSampleImages,
   setNonFavoriteImages,
+  setHiddenImages,
   readImageListCache,
   resolveSetImages,
   updateFavoriteImagesFromSource,
   handleLoadMoreImages,
   toggleFavoriteImage,
+  toggleHiddenImage,
   loadSlideshowBatch,
   slideshowImagesRef,
   slideshowImageSetRef,
@@ -168,6 +183,7 @@ export function useModalViewer({
   prefetchThumbs,
   setError,
   filterImagesByFavoriteStatus,
+  filterImagesByHiddenStatus,
   pickNext,
   isLoadingMore,
   rotateImage,
@@ -180,6 +196,7 @@ export function useModalViewer({
   const [modalContextSetId, setModalContextSetId] = useState<string | null>(null);
   const [modalPulse, setModalPulse] = useState(false);
   const [modalFavoritePulse, setModalFavoritePulse] = useState<null | 'add' | 'remove'>(null);
+  const [modalHiddenPulse, setModalHiddenPulse] = useState<null | 'hide' | 'unhide'>(null);
   const [modalLoadKey, setModalLoadKey] = useState(0);
   const [modalZoom, setModalZoom] = useState(1);
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
@@ -198,6 +215,7 @@ export function useModalViewer({
   const modalItemsLengthRef = useRef(0);
   const modalPulseTimeout = useRef<number | null>(null);
   const modalFavoritePulseTimeout = useRef<number | null>(null);
+  const modalHiddenPulseTimeout = useRef<number | null>(null);
   const modalControlsTimeoutRef = useRef<number | null>(null);
   const modalShakeTimeoutRef = useRef<number | null>(null);
   const modalRotateClearTimeoutRef = useRef<number | null>(null);
@@ -263,19 +281,38 @@ export function useModalViewer({
   const modalSet = modalSetId ? setsById.get(modalSetId) : activeSet;
   const modalIsFavorite =
     modalImage && modalSet ? (modalSet.favoriteImageIds ?? []).includes(modalImage.id) : false;
+  const modalIsHidden =
+    modalImage && modalSet ? (modalSet.hiddenImageIds ?? []).includes(modalImage.id) : false;
 
+  const activeHiddenIds = activeSet?.hiddenImageIds ?? [];
   const cachedCount = activeSet ? readImageListCache(activeSet.id)?.length : undefined;
-  const totalImagesKnown = activeSet?.imageCount ?? cachedCount;
+  const totalImagesKnownRaw = activeSet?.imageCount ?? cachedCount;
+  const totalImagesKnown =
+    totalImagesKnownRaw !== undefined
+      ? Math.max(0, totalImagesKnownRaw - activeHiddenIds.length)
+      : undefined;
   const totalImages = totalImagesKnown ?? activeImages.length;
   const modalTotalImagesKnown =
     modalContextLabel === 'Set' && modalContextSetId
-      ? modalSet?.imageCount ?? readImageListCache(modalContextSetId)?.length
+      ? (() => {
+          const contextSet = setsById.get(modalContextSetId);
+          const contextHidden = contextSet?.hiddenImageIds?.length ?? 0;
+          const contextTotalRaw =
+            contextSet?.imageCount ?? readImageListCache(modalContextSetId)?.length;
+          return contextTotalRaw !== undefined
+            ? Math.max(0, contextTotalRaw - contextHidden)
+            : undefined;
+        })()
       : totalImagesKnown;
   const modalRemainingImages =
     modalTotalImagesKnown !== undefined
       ? Math.max(0, modalTotalImagesKnown - modalItems.length)
       : undefined;
-  const favoritesCount = activeSet?.favoriteImageIds?.length ?? 0;
+  const hiddenCount = activeHiddenIds.length;
+  const activeHiddenSet = new Set(activeHiddenIds);
+  const favoritesCount = (activeSet?.favoriteImageIds ?? []).filter(
+    (id) => !activeHiddenSet.has(id)
+  ).length;
   const nonFavoritesCount =
     totalImagesKnown !== undefined ? Math.max(0, totalImagesKnown - favoritesCount) : undefined;
 
@@ -287,6 +324,7 @@ export function useModalViewer({
       (modalContextLabel === 'Sample' && !!activeSet) ||
       (modalContextLabel === 'Favorites' && !!activeSet) ||
       (modalContextLabel === 'Non favorites' && !!activeSet) ||
+      (modalContextLabel === 'Hidden' && !!activeSet) ||
       modalContextLabel === 'Slideshow');
 
   const scheduleModalControlsHide = useCallback(
@@ -393,6 +431,19 @@ export function useModalViewer({
     }, 10);
   }, []);
 
+  const triggerHiddenPulse = useCallback((mode: 'hide' | 'unhide') => {
+    setModalHiddenPulse(null);
+    if (modalHiddenPulseTimeout.current) {
+      window.clearTimeout(modalHiddenPulseTimeout.current);
+    }
+    modalHiddenPulseTimeout.current = window.setTimeout(() => {
+      setModalHiddenPulse(mode);
+      modalHiddenPulseTimeout.current = window.setTimeout(() => {
+        setModalHiddenPulse(null);
+      }, 520);
+    }, 10);
+  }, []);
+
   const triggerModalShake = useCallback(() => {
     setModalShake(false);
     if (modalShakeTimeoutRef.current) {
@@ -431,6 +482,7 @@ export function useModalViewer({
     appendSample,
     appendFavorites,
     appendNonFavorites,
+    appendHidden,
     appendSlideshow,
     resetInFlight,
   } = useModalDataLoader({
@@ -443,10 +495,12 @@ export function useModalViewer({
     setModalImageAtIndex,
     updateModalItems,
     filterImagesByFavoriteStatus,
+    filterImagesByHiddenStatus,
     pickNext,
     setSampleImages,
     setFavoriteImages,
     setNonFavoriteImages,
+    setHiddenImages,
     sampleHistoryRef,
     sampleHistorySetRef,
     loadSlideshowBatch,
@@ -515,6 +569,7 @@ export function useModalViewer({
     triggerModalPulse,
     setModalPulse,
     setModalFavoritePulse,
+    setModalHiddenPulse,
     setModalZoom,
     setModalPan,
     resetModalTimerState,
@@ -524,6 +579,7 @@ export function useModalViewer({
     resetInFlight,
     modalPulseTimeoutRef: modalPulseTimeout,
     modalFavoritePulseTimeoutRef: modalFavoritePulseTimeout,
+    modalHiddenPulseTimeoutRef: modalHiddenPulseTimeout,
     modalControlsTimeoutRef,
   });
 
@@ -582,6 +638,34 @@ export function useModalViewer({
     slideshowImageSetRef,
     toggleFavoriteImage,
     triggerFavoritePulse,
+  ]);
+
+  const toggleHiddenFromModal = useCallback(() => {
+    if (!modalImage) {
+      return;
+    }
+    const setId =
+      modalContextLabel === 'Set'
+        ? modalContextSetId ?? activeSet?.id
+        : modalContextLabel === 'Slideshow'
+          ? slideshowImageSetRef.current.get(modalImage.id)
+          : activeSet?.id;
+    if (!setId) {
+      return;
+    }
+    const set = setsById.get(setId);
+    const isHidden = set?.hiddenImageIds?.includes(modalImage.id) ?? false;
+    triggerHiddenPulse(isHidden ? 'unhide' : 'hide');
+    void toggleHiddenImage(setId, modalImage.id);
+  }, [
+    activeSet,
+    modalContextLabel,
+    modalContextSetId,
+    modalImage,
+    setsById,
+    slideshowImageSetRef,
+    toggleHiddenImage,
+    triggerHiddenPulse,
   ]);
 
   const finalizeRotateProgress = useCallback(() => {
@@ -680,6 +764,10 @@ export function useModalViewer({
       }
       if (modalContextLabel === 'Favorites' && activeSet) {
         void appendFavorites({ suppressControls: options?.suppressControls });
+        return;
+      }
+      if (modalContextLabel === 'Hidden' && activeSet) {
+        void appendHidden({ suppressControls: options?.suppressControls });
         return;
       }
       if (modalContextLabel === 'Slideshow') {
@@ -832,6 +920,9 @@ export function useModalViewer({
       if (event.key.toLowerCase() === 'f') {
         toggleFavoriteFromModal();
       }
+      if (event.key.toLowerCase() === 'h') {
+        toggleHiddenFromModal();
+      }
       if (event.key.toLowerCase() === 'c') {
         if (modalContextLabel === 'Set') {
           if (modalHasHistory) {
@@ -842,6 +933,7 @@ export function useModalViewer({
         } else if (
           modalContextLabel === 'Favorites' ||
           modalContextLabel === 'Non favorites' ||
+          modalContextLabel === 'Hidden' ||
           modalContextLabel === 'Slideshow'
         ) {
           void openModalChronologicalContext();
@@ -872,6 +964,7 @@ export function useModalViewer({
     openModalChronologicalContext,
     restoreModalContext,
     toggleFavoriteFromModal,
+    toggleHiddenFromModal,
     viewerSort,
   ]);
 
@@ -882,6 +975,9 @@ export function useModalViewer({
       }
       if (modalFavoritePulseTimeout.current) {
         window.clearTimeout(modalFavoritePulseTimeout.current);
+      }
+      if (modalHiddenPulseTimeout.current) {
+        window.clearTimeout(modalHiddenPulseTimeout.current);
       }
       if (modalControlsTimeoutRef.current) {
         window.clearTimeout(modalControlsTimeoutRef.current);
@@ -934,10 +1030,12 @@ export function useModalViewer({
     isModalInfoOpen,
     viewerSort,
     modalIsFavorite,
+    modalIsHidden,
     modalIsLoading,
     modalLoadingCount,
     modalPulse,
     modalFavoritePulse,
+    modalHiddenPulse,
     modalIsRotating,
     modalRotateProgress,
     modalFullSrc,
@@ -958,6 +1056,7 @@ export function useModalViewer({
     modalTotalImagesKnown,
     totalImages,
     favoritesCount,
+    hiddenCount,
     nonFavoritesCount,
     canGoPrevModal,
     canGoNextModal,
@@ -979,6 +1078,7 @@ export function useModalViewer({
     onOpenChronologicalContext: openModalChronologicalContext,
     onRestoreModalContext: restoreModalContext,
     onToggleFavoriteFromModal: toggleFavoriteFromModal,
+    onToggleHiddenFromModal: toggleHiddenFromModal,
     onRotateModalImage: rotateModalImage,
     onPrevImage: goPrevImage,
     onNextImage: goNextImage,

@@ -22,6 +22,7 @@ export type SlideshowContextValue = {
   slideshowImageSetMap: Map<string, string>;
   setsById: Map<string, PoseSet>;
   onToggleFavoriteImage: (setId: string, imageId: string) => void;
+  onToggleHiddenImage: (setId: string, imageId: string) => void;
   thumbSize: number;
   onLoadMoreSlideshow: () => void | Promise<void>;
   slideshowPageSize: number;

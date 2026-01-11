@@ -27,30 +27,38 @@ export function SetViewerPage() {
     viewerQuickTags,
     onToggleActiveSetTag,
     favoriteIds,
+    hiddenIds,
     favoritesCount,
+    hiddenCount,
     nonFavoritesCount,
     allImagesCount,
     favoriteImages,
     nonFavoriteImages,
+    hiddenImages,
     activeImages,
     viewerIndexProgress,
     isLoadingFavorites,
     isLoadingNonFavorites,
+    isLoadingHidden,
     isLoadingImages,
     isLoadingMore,
     totalImagesKnown,
     nonFavoritesPendingExtra,
     favoritesPendingExtra,
+    hiddenPendingExtra,
     pendingExtra,
     remainingImages,
     onLoadMoreNonFavorites,
     onLoadAllNonFavorites,
     onLoadMoreFavorites,
     onLoadAllFavorites,
+    onLoadMoreHidden,
+    onLoadAllHidden,
     onLoadMoreImages,
     onLoadAllPreloaded,
     onEnsureImageInView,
     onToggleFavoriteImage,
+    onToggleHiddenImage,
     onSetThumbnail,
     onSetThumbnailPosition,
     onUpdateSetName,
@@ -219,10 +227,17 @@ export function SetViewerPage() {
     []
   );
   const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
+  const hiddenRemaining = Math.max(0, hiddenCount - hiddenImages.length);
   const favoriteAction = activeSet
     ? {
         isActive: (image: DriveImage) => favoriteIds.includes(image.id),
         onToggle: (image: DriveImage) => onToggleFavoriteImage(activeSet.id, image.id),
+      }
+    : undefined;
+  const hideAction = activeSet
+    ? {
+        isActive: (image: DriveImage) => hiddenIds.includes(image.id),
+        onToggle: (image: DriveImage) => onToggleHiddenImage(activeSet.id, image.id),
       }
     : undefined;
   const thumbnailAction = activeSet
@@ -274,7 +289,7 @@ export function SetViewerPage() {
                   aria-label="Favorite count"
                 >
                   <IconHeart size={14} />
-                  <span>{(activeSet.favoriteImageIds ?? []).length}</span>
+                  <span>{favoritesCount}</span>
                 </span>
               </div>
               <div className="viewer-title-stack">
@@ -417,6 +432,13 @@ export function SetViewerPage() {
               >
                 Non-Favorites{nonFavoritesCount !== undefined ? ` (${nonFavoritesCount})` : ''}
               </button>
+              <button
+                type="button"
+                className={`subtab ${setViewerTab === 'hidden' ? 'is-active' : ''}`}
+                onClick={() => onSetViewerTab('hidden')}
+              >
+                Hidden ({hiddenCount})
+              </button>
               <div className="subtabs-spacer" aria-hidden="true" />
               <div className="viewer-sort-toggle" role="group" aria-label="Image order">
                 <span className="muted">Order</span>
@@ -455,6 +477,7 @@ export function SetViewerPage() {
                     gridClassName="image-grid image-grid--zoom"
                     gridRef={sampleGridRef}
                     favoriteAction={favoriteAction}
+                    hideAction={hideAction}
                     thumbnailAction={thumbnailAction}
                     highlightedImageId={highlightedImageId}
                   />
@@ -490,6 +513,7 @@ export function SetViewerPage() {
                     modalLabel="Favorites"
                     gridClassName="image-grid image-grid--zoom image-grid--filled"
                     favoriteAction={favoriteAction}
+                    hideAction={hideAction}
                     thumbnailAction={thumbnailAction}
                     highlightedImageId={highlightedImageId}
                   />
@@ -508,6 +532,44 @@ export function SetViewerPage() {
                 />
               </div>
             ) : null}
+            {setViewerTab === 'hidden' ? (
+              <div className="preview">
+                {isLoadingHidden ? (
+                  <div className="stack">
+                    <p className="empty">Loading hidden…</p>
+                    {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+                  </div>
+                ) : viewerIndexProgress ? (
+                  <p className="muted">{viewerIndexProgress}</p>
+                ) : hiddenImages.length > 0 ? (
+                  <ImageGrid
+                    images={hiddenImages}
+                    isConnected={isConnected}
+                    thumbSize={thumbSize}
+                    alt={activeSet.name}
+                    modalLabel="Hidden"
+                    gridClassName="image-grid image-grid--zoom image-grid--filled"
+                    favoriteAction={favoriteAction}
+                    hideAction={hideAction}
+                    showHiddenAction
+                    thumbnailAction={thumbnailAction}
+                    highlightedImageId={highlightedImageId}
+                  />
+                ) : (
+                  <p className="empty">No hidden images yet.</p>
+                )}
+                <GridLoadButtons
+                  variant="hidden"
+                  isLoading={isLoadingHidden}
+                  currentCount={hiddenImages.length}
+                  pendingCount={hiddenPendingExtra}
+                  totalCount={hiddenCount}
+                  remainingCount={hiddenRemaining}
+                  onLoadMore={onLoadMoreHidden}
+                  onLoadAll={onLoadAllHidden}
+                />
+              </div>
+            ) : null}
             {setViewerTab === 'all' ? (
               <div className="stack">
                 <ImageGrid
@@ -519,6 +581,7 @@ export function SetViewerPage() {
                   gridClassName="image-grid image-grid--zoom"
                   gridRef={allGridRef}
                   favoriteAction={favoriteAction}
+                  hideAction={hideAction}
                   thumbnailAction={thumbnailAction}
                   highlightedImageId={highlightedImageId}
                 />

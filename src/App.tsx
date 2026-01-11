@@ -40,7 +40,7 @@ import {
   writeMetadataCache,
   writeMetadataDirtyFlag,
 } from './utils/cache';
-import { filterImagesByFavoriteStatus } from './utils/imageSampling';
+import { filterImagesByFavoriteStatus, filterImagesByHiddenStatus } from './utils/imageSampling';
 import { AppHeader } from './components/AppHeader';
 import { ToastStack } from './components/ToastStack';
 import { ScrollControls } from './components/ScrollControls';
@@ -175,7 +175,7 @@ export default function App() {
     angle: 90 | -90;
   }>(null);
   const [setViewerTab, setSetViewerTab] = useState<
-    'samples' | 'favorites' | 'nonfavorites' | 'all'
+    'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all'
   >('all');
   const [viewerSort, setViewerSort] = useLocalStorage<'random' | 'chronological'>(
     'poseviewer-viewer-sort',
@@ -203,6 +203,7 @@ export default function App() {
   >(new Map());
   const resetFavoritesRef = useRef<null | (() => void)>(null);
   const resetNonFavoritesRef = useRef<null | (() => void)>(null);
+  const resetHiddenRef = useRef<null | (() => void)>(null);
   const metadataSaveTimeoutRef = useRef<number | null>(null);
   const pendingSavePromiseRef = useRef<Promise<void> | null>(null);
   const pendingSaveResolveRef = useRef<(() => void) | null>(null);
@@ -852,16 +853,90 @@ export default function App() {
     const cached = readImageListCache(setId);
     let source = cached;
     if (!source) {
+      source = await resolveSetImages(set, true);
+    }
+    if (activeSet?.id === setId) {
+      updateFavoriteImagesFromSource(setId, source, next, set.hiddenImageIds ?? [], {
+        keepLength: true,
+      });
+    }
+    await handleUpdateSet(setId, { favoriteImageIds: next });
+  };
+
+  const toggleHiddenImage = async (setId: string, imageId: string) => {
+    const set = metadata.sets.find((item) => item.id === setId);
+    if (!set) {
+      return;
+    }
+    const current = set.hiddenImageIds ?? [];
+    const next = current.includes(imageId)
+      ? current.filter((id) => id !== imageId)
+      : [...current, imageId];
+    const cached = readImageListCache(setId);
+    let source = cached;
+    if (!source) {
       if (activeSet?.id === setId) {
         source = activeImages;
       } else {
         source = await resolveSetImages(set, true);
       }
     }
-    if (activeSet?.id === setId) {
-      updateFavoriteImagesFromSource(setId, source, next, { keepLength: true });
+    if (activeSet?.id === setId && source) {
+      updateFavoriteImagesFromSource(setId, source, set.favoriteImageIds ?? [], next, {
+        keepLength: true,
+      });
+      updateHiddenImagesFromSource(setId, source, set.favoriteImageIds ?? [], next, {
+        keepLength: true,
+      });
+      setSampleImages((currentImages) =>
+        filterImagesByHiddenStatus(currentImages, next, 'visible')
+      );
+      const hiddenSet = new Set(next);
+      const visible = filterImagesByHiddenStatus(source, next, 'visible');
+      let ordered = visible;
+      if (viewerSort === 'random') {
+        const cached = allImagesOrderRef.current.get(setId);
+        if (cached && cached.mode === 'random' && cached.seed === viewerSortSeed) {
+          const sourceIds = new Set(source.map((image) => image.id));
+          const hasMissing = cached.ordered.some((image) => !sourceIds.has(image.id));
+          if (hasMissing) {
+            const refreshed = shuffleItemsSeeded(source, `${viewerSortSeed}|${setId}`);
+            allImagesOrderRef.current.set(setId, {
+              mode: 'random',
+              ordered: refreshed,
+              seed: viewerSortSeed,
+            });
+            ordered = refreshed.filter((image) => !hiddenSet.has(image.id));
+          } else if (cached.ordered.length < source.length) {
+            const known = new Set(cached.ordered.map((image) => image.id));
+            const additions = source.filter((image) => !known.has(image.id));
+            const extended = cached.ordered.concat(
+              shuffleItemsSeeded(additions, `${viewerSortSeed}|${setId}|append`)
+            );
+            allImagesOrderRef.current.set(setId, {
+              mode: 'random',
+              ordered: extended,
+              seed: viewerSortSeed,
+            });
+            ordered = extended.filter((image) => !hiddenSet.has(image.id));
+          } else {
+            ordered = cached.ordered.filter((image) => !hiddenSet.has(image.id));
+          }
+        } else {
+          const seeded = shuffleItemsSeeded(source, `${viewerSortSeed}|${setId}`);
+          allImagesOrderRef.current.set(setId, {
+            mode: 'random',
+            ordered: seeded,
+            seed: viewerSortSeed,
+          });
+          ordered = seeded.filter((image) => !hiddenSet.has(image.id));
+        }
+      } else {
+        ordered = getOrderedAllImages(setId, visible);
+      }
+      setActiveImages(ordered.slice(0, imageLimit));
     }
-    await handleUpdateSet(setId, { favoriteImageIds: next });
+    await handleUpdateSet(setId, { hiddenImageIds: next });
   };
 
   const rotateImage = useCallback(async (fileId: string, angle: 90 | -90) => {
@@ -1330,21 +1405,28 @@ export default function App() {
     setFavoriteImages,
     nonFavoriteImages,
     setNonFavoriteImages,
+    hiddenImages,
+    setHiddenImages,
     isLoadingSample,
     isLoadingFavorites,
     isLoadingNonFavorites,
+    isLoadingHidden,
     samplePageSize,
     sampleGridRef,
     pickNext,
     updateFavoriteImagesFromSource,
+    updateHiddenImagesFromSource,
     handleLoadMoreSample,
     handleLoadAllSample,
     handleLoadMoreFavorites,
     handleLoadAllFavorites,
     handleLoadMoreNonFavorites,
     handleLoadAllNonFavorites,
+    handleLoadMoreHidden,
+    handleLoadAllHidden,
     handleResetFavorites,
     handleResetNonFavorites,
+    handleResetHidden,
   } = useSetViewerGrids({
     activeSet,
     isConnected,
@@ -1364,7 +1446,10 @@ export default function App() {
     resetNonFavoritesRef.current = () => {
       void handleResetNonFavorites();
     };
-  }, [handleResetFavorites, handleResetNonFavorites]);
+    resetHiddenRef.current = () => {
+      void handleResetHidden();
+    };
+  }, [handleResetFavorites, handleResetHidden, handleResetNonFavorites]);
 
   useEffect(() => {
     allImagesOrderRef.current.clear();
@@ -1382,6 +1467,10 @@ export default function App() {
     }
     if (setViewerTab === 'nonfavorites') {
       resetNonFavoritesRef.current?.();
+      return;
+    }
+    if (setViewerTab === 'hidden') {
+      resetHiddenRef.current?.();
     }
   }, [activeSet?.id, allPageSize, setViewerTab, viewerSort]);
 
@@ -1563,6 +1652,7 @@ export default function App() {
       const prebuilt = getPrebuiltIndexForSet(set);
       const cached = readImageListCache(set.id);
       const favoriteIds = set.favoriteImageIds ?? [];
+      const hiddenIds = set.hiddenImageIds ?? [];
       if (cached && cached.length >= limit) {
         if (favoriteIds.length > 0) {
           const cachedIds = new Set(cached.map((image) => image.id));
@@ -1571,15 +1661,25 @@ export default function App() {
             // Fall through to index load to ensure favorites are included.
           } else {
             setImageLoadStatus('Images: using local cache');
-            updateFavoriteImagesFromSource(set.id, cached, favoriteIds, { keepLength: true });
-            const ordered = getOrderedAllImages(set.id, cached);
+            updateFavoriteImagesFromSource(set.id, cached, favoriteIds, hiddenIds, {
+              keepLength: true,
+            });
+            updateHiddenImagesFromSource(set.id, cached, favoriteIds, hiddenIds, {
+              keepLength: true,
+            });
+            const visible = filterImagesByHiddenStatus(cached, hiddenIds, 'visible');
+            const ordered = getOrderedAllImages(set.id, visible);
             setActiveImages(ordered.slice(0, limit));
             return;
           }
         } else {
           setImageLoadStatus('Images: using local cache');
           setFavoriteImages([]);
-          const ordered = getOrderedAllImages(set.id, cached);
+          updateHiddenImagesFromSource(set.id, cached, favoriteIds, hiddenIds, {
+            keepLength: true,
+          });
+          const visible = filterImagesByHiddenStatus(cached, hiddenIds, 'visible');
+          const ordered = getOrderedAllImages(set.id, visible);
           setActiveImages(ordered.slice(0, limit));
           return;
         }
@@ -1593,8 +1693,14 @@ export default function App() {
         if (prebuilt.fileId && set.indexFileId !== prebuilt.fileId) {
           await handleUpdateSet(set.id, { indexFileId: prebuilt.fileId });
         }
-        updateFavoriteImagesFromSource(set.id, images, favoriteIds, { keepLength: true });
-        const ordered = getOrderedAllImages(set.id, images);
+        updateFavoriteImagesFromSource(set.id, images, favoriteIds, hiddenIds, {
+          keepLength: true,
+        });
+        updateHiddenImagesFromSource(set.id, images, favoriteIds, hiddenIds, {
+          keepLength: true,
+        });
+        const visible = filterImagesByHiddenStatus(images, hiddenIds, 'visible');
+        const ordered = getOrderedAllImages(set.id, visible);
         setActiveImages(ordered.slice(0, limit));
         return;
       }
@@ -1634,8 +1740,14 @@ export default function App() {
         if (index.fileId && set.indexFileId !== index.fileId) {
           await handleUpdateSet(set.id, { indexFileId: index.fileId });
         }
-        updateFavoriteImagesFromSource(set.id, images, favoriteIds, { keepLength: true });
-        const ordered = getOrderedAllImages(set.id, images);
+        updateFavoriteImagesFromSource(set.id, images, favoriteIds, hiddenIds, {
+          keepLength: true,
+        });
+        updateHiddenImagesFromSource(set.id, images, favoriteIds, hiddenIds, {
+          keepLength: true,
+        });
+        const visible = filterImagesByHiddenStatus(images, hiddenIds, 'visible');
+        const ordered = getOrderedAllImages(set.id, visible);
         setActiveImages(ordered.slice(0, limit));
         return;
       }
@@ -1811,11 +1923,20 @@ export default function App() {
         set.id,
         refreshed,
         updatedSet.favoriteImageIds ?? [],
+        updatedSet.hiddenImageIds ?? [],
         { keepLength: true }
       );
-      setSampleImages(pickNext.sample(set.id, refreshed, samplePageSize));
+      updateHiddenImagesFromSource(
+        set.id,
+        refreshed,
+        updatedSet.favoriteImageIds ?? [],
+        updatedSet.hiddenImageIds ?? [],
+        { keepLength: true }
+      );
+      const visible = filterImagesByHiddenStatus(refreshed, updatedSet.hiddenImageIds ?? [], 'visible');
+      setSampleImages(pickNext.sample(set.id, visible, samplePageSize));
       if (activeImages.length > 0) {
-        const ordered = getOrderedAllImages(set.id, refreshed);
+        const ordered = getOrderedAllImages(set.id, visible);
         setActiveImages(ordered.slice(0, imageLimit));
       }
     } catch (refreshError) {
@@ -1849,10 +1970,17 @@ export default function App() {
     setImageLoadStatus('Images: loading preloaded list');
     try {
       const favoriteIds = activeSet.favoriteImageIds ?? [];
+      const hiddenIds = activeSet.hiddenImageIds ?? [];
       const cached = readImageListCache(activeSet.id);
       if (cached) {
-        updateFavoriteImagesFromSource(activeSet.id, cached, favoriteIds, { keepLength: true });
-        const ordered = getOrderedAllImages(activeSet.id, cached);
+        updateFavoriteImagesFromSource(activeSet.id, cached, favoriteIds, hiddenIds, {
+          keepLength: true,
+        });
+        updateHiddenImagesFromSource(activeSet.id, cached, favoriteIds, hiddenIds, {
+          keepLength: true,
+        });
+        const visible = filterImagesByHiddenStatus(cached, hiddenIds, 'visible');
+        const ordered = getOrderedAllImages(activeSet.id, visible);
         setActiveImages(ordered);
         setImageLimit(ordered.length);
         return;
@@ -1881,8 +2009,14 @@ export default function App() {
         if (!writeImageListCache(activeSet.id, images)) {
           setError('Image cache full. Cleared cache and continued without saving.');
         }
-        updateFavoriteImagesFromSource(activeSet.id, images, favoriteIds, { keepLength: true });
-        const ordered = getOrderedAllImages(activeSet.id, images);
+        updateFavoriteImagesFromSource(activeSet.id, images, favoriteIds, hiddenIds, {
+          keepLength: true,
+        });
+        updateHiddenImagesFromSource(activeSet.id, images, favoriteIds, hiddenIds, {
+          keepLength: true,
+        });
+        const visible = filterImagesByHiddenStatus(images, hiddenIds, 'visible');
+        const ordered = getOrderedAllImages(activeSet.id, visible);
         setActiveImages(ordered);
         setImageLimit(ordered.length);
         if (activeSet.indexFileId !== index.fileId) {
@@ -1914,7 +2048,8 @@ export default function App() {
       if (!images || images.length === 0) {
         return;
       }
-      const index = images.findIndex((image) => image.id === imageId);
+      const visible = filterImagesByHiddenStatus(images, activeSet.hiddenImageIds ?? [], 'visible');
+      const index = visible.findIndex((image) => image.id === imageId);
       if (index < 0) {
         return;
       }
@@ -1934,26 +2069,34 @@ export default function App() {
   );
 
   const favoriteIds = activeSet?.favoriteImageIds ?? [];
+  const hiddenIds = activeSet?.hiddenImageIds ?? [];
+  const hiddenSet = new Set(hiddenIds);
   const cachedCount = activeSet ? readImageListCache(activeSet.id)?.length : undefined;
-  const totalImagesKnown = activeSet?.imageCount ?? cachedCount;
-  const totalImages = totalImagesKnown ?? activeImages.length;
-  const remainingImages =
-    totalImagesKnown !== undefined
-      ? Math.max(0, totalImagesKnown - activeImages.length)
+  const totalImagesKnownRaw = activeSet?.imageCount ?? cachedCount;
+  const totalVisibleKnown =
+    totalImagesKnownRaw !== undefined
+      ? Math.max(0, totalImagesKnownRaw - hiddenIds.length)
       : undefined;
+  const totalImagesKnown = totalVisibleKnown;
+  const totalImages = totalVisibleKnown ?? activeImages.length;
+  const remainingImages =
+    totalVisibleKnown !== undefined ? Math.max(0, totalVisibleKnown - activeImages.length) : undefined;
   const pendingExtra =
-    totalImagesKnown !== undefined
+    totalVisibleKnown !== undefined
       ? Math.max(0, Math.min(allPageSize, remainingImages))
       : allPageSize;
-  const favoritesCount = activeSet?.favoriteImageIds?.length ?? 0;
-  const allImagesCount = totalImagesKnown ?? activeImages.length;
+  const favoritesCount = favoriteIds.filter((id) => !hiddenSet.has(id)).length;
+  const hiddenCount = hiddenIds.length;
+  const allImagesCount = totalVisibleKnown ?? activeImages.length;
   const nonFavoritesCount =
-    totalImagesKnown !== undefined ? Math.max(0, totalImagesKnown - favoritesCount) : undefined;
+    totalVisibleKnown !== undefined
+      ? Math.max(0, totalVisibleKnown - favoritesCount)
+      : undefined;
   const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
   const favoritesPendingExtra = Math.max(0, Math.min(samplePageSize, favoritesRemaining));
   const sampleRemaining =
-    totalImagesKnown !== undefined
-      ? Math.max(0, totalImagesKnown - sampleImages.length)
+    totalVisibleKnown !== undefined
+      ? Math.max(0, totalVisibleKnown - sampleImages.length)
       : undefined;
   const samplePendingExtra =
     sampleRemaining !== undefined
@@ -1967,10 +2110,15 @@ export default function App() {
     nonFavoritesRemaining !== undefined
       ? Math.max(0, Math.min(samplePageSize, nonFavoritesRemaining))
       : samplePageSize;
+  const hiddenRemaining = Math.max(0, hiddenCount - hiddenImages.length);
+  const hiddenPendingExtra = Math.max(0, Math.min(samplePageSize, hiddenRemaining));
 
-  const handleSetViewerTab = useCallback((tab: 'samples' | 'favorites' | 'nonfavorites' | 'all') => {
-    setSetViewerTab(tab);
-  }, []);
+  const handleSetViewerTab = useCallback(
+    (tab: 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all') => {
+      setSetViewerTab(tab);
+    },
+    []
+  );
 
   const handleViewerSortChange = useCallback(
     (value: 'random' | 'chronological') => {
@@ -2003,23 +2151,28 @@ export default function App() {
     viewerQuickTags,
     onToggleActiveSetTag: toggleActiveSetTag,
     favoriteIds,
+    hiddenIds,
     favoritesCount,
+    hiddenCount,
     nonFavoritesCount,
     allImagesCount,
     sampleImages,
     favoriteImages,
     nonFavoriteImages,
+    hiddenImages,
     activeImages,
     viewerIndexProgress,
     isLoadingSample,
     isLoadingFavorites,
     isLoadingNonFavorites,
+    isLoadingHidden,
     isLoadingImages,
     isLoadingMore,
     totalImagesKnown,
     samplePendingExtra,
     nonFavoritesPendingExtra,
     favoritesPendingExtra,
+    hiddenPendingExtra,
     pendingExtra,
     remainingImages,
     onLoadMoreSample: handleLoadMoreSample,
@@ -2028,10 +2181,13 @@ export default function App() {
     onLoadAllNonFavorites: handleLoadAllNonFavorites,
     onLoadMoreFavorites: handleLoadMoreFavorites,
     onLoadAllFavorites: handleLoadAllFavorites,
+    onLoadMoreHidden: handleLoadMoreHidden,
+    onLoadAllHidden: handleLoadAllHidden,
     onLoadMoreImages: handleLoadMoreImages,
     onLoadAllPreloaded: handleLoadAllPreloaded,
     onEnsureImageInView: handleEnsureImageInView,
     onToggleFavoriteImage: toggleFavoriteImage,
+    onToggleHiddenImage: toggleHiddenImage,
     onSetThumbnail: handleSetThumbnail,
     onSetThumbnailPosition: handleSetThumbnailPosition,
     onUpdateSetName: handleUpdateSetName,
@@ -2059,14 +2215,17 @@ export default function App() {
     setFavoriteImages,
     setSampleImages,
     setNonFavoriteImages,
+    setHiddenImages,
     readImageListCache,
     filterImagesByFavoriteStatus,
+    filterImagesByHiddenStatus,
     pickNext,
     resolveSetImages,
     updateFavoriteImagesFromSource,
     handleLoadMoreImages,
     isLoadingMore,
     toggleFavoriteImage,
+    toggleHiddenImage,
     loadSlideshowBatch,
     slideshowImagesRef,
     slideshowImageSetRef,
@@ -2097,6 +2256,7 @@ export default function App() {
     slideshowImageSetMap: slideshowImageSetRef.current,
     setsById,
     onToggleFavoriteImage: toggleFavoriteImage,
+    onToggleHiddenImage: toggleHiddenImage,
     thumbSize: THUMB_SIZE,
     onLoadMoreSlideshow: handleLoadMoreSlideshow,
     slideshowPageSize,

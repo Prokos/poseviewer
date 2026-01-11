@@ -729,6 +729,12 @@ button.ghost:hover:not(:disabled) {
   object-position: center var(--thumb-pos, 50%);
   display: block;
   transition: object-position 120ms ease-out;
+  opacity: 0;
+}
+
+.thumb.is-loaded img {
+  opacity: 1;
+  transition: object-position 120ms ease-out, opacity 180ms ease-out;
 }
 
 .thumb--empty {
@@ -766,6 +772,16 @@ button.ghost:hover:not(:disabled) {
   transform: scale(1);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   z-index: 1;
+}
+
+.image-tile.is-scroll-target .image-button {
+  outline: 2px solid rgba(214, 193, 124, 0.9);
+  border-radius: 4px;
+  box-shadow: 0 0 0 6px rgba(214, 193, 124, 0.2);
+}
+
+.image-tile.is-scroll-target {
+  animation: target-pulse 1.6s ease-in-out;
 }
 
 .image-grid--zoom .image-tile:hover {
@@ -1200,6 +1216,24 @@ button.ghost:hover:not(:disabled) {
   z-index: 2;
 }
 
+.modal-controls-bottom-right {
+  position: absolute;
+  right: calc(14px + var(--modal-safe-right));
+  bottom: calc(16px + var(--modal-safe-bottom));
+  display: flex;
+  gap: 8px;
+  z-index: 2;
+}
+
+.modal-controls-bottom-left {
+  position: absolute;
+  left: calc(14px + var(--modal-safe-left));
+  bottom: calc(16px + var(--modal-safe-bottom));
+  display: flex;
+  gap: 8px;
+  z-index: 2;
+}
+
 .modal-timer {
   position: relative;
 }
@@ -1216,6 +1250,25 @@ button.ghost:hover:not(:disabled) {
   transition: opacity 0.5s ease;
   display: inline-flex;
   align-items: center;
+}
+
+.modal-context,
+.modal-timer-button,
+.modal-info-button,
+.modal-close,
+.modal-favorite {
+  position: relative;
+}
+
+.modal-context::before,
+.modal-timer-button::before,
+.modal-info-button::before,
+.modal-close::before,
+.modal-favorite::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: 999px;
 }
 
 .modal-context {
@@ -1246,12 +1299,74 @@ button.ghost:hover:not(:disabled) {
   place-items: center;
 }
 
+.modal-info {
+  position: relative;
+}
+
+.modal-info-button {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.7);
+  opacity: 0.85;
+  transition: opacity 0.5s ease;
+  display: grid;
+  place-items: center;
+}
+
+.modal-info-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 220px;
+  max-width: 280px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(17, 15, 12, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: grid;
+  gap: 10px;
+  z-index: 3;
+  backdrop-filter: blur(8px);
+}
+
+.modal-info-row {
+  display: grid;
+  gap: 4px;
+}
+
+.modal-info-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.modal-info-row a {
+  color: rgba(255, 255, 255, 0.9);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.modal-info-row a:hover {
+  color: rgba(255, 255, 255, 1);
+  text-decoration: underline;
+}
+
 .modal-context:hover {
   border-color: rgba(255, 255, 255, 0.9);
   color: rgba(255, 255, 255, 0.9);
 }
 
 .modal-timer-button:hover {
+  border-color: rgba(255, 255, 255, 0.9);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.modal-info-button:hover {
   border-color: rgba(255, 255, 255, 0.9);
   color: rgba(255, 255, 255, 0.9);
 }
@@ -1364,7 +1479,9 @@ button.ghost:hover:not(:disabled) {
 
 .modal-content.is-controls-hidden .modal-context,
 .modal-content.is-controls-hidden .modal-timer-button,
-.modal-content.is-controls-hidden .modal-timer-menu {
+.modal-content.is-controls-hidden .modal-timer-menu,
+.modal-content.is-controls-hidden .modal-info-button,
+.modal-content.is-controls-hidden .modal-info-panel {
   opacity: 0;
   pointer-events: none;
 }
@@ -1375,7 +1492,7 @@ button.ghost:hover:not(:disabled) {
 
 .modal-timer-menu {
   position: absolute;
-  top: calc(100% + 8px);
+  bottom: calc(100% + 8px);
   right: 0;
   min-width: 120px;
   padding: 8px;
@@ -1446,6 +1563,18 @@ button.ghost:hover:not(:disabled) {
 
 .modal-nav--next {
   right: var(--modal-safe-right);
+}
+
+@keyframes target-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(214, 193, 124, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(214, 193, 124, 0.12);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(214, 193, 124, 0);
+  }
 }
 
 .modal-swipe-close {

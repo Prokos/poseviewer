@@ -1713,6 +1713,40 @@ export default function App() {
     }
   };
 
+  const handleEnsureImageInView = useCallback(
+    async (imageId: string) => {
+      if (!activeSet || !isConnected) {
+        return;
+      }
+      if (viewerSort !== 'chronological') {
+        return;
+      }
+      let images = readImageListCache(activeSet.id);
+      if (!images || images.length === 0) {
+        images = await resolveSetImages(activeSet, true, { suppressProgress: true });
+      }
+      if (!images || images.length === 0) {
+        return;
+      }
+      const index = images.findIndex((image) => image.id === imageId);
+      if (index < 0) {
+        return;
+      }
+      const nextLimit = Math.max(
+        allPageSize,
+        Math.ceil((index + 1) / allPageSize) * allPageSize
+      );
+      const alreadyLoaded =
+        activeImages.length >= nextLimit &&
+        activeImages.some((image) => image.id === imageId);
+      if (!alreadyLoaded) {
+        setImageLimit(nextLimit);
+        await loadSetImages(activeSet, nextLimit, false);
+      }
+    },
+    [activeImages, activeSet, allPageSize, isConnected, resolveSetImages, viewerSort, loadSetImages]
+  );
+
   const favoriteIds = activeSet?.favoriteImageIds ?? [];
   const cachedCount = activeSet ? readImageListCache(activeSet.id)?.length : undefined;
   const totalImagesKnown = activeSet?.imageCount ?? cachedCount;
@@ -1810,6 +1844,7 @@ export default function App() {
     onLoadAllFavorites: handleLoadAllFavorites,
     onLoadMoreImages: handleLoadMoreImages,
     onLoadAllPreloaded: handleLoadAllPreloaded,
+    onEnsureImageInView: handleEnsureImageInView,
     onToggleFavoriteImage: toggleFavoriteImage,
     onSetThumbnail: handleSetThumbnail,
     onSetThumbnailPosition: handleSetThumbnailPosition,

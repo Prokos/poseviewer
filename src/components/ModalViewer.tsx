@@ -4,11 +4,13 @@ import {
   IconClock,
   IconHeart,
   IconHeartFilled,
+  IconInfoCircle,
   IconLoader2,
   IconRefresh,
   IconTimeline,
   IconX,
 } from '@tabler/icons-react';
+import { useEffect } from 'react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
 import { useModalState } from '../features/modal/ModalContext';
 
@@ -19,6 +21,8 @@ export function ModalViewer() {
     modalIndex,
     modalContextLabel,
     modalSetId,
+    modalSetName,
+    isModalInfoOpen,
     viewerSort,
     modalIsFavorite,
     modalIsLoading,
@@ -59,6 +63,8 @@ export function ModalViewer() {
     onSelectModalTimer,
     onResetModalTimer,
     onToggleTimerMenu,
+    onToggleInfoMenu,
+    onCloseInfoMenu,
     onOpenChronologicalContext,
     onRestoreModalContext,
     onToggleFavoriteFromModal,
@@ -70,10 +76,18 @@ export function ModalViewer() {
   if (!modalImage) {
     return null;
   }
+  useEffect(() => {
+    onCloseInfoMenu();
+  }, [modalImage.id, onCloseInfoMenu]);
   const showLoading = modalLoadingCount > 0;
   const loadingLabel = `Loading ${modalLoadingCount} image${
     modalLoadingCount === 1 ? '' : 's'
   }`;
+  const driveFileUrl = `https://drive.google.com/file/d/${encodeURIComponent(
+    modalImage.id
+  )}/view`;
+  const setLinkHref =
+    modalSetId ? `/set/${encodeURIComponent(modalSetId)}` : '';
 
   return (
     <div className="modal" onClick={onCloseModal}>
@@ -92,6 +106,52 @@ export function ModalViewer() {
         onTouchCancelCapture={onModalTouchEnd}
       >
         <div className="modal-controls-right">
+          <button type="button" className="modal-close" onClick={onCloseModal} aria-label="Close">
+            <IconX size={18} />
+          </button>
+        </div>
+        <div className="modal-controls-bottom-left">
+          <div className="modal-info">
+            <button
+              type="button"
+              className="modal-info-button"
+              onClick={onToggleInfoMenu}
+              aria-label="Image info"
+              aria-pressed={isModalInfoOpen}
+            >
+              <IconInfoCircle size={18} />
+            </button>
+            {isModalInfoOpen ? (
+              <div className="modal-info-panel">
+                <div className="modal-info-row">
+                  <span className="modal-info-label">Filename</span>
+                  <a href={driveFileUrl} target="_blank" rel="noreferrer">
+                    {modalImage.name}
+                  </a>
+                </div>
+                <div className="modal-info-row">
+                  <span className="modal-info-label">Set</span>
+                  {modalSetId && modalSetName ? (
+                    <a
+                      href={setLinkHref}
+                      onClick={() => {
+                        sessionStorage.setItem(
+                          'poseviewer-scroll-target',
+                          JSON.stringify({ setId: modalSetId, imageId: modalImage.id })
+                        );
+                      }}
+                    >
+                      {modalSetName}
+                    </a>
+                  ) : (
+                    <span className="muted">Unavailable</span>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div className="modal-controls-bottom-right">
           {modalHasHistory && modalContextLabel === 'Set' ? (
             <button
               type="button"
@@ -150,9 +210,6 @@ export function ModalViewer() {
               </div>
             ) : null}
           </div>
-          <button type="button" className="modal-close" onClick={onCloseModal} aria-label="Close">
-            <IconX size={18} />
-          </button>
         </div>
         {modalSetId ? (
           <button

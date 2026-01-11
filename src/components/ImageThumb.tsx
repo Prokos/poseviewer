@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MutableRefObject, PointerEventHandler } from 'react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
 
@@ -9,6 +9,7 @@ type ImageThumbProps = {
   size: number;
   thumbPos?: number;
   hoverScroll?: boolean;
+  eager?: boolean;
   containerRef?: MutableRefObject<HTMLDivElement | null>;
   onPointerDown?: PointerEventHandler<HTMLDivElement>;
   onPointerMove?: PointerEventHandler<HTMLDivElement>;
@@ -23,6 +24,7 @@ export function ImageThumb({
   size,
   thumbPos,
   hoverScroll = true,
+  eager = false,
   containerRef,
   onPointerDown,
   onPointerMove,
@@ -30,14 +32,65 @@ export function ImageThumb({
   onPointerCancel,
 }: ImageThumbProps) {
   const localRef = useRef<HTMLDivElement | null>(null);
+  const [observerNode, setObserverNode] = useState<HTMLDivElement | null>(null);
+  const [isInView, setIsInView] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [hasError, setHasError] = useState(false);
   const resolvedRef = containerRef ?? localRef;
   const resolvedPos = thumbPos ?? 50;
   const setRef = (node: HTMLDivElement | null) => {
     localRef.current = node;
+    setObserverNode(node);
     if (containerRef) {
       containerRef.current = node;
     }
   };
+
+  useEffect(() => {
+    if (eager) {
+      setIsInView(true);
+      setIsLoaded(false);
+      setHasError(false);
+      return;
+    }
+    setIsInView(false);
+    setIsLoaded(false);
+    setHasError(false);
+  }, [eager, fileId]);
+
+  useEffect(() => {
+    if (eager || isInView) {
+      return;
+    }
+    const node = observerNode;
+    if (!node) {
+      return;
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      setIsInView(true);
+      return;
+    }
+    const margin = Math.max(0, Math.round(window.innerHeight * 0.33));
+    try {
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              setIsInView(true);
+              observer.disconnect();
+              break;
+            }
+          }
+        },
+        { rootMargin: `${margin}px 0px`, threshold: 0.01 }
+      );
+      observer.observe(node);
+      return () => observer.disconnect();
+    } catch {
+      setIsInView(true);
+      return;
+    }
+  }, [eager, isInView, observerNode]);
   if (!fileId) {
     return <div className="thumb thumb--empty">No thumbnail</div>;
   }
@@ -46,9 +99,13 @@ export function ImageThumb({
     return <div className="thumb thumb--empty">Connect to load</div>;
   }
 
+  const shouldLoad = eager || isInView;
+
   return (
     <div
-      className={`thumb`}
+      className={`thumb${isLoaded && !hasError ? ' is-loaded' : ''}${
+        hasError ? ' is-error' : ''
+      }`}
       ref={setRef}
       style={{ ['--thumb-pos' as string]: `${resolvedPos}%` }}
       onDragStart={(event) => event.preventDefault()}
@@ -88,13 +145,17 @@ export function ImageThumb({
           : undefined
       }
     >
-      <img
-        src={createProxyThumbUrl(fileId, size)}
-        alt={alt}
-        loading="lazy"
-        decoding="async"
-        draggable={false}
-      />
+      {shouldLoad && !hasError ? (
+        <img
+          src={createProxyThumbUrl(fileId, size)}
+          alt={alt}
+          loading={eager ? 'eager' : 'lazy'}
+          decoding="async"
+          draggable={false}
+          onLoad={() => setIsLoaded(true)}
+          onError={() => setHasError(true)}
+        />
+      ) : null}
     </div>
   );
 }

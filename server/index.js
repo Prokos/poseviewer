@@ -37,6 +37,14 @@ const MEDIA_TIMEOUT_MS = Number(process.env.MEDIA_TIMEOUT_MS ?? 20000);
 await fs.mkdir(THUMB_CACHE_DIR, { recursive: true });
 await fs.mkdir(MEDIA_CACHE_DIR, { recursive: true });
 
+function logServerError(req, message, error) {
+  const details =
+    error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { error };
+  console.error(`[server 500] ${req.method} ${req.originalUrl} - ${message}`, details);
+}
+
 async function pruneCacheDir(dir, dataExt, maxBytes) {
   let entries = [];
   let totalBytes = 0;
@@ -410,6 +418,7 @@ app.get('/api/thumb/:fileId', async (req, res) => {
     if (error instanceof Error && error.name === 'AbortError') {
       return;
     }
+    logServerError(req, 'thumb handler failed', error);
     res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
   } finally {
     thumbSemaphore.release();
@@ -504,6 +513,7 @@ app.get('/api/media/:fileId', async (req, res) => {
     if (error instanceof Error && error.name === 'AbortError') {
       return;
     }
+    logServerError(req, 'media handler failed', error);
     res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
   } finally {
     mediaSemaphore.release();
@@ -514,6 +524,7 @@ app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/auth/start', (req, res) => {
   if (!CLIENT_ID || !CLIENT_SECRET) {
+    logServerError(req, 'missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET');
     res.status(500).send('Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET.');
     return;
   }
@@ -544,6 +555,7 @@ app.get('/api/auth/callback', async (req, res) => {
   }
   oauthState.delete(state);
   if (!CLIENT_ID || !CLIENT_SECRET) {
+    logServerError(req, 'missing OAuth configuration');
     res.status(500).send('Missing OAuth configuration.');
     return;
   }
@@ -564,6 +576,7 @@ app.get('/api/auth/callback', async (req, res) => {
     });
     if (!response.ok) {
       const text = await response.text();
+      logServerError(req, 'OAuth token exchange failed');
       res.status(500).send(text);
       return;
     }
@@ -578,6 +591,7 @@ app.get('/api/auth/callback', async (req, res) => {
       '<html><body><h2>Pose Viewer connected.</h2><p>You can close this window.</p></body></html>'
     );
   } catch (error) {
+    logServerError(req, 'auth callback failed', error);
     res.status(500).send((error instanceof Error && error.message) || 'Unknown error');
   }
 });

@@ -81,6 +81,8 @@ export type ModalViewerState = {
   modalContextLabel: string;
   modalContextSetId: string | null;
   modalSetId: string | null;
+  modalSetName: string | null;
+  isModalInfoOpen: boolean;
   viewerSort: 'random' | 'chronological';
   modalIsFavorite: boolean;
   modalIsLoading: boolean;
@@ -121,6 +123,8 @@ export type ModalViewerState = {
   onSelectModalTimer: (value: number) => void;
   onResetModalTimer: () => void;
   onToggleTimerMenu: () => void;
+  onToggleInfoMenu: () => void;
+  onCloseInfoMenu: () => void;
   onOpenChronologicalContext: () => void;
   onRestoreModalContext: () => void;
   onToggleFavoriteFromModal: () => void;
@@ -169,6 +173,7 @@ export function useModalViewer({
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
   const [modalControlsVisible, setModalControlsVisible] = useState(true);
   const [modalShake, setModalShake] = useState(false);
+  const [isModalInfoOpen, setIsModalInfoOpen] = useState(false);
 
   const modalPendingAdvanceRef = useRef(false);
   const modalItemsLengthRef = useRef(0);
@@ -265,7 +270,7 @@ export function useModalViewer({
 
   const scheduleModalControlsHide = useCallback(
     (force = false) => {
-      if (!force && (modalTimerMs > 0 || isModalTimerOpen)) {
+      if (!force && (modalTimerMs > 0 || isModalTimerOpen || isModalInfoOpen)) {
         return;
       }
       setModalControlsVisible(true);
@@ -276,7 +281,7 @@ export function useModalViewer({
         setModalControlsVisible(false);
       }, 2000);
     },
-    [isModalTimerOpen, modalTimerMs]
+    [isModalInfoOpen, isModalTimerOpen, modalTimerMs]
   );
 
   useEffect(() => {
@@ -291,6 +296,26 @@ export function useModalViewer({
     }
     scheduleModalTimerResume();
   }, [isModalTimerOpen, pauseModalTimer, scheduleModalTimerResume]);
+
+  useEffect(() => {
+    if (!isModalInfoOpen) {
+      return;
+    }
+    if (modalControlsTimeoutRef.current) {
+      window.clearTimeout(modalControlsTimeoutRef.current);
+      modalControlsTimeoutRef.current = null;
+    }
+    setModalControlsVisible(true);
+  }, [isModalInfoOpen]);
+
+  const closeInfoMenu = useCallback(() => {
+    setIsModalInfoOpen(false);
+  }, []);
+
+  const toggleInfoMenu = useCallback(() => {
+    setIsModalInfoOpen((current) => !current);
+    scheduleModalControlsHide(true);
+  }, [scheduleModalControlsHide]);
 
   const requestViewerFullscreen = () => {
     if (document.fullscreenElement) {
@@ -488,6 +513,7 @@ export function useModalViewer({
       if (shouldIgnoreFullscreen) {
         ignoreNextFullscreenRef.current = true;
       }
+      setIsModalInfoOpen(false);
       closeModal();
       if (modalHistoryEntryRef.current && source !== 'popstate') {
         ignoreNextPopRef.current = true;
@@ -814,6 +840,8 @@ export function useModalViewer({
     modalContextLabel,
     modalContextSetId,
     modalSetId,
+    modalSetName: modalSet?.name ?? null,
+    isModalInfoOpen,
     viewerSort,
     modalIsFavorite,
     modalIsLoading,
@@ -854,6 +882,8 @@ export function useModalViewer({
     onSelectModalTimer,
     onResetModalTimer,
     onToggleTimerMenu,
+    onToggleInfoMenu: toggleInfoMenu,
+    onCloseInfoMenu: closeInfoMenu,
     onOpenChronologicalContext: openModalChronologicalContext,
     onRestoreModalContext: restoreModalContext,
     onToggleFavoriteFromModal: toggleFavoriteFromModal,

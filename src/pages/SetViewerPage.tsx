@@ -6,6 +6,8 @@ import { ImageGrid } from '../components/ImageGrid';
 import { GridLoadButtons } from '../components/GridLoadButtons';
 import { useSetViewer } from '../features/setViewer/SetViewerContext';
 
+const SCROLL_TARGET_KEY = 'poseviewer-scroll-target';
+
 export function SetViewerPage() {
   const {
     activeSet,
@@ -41,6 +43,7 @@ export function SetViewerPage() {
     onLoadAllFavorites,
     onLoadMoreImages,
     onLoadAllPreloaded,
+    onEnsureImageInView,
     onToggleFavoriteImage,
     onSetThumbnail,
     onSetThumbnailPosition,
@@ -56,12 +59,83 @@ export function SetViewerPage() {
   const [thumbPos, setThumbPos] = useState(activeSet?.thumbnailPos ?? 50);
   const thumbPosRef = useRef(thumbPos);
   const isDraggingRef = useRef(false);
+  const scrollTargetRef = useRef<{ setId: string; imageId: string } | null>(null);
+  const hasScrolledRef = useRef(false);
+  const [highlightedImageId, setHighlightedImageId] = useState<string | null>(null);
 
   useEffect(() => {
     const nextPos = activeSet?.thumbnailPos ?? 50;
     setThumbPos(nextPos);
     thumbPosRef.current = nextPos;
   }, [activeSet?.id, activeSet?.thumbnailFileId, activeSet?.thumbnailPos]);
+
+  useEffect(() => {
+    hasScrolledRef.current = false;
+    setHighlightedImageId(null);
+  }, [activeSet?.id]);
+
+  useEffect(() => {
+    if (!scrollTargetRef.current) {
+      const raw = sessionStorage.getItem(SCROLL_TARGET_KEY);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as { setId?: string; imageId?: string };
+          if (parsed?.setId && parsed?.imageId) {
+            scrollTargetRef.current = { setId: parsed.setId, imageId: parsed.imageId };
+          }
+        } catch {
+          // Ignore malformed storage entries.
+        }
+      }
+    }
+    const target = scrollTargetRef.current;
+    if (!target || !activeSet || activeSet.id !== target.setId) {
+      return;
+    }
+    if (setViewerTab !== 'all') {
+      onSetViewerTab('all');
+      return;
+    }
+    if (viewerSort !== 'chronological') {
+      onViewerSortChange('chronological');
+      return;
+    }
+    if (hasScrolledRef.current) {
+      return;
+    }
+    if (!isLoadingImages && !isLoadingMore) {
+      void onEnsureImageInView(target.imageId);
+    }
+    const selector = `[data-image-id="${CSS.escape(target.imageId)}"]`;
+    const element = document.querySelector(selector);
+    if (element instanceof HTMLElement) {
+      element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      setHighlightedImageId(target.imageId);
+      hasScrolledRef.current = true;
+      scrollTargetRef.current = null;
+      sessionStorage.removeItem(SCROLL_TARGET_KEY);
+    }
+  }, [
+    activeImages,
+    activeSet,
+    isLoadingImages,
+    isLoadingMore,
+    onEnsureImageInView,
+    onSetViewerTab,
+    onViewerSortChange,
+    setViewerTab,
+    viewerSort,
+  ]);
+
+  useEffect(() => {
+    if (!highlightedImageId) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setHighlightedImageId(null);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [highlightedImageId]);
 
   const computeThumbPos = useCallback((clientY: number) => {
     const bounds = thumbRef.current?.getBoundingClientRect();
@@ -165,6 +239,7 @@ export function SetViewerPage() {
                     size={viewerThumbSize}
                     thumbPos={thumbPos}
                     hoverScroll={false}
+                    eager
                     containerRef={thumbRef}
                     onPointerDown={handleThumbPointerDown}
                     onPointerMove={handleThumbPointerMove}
@@ -346,6 +421,7 @@ export function SetViewerPage() {
                     gridRef={sampleGridRef}
                     favoriteAction={favoriteAction}
                     thumbnailAction={thumbnailAction}
+                    highlightedImageId={highlightedImageId}
                   />
                 ) : (
                   <p className="empty">No non-favorites yet.</p>
@@ -380,6 +456,7 @@ export function SetViewerPage() {
                     gridClassName="image-grid image-grid--zoom image-grid--filled"
                     favoriteAction={favoriteAction}
                     thumbnailAction={thumbnailAction}
+                    highlightedImageId={highlightedImageId}
                   />
                 ) : (
                   <p className="empty">No favorites yet.</p>
@@ -408,6 +485,7 @@ export function SetViewerPage() {
                   gridRef={allGridRef}
                   favoriteAction={favoriteAction}
                   thumbnailAction={thumbnailAction}
+                  highlightedImageId={highlightedImageId}
                 />
                 {!isLoadingImages && activeImages.length === 0 ? (
                   totalImagesKnown === 0 ? (

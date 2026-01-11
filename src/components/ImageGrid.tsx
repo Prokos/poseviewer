@@ -26,6 +26,7 @@ type ImageGridProps = {
   gridRef?: RefObject<HTMLDivElement>;
   favoriteAction?: FavoriteAction;
   thumbnailAction?: ThumbnailAction;
+  highlightedImageId?: string | null;
 };
 
 export function ImageGrid({
@@ -38,6 +39,7 @@ export function ImageGrid({
   gridRef,
   favoriteAction,
   thumbnailAction,
+  highlightedImageId,
 }: ImageGridProps) {
   const { openModal } = useModalActions();
   const resolveAlt = (image: DriveImage) => (typeof alt === 'string' ? alt : alt(image));
@@ -49,8 +51,13 @@ export function ImageGrid({
         const canToggleFavorite = favoriteAction ? !favoriteAction.disabled?.(image) : false;
         const isThumbnail = thumbnailAction?.isActive(image) ?? false;
         const canSetThumbnail = thumbnailAction ? !thumbnailAction.disabled?.(image) : false;
+        const isHighlighted = highlightedImageId === image.id;
         return (
-          <div key={image.id} className="image-tile">
+          <div
+            key={image.id}
+            className={`image-tile${isHighlighted ? ' is-scroll-target' : ''}`}
+            data-image-id={image.id}
+          >
             <button
               type="button"
               className="image-button"

@@ -109,18 +109,40 @@ export function writeImageListCache(setId: string, images: DriveImage[]) {
   const payload = images.map((image) => ({ id: image.id, name: image.name }));
   const dataKey = `${IMAGE_LIST_CACHE_PREFIX}${setId}`;
   const timeKey = `${IMAGE_LIST_CACHE_TIME_PREFIX}${setId}`;
+  const readCacheEntries = () => {
+    const entries: Array<{ setId: string; timestamp: number }> = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(IMAGE_LIST_CACHE_TIME_PREFIX)) {
+        continue;
+      }
+      const entrySetId = key.slice(IMAGE_LIST_CACHE_TIME_PREFIX.length);
+      const raw = localStorage.getItem(key);
+      const timestamp = raw ? Number(raw) : Number.NaN;
+      if (!Number.isNaN(timestamp)) {
+        entries.push({ setId: entrySetId, timestamp });
+      }
+    }
+    entries.sort((a, b) => a.timestamp - b.timestamp);
+    return entries;
+  };
   try {
     localStorage.setItem(dataKey, JSON.stringify(payload));
     localStorage.setItem(timeKey, String(Date.now()));
     return true;
   } catch {
-    clearImageListCache();
-    try {
-      localStorage.setItem(dataKey, JSON.stringify(payload));
-      localStorage.setItem(timeKey, String(Date.now()));
-      return true;
-    } catch {
-      return false;
+    const entries = readCacheEntries();
+    for (const entry of entries) {
+      localStorage.removeItem(`${IMAGE_LIST_CACHE_PREFIX}${entry.setId}`);
+      localStorage.removeItem(`${IMAGE_LIST_CACHE_TIME_PREFIX}${entry.setId}`);
+      try {
+        localStorage.setItem(dataKey, JSON.stringify(payload));
+        localStorage.setItem(timeKey, String(Date.now()));
+        return true;
+      } catch {
+        // Keep removing oldest entries until we either succeed or exhaust the list.
+      }
     }
+    return false;
   }
 }

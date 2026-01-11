@@ -10,7 +10,7 @@ import {
   IconTimeline,
   IconX,
 } from '@tabler/icons-react';
-import { useEffect } from 'react';
+import { useEffect, type MouseEvent } from 'react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
 import { useModalState } from '../features/modal/ModalContext';
 
@@ -86,8 +86,19 @@ export function ModalViewer() {
   const driveFileUrl = `https://drive.google.com/file/d/${encodeURIComponent(
     modalImage.id
   )}/view`;
-  const setLinkHref =
-    modalSetId ? `/set/${encodeURIComponent(modalSetId)}` : '';
+  const setLinkHref = modalSetId ? `/set/${encodeURIComponent(modalSetId)}` : '';
+  const handleOpenSet = (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    if (!modalSetId) {
+      return;
+    }
+    sessionStorage.setItem(
+      'poseviewer-scroll-target',
+      JSON.stringify({ setId: modalSetId, imageId: modalImage.id })
+    );
+    window.history.pushState(null, '', setLinkHref);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
 
   return (
     <div className="modal" onClick={onCloseModal}>
@@ -132,15 +143,7 @@ export function ModalViewer() {
                 <div className="modal-info-row">
                   <span className="modal-info-label">Set</span>
                   {modalSetId && modalSetName ? (
-                    <a
-                      href={setLinkHref}
-                      onClick={() => {
-                        sessionStorage.setItem(
-                          'poseviewer-scroll-target',
-                          JSON.stringify({ setId: modalSetId, imageId: modalImage.id })
-                        );
-                      }}
-                    >
+                    <a href={setLinkHref} onClick={handleOpenSet}>
                       {modalSetName}
                     </a>
                   ) : (

@@ -70,7 +70,7 @@ export function SlideshowPage() {
             onClick={onStartSlideshow}
             disabled={isLoadingSlideshow || slideshowSets.length === 0}
           >
-            {isLoadingSlideshow ? 'Loading…' : 'Start slideshow'}
+            {isLoadingSlideshow ? 'Loading…' : 'Generate slideshow'}
           </button>
           <button
             type="button"
@@ -126,7 +126,7 @@ export function SlideshowPage() {
         {slideshowSets.length === 0 ? (
           <p className="empty">No sets match the current filters.</p>
         ) : !slideshowStarted ? (
-          <p className="empty">Press Start slideshow to load images.</p>
+          <p className="empty">Press Generate slideshow to load images.</p>
         ) : isLoadingSlideshow && slideshowImages.length === 0 ? (
           <div className="stack">
             <p className="empty">Loading slideshow…</p>

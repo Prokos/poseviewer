@@ -30,6 +30,15 @@ type UseSlideshowStateArgs = {
   slideshowPageSize: number;
 };
 
+type StoredSlideshowState = {
+  started: boolean;
+  key: string | null;
+  images: DriveImage[];
+  imageSetMap: Record<string, string>;
+};
+
+const SLIDESHOW_STATE_KEY = 'poseviewer-slideshow-state';
+
 export function useSlideshowState({
   page,
   isConnected,
@@ -45,22 +54,24 @@ export function useSlideshowState({
   const [slideshowImages, setSlideshowImages] = useState<DriveImage[]>([]);
   const [isLoadingSlideshow, setIsLoadingSlideshow] = useState(false);
   const [slideshowStarted, setSlideshowStarted] = useState(false);
+  const [slideshowKey, setSlideshowKey] = useState<string | null>(null);
   const slideshowSeenRef = useRef<Set<string>>(new Set());
   const slideshowPoolRef = useRef<{ key: string; images: DriveImage[] } | null>(null);
   const slideshowImageSetRef = useRef<Map<string, string>>(new Map());
   const slideshowImagesRef = useRef<DriveImage[]>(slideshowImages);
+  const [isHydrated, setIsHydrated] = useState(false);
 
   useEffect(() => {
     slideshowImagesRef.current = slideshowImages;
   }, [slideshowImages]);
 
-  const resetSlideshow = useCallback(() => {
-    slideshowPoolRef.current = null;
-    slideshowSeenRef.current = new Set();
-    slideshowImageSetRef.current = new Map();
-    setSlideshowImages([]);
-    setSlideshowStarted(false);
-  }, []);
+  const buildSlideshowKey = useCallback(() => {
+    return JSON.stringify({
+      include: slideshowTagFilters.include,
+      exclude: slideshowTagFilters.exclude,
+      favorite: slideshowFavoriteFilter,
+    });
+  }, [slideshowFavoriteFilter, slideshowTagFilters.exclude, slideshowTagFilters.include]);
 
   const buildSlideshowPool = useCallback(async () => {
     if (!isConnected) {
@@ -131,25 +142,30 @@ export function useSlideshowState({
   }, [isConnected, resolveSetImages, setViewerIndexProgress, slideshowFavoriteFilter, slideshowSets]);
 
   const loadSlideshowBatch = useCallback(
-    async (count: number, options?: { openModal?: boolean }) => {
+    async (
+      count: number,
+      options?: { openModal?: boolean; keyOverride?: string; resetImages?: boolean }
+    ) => {
       if (!isConnected || count <= 0) {
         return;
       }
       setIsLoadingSlideshow(true);
       setViewerIndexProgress('Loading slideshow…');
       try {
-        const key = JSON.stringify({
-          include: slideshowTagFilters.include,
-          exclude: slideshowTagFilters.exclude,
-          favorite: slideshowFavoriteFilter,
-        });
+        const key = options?.keyOverride ?? slideshowKey ?? buildSlideshowKey();
         if (!slideshowPoolRef.current || slideshowPoolRef.current.key !== key) {
           slideshowPoolRef.current = {
             key,
             images: await buildSlideshowPool(),
           };
-          slideshowSeenRef.current = new Set();
-          setSlideshowImages([]);
+          if (options?.resetImages) {
+            slideshowSeenRef.current = new Set();
+            setSlideshowImages([]);
+          } else {
+            slideshowSeenRef.current = new Set(
+              slideshowImagesRef.current.map((image) => image.id)
+            );
+          }
         }
         const pool = slideshowPoolRef.current.images;
         if (pool.length === 0) {
@@ -185,13 +201,12 @@ export function useSlideshowState({
     },
     [
       buildSlideshowPool,
+      buildSlideshowKey,
       isConnected,
       openModalRef,
       setError,
       setViewerIndexProgress,
-      slideshowFavoriteFilter,
-      slideshowTagFilters.exclude,
-      slideshowTagFilters.include,
+      slideshowKey,
     ]
   );
 
@@ -200,33 +215,76 @@ export function useSlideshowState({
   }, [loadSlideshowBatch, slideshowPageSize]);
 
   useEffect(() => {
-    if (page !== 'slideshow') {
-      return;
+    try {
+      const raw = localStorage.getItem(SLIDESHOW_STATE_KEY);
+      if (!raw) {
+        setIsHydrated(true);
+        return;
+      }
+      const parsed = JSON.parse(raw) as StoredSlideshowState;
+      if (Array.isArray(parsed.images)) {
+        setSlideshowImages(parsed.images);
+        slideshowImagesRef.current = parsed.images;
+      }
+      if (parsed && typeof parsed.started === 'boolean') {
+        setSlideshowStarted(parsed.started);
+      }
+      if (typeof parsed.key === 'string' || parsed.key === null) {
+        setSlideshowKey(parsed.key ?? null);
+      }
+      if (parsed && parsed.imageSetMap && typeof parsed.imageSetMap === 'object') {
+        slideshowImageSetRef.current = new Map(Object.entries(parsed.imageSetMap));
+      }
+      setIsHydrated(true);
+    } catch {
+      // Ignore storage failures.
+      setIsHydrated(true);
     }
-    resetSlideshow();
-  }, [page, resetSlideshow]);
+  }, []);
 
   useEffect(() => {
-    if (page !== 'slideshow') {
+    if (!isHydrated) {
       return;
     }
-    resetSlideshow();
-  }, [
-    page,
-    resetSlideshow,
-    slideshowFavoriteFilter,
-    slideshowTagFilters.exclude,
-    slideshowTagFilters.include,
-  ]);
+    try {
+      const imageSetMap = Object.fromEntries(slideshowImageSetRef.current.entries());
+      const payload: StoredSlideshowState = {
+        started: slideshowStarted,
+        key: slideshowKey,
+        images: slideshowImages,
+        imageSetMap,
+      };
+      localStorage.setItem(SLIDESHOW_STATE_KEY, JSON.stringify(payload));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [isHydrated, slideshowImages, slideshowKey, slideshowStarted]);
 
   const handleStartSlideshow = useCallback(async () => {
+    const key = buildSlideshowKey();
+    const isNewKey = key !== slideshowKey;
+    if (isNewKey) {
+      slideshowPoolRef.current = null;
+      slideshowSeenRef.current = new Set();
+      slideshowImageSetRef.current = new Map();
+      setSlideshowImages([]);
+    }
+    setSlideshowKey(key);
     setSlideshowStarted(true);
-    if (slideshowImages.length > 0) {
-      openModalRef.current(slideshowImages[0].id, slideshowImages, 'Slideshow');
+    if (!isNewKey && slideshowImages.length > 0) {
       return;
     }
-    await loadSlideshowBatch(slideshowPageSize, { openModal: true });
-  }, [loadSlideshowBatch, openModalRef, slideshowImages, slideshowPageSize]);
+    await loadSlideshowBatch(slideshowPageSize, {
+      keyOverride: key,
+      resetImages: isNewKey,
+    });
+  }, [
+    buildSlideshowKey,
+    loadSlideshowBatch,
+    slideshowImages,
+    slideshowKey,
+    slideshowPageSize,
+  ]);
 
   return {
     slideshowImages,

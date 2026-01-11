@@ -1,13 +1,10 @@
-add support for multiple root drive folders to generate sets from and add https://drive.google.com/drive/folders/1g4QcQsmA6wCt7Jr566oaDOzHqmpwT6EM
+
 
 get rid of the 5 col breakpoints
 
 Refresh sample on create set card should refresh the images not the index
 
 remove search bar from set overview page, improve design of clear filters button and sorting dropdown
-
-Our header element could be full width of the page and the navigation underline should bleed to page edges.
-improve design of connection status, just show one icon that either shows disconnected or connected, and pressing will always connect or reconnect. no status and button seperately etc
 
 On create set page the directory component should have the same style as that from the set viewer page
 
@@ -21,11 +18,7 @@ If all images are loaded on a tab  we dont need to show the load more or load al
 
 clicking on a set should start at top of the page
 
-ability to permanently rotate images, and all images in a set at the same time
-
 favoriting gesture and button should be disabled in places where we cant favorite (e.g. sample modal from create a set)
-
-auto starting a slideshow should also enter fullscreen when opening modal
 
 smart random sorting for slideshows that prioritises not repeating sets at least not twice in a row - we dont hae to cycle through sets before we return to one, but reduced chance for chronological items in a set and the same set after one another would be good for overall slideshow quality
 

@@ -221,7 +221,7 @@ export function CreateSetPage({
                   <p className="muted">{previewIndexProgress}</p>
                 ) : previewImages.length > 0 ? (
                   <div className="preview-grid">
-                    {previewImages.map((image) => (
+                    {previewImages.map((image, index) => (
                       <button
                         key={image.id}
                         type="button"

@@ -1,3 +1,4 @@
+import { IconPlugConnected, IconPlugOff } from '@tabler/icons-react';
 import type { PoseSet } from '../metadata';
 
 type AppHeaderProps = {
@@ -5,20 +6,33 @@ type AppHeaderProps = {
   activeSet: PoseSet | null;
   isConnected: boolean;
   onConnect: () => void;
+  onTitleClick: () => void;
   onNavigate: (page: 'overview' | 'create' | 'set' | 'slideshow') => void;
 };
 
-export function AppHeader({ page, activeSet, isConnected, onConnect, onNavigate }: AppHeaderProps) {
+export function AppHeader({
+  page,
+  activeSet,
+  isConnected,
+  onConnect,
+  onTitleClick,
+  onNavigate,
+}: AppHeaderProps) {
   return (
     <header className="topbar">
-      <button type="button" className="title topbar-title" onClick={() => onNavigate('overview')}>
+      <button type="button" className="title topbar-title" onClick={onTitleClick}>
         Pose Viewer
       </button>
       <div className="auth-chip">
-        <button className="chip-button" onClick={onConnect}>
-          {isConnected ? 'Reconnect' : 'Connect'}
+        <button
+          className={`connection-button ${isConnected ? 'is-connected' : 'is-disconnected'}`}
+          onClick={onConnect}
+          type="button"
+          aria-label={isConnected ? 'Reconnect to Google Drive' : 'Connect to Google Drive'}
+          title={isConnected ? 'Reconnect' : 'Connect'}
+        >
+          {isConnected ? <IconPlugConnected size={18} /> : <IconPlugOff size={18} />}
         </button>
-        {isConnected ? <span className="chip-status">Connected</span> : null}
       </div>
       <div className="nav-tabs">
         <button

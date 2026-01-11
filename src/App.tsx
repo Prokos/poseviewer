@@ -75,6 +75,7 @@ const VIEWER_THUMB_SIZE = CARD_THUMB_SIZE;
 const THUMB_PREFETCH_MAX_IN_FLIGHT = 3;
 const THUMB_PREFETCH_MAX_QUEUE = 80;
 const emptyFolders: FolderPath[] = [];
+const EXPLICIT_TAG = 'explicit';
 
 function parsePathState() {
   const raw = window.location.pathname;
@@ -158,6 +159,8 @@ export default function App() {
   const [slideshowFavoriteFilter, setSlideshowFavoriteFilter] = useState<
     'all' | 'favorites' | 'nonfavorites'
   >('all');
+  const [showExplicit, setShowExplicit] = useState(false);
+  const titleClickCountRef = useRef(0);
   const [selectedFolder, setSelectedFolder] = useState<FolderPath | null>(null);
   const [setName, setSetName] = useState('');
   const [setTags, setSetTags] = useState('');
@@ -264,9 +267,29 @@ export default function App() {
     []
   );
 
+  const isExplicitSet = useCallback(
+    (set: PoseSet) => set.tags.some((tag) => tag.toLowerCase() === EXPLICIT_TAG),
+    []
+  );
+
+  const visibleSets = useMemo(() => {
+    if (showExplicit) {
+      return metadata.sets;
+    }
+    return metadata.sets.filter((set) => !isExplicitSet(set));
+  }, [isExplicitSet, metadata.sets, showExplicit]);
+
+  const handleTitleClick = useCallback(() => {
+    titleClickCountRef.current += 1;
+    if (titleClickCountRef.current >= 5) {
+      titleClickCountRef.current = 0;
+      setShowExplicit((current) => !current);
+    }
+  }, []);
+
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
-    const setPrefixes = metadata.sets.map((set) => set.rootPath);
+    const setPrefixes = visibleSets.map((set) => set.rootPath);
     return folderPaths.filter((folder) => {
       if (hiddenFolders.some((hidden) => hidden.id === folder.id)) {
         return false;
@@ -283,7 +306,7 @@ export default function App() {
       }
       return folder.path.toLowerCase().includes(query);
     });
-  }, [folderFilter, folderPaths, hiddenFolders, metadata.sets]);
+  }, [folderFilter, folderPaths, hiddenFolders, visibleSets]);
 
   const setRandomWeight = useCallback(
     (setId: string) => hashStringToUnit(`${setSortSeed}|${setId}`),
@@ -293,7 +316,7 @@ export default function App() {
   const filteredSets = useMemo(() => {
     const query = setFilter.trim().toLowerCase();
     const selected = selectedTags.map((tag) => tag.toLowerCase());
-    const matches = metadata.sets.filter((set) => {
+    const matches = visibleSets.filter((set) => {
       const tagMatch =
         selected.length === 0 ||
         selected.every((tag) => set.tags.some((value) => value.toLowerCase() === tag));
@@ -337,7 +360,7 @@ export default function App() {
         break;
     }
     return sorted;
-  }, [metadata.sets, selectedTags, setFilter, setRandomWeight, setSort]);
+  }, [selectedTags, setFilter, setRandomWeight, setSort, visibleSets]);
 
   const prevSetSortRef = useRef(setSort);
   useEffect(() => {
@@ -356,8 +379,8 @@ export default function App() {
   }, [setViewerSortSeed, viewerSort]);
 
   const setsById = useMemo(() => {
-    return new Map(metadata.sets.map((set) => [set.id, set]));
-  }, [metadata.sets]);
+    return new Map(visibleSets.map((set) => [set.id, set]));
+  }, [visibleSets]);
 
   const slideshowTagFilters = useMemo(() => {
     const include = slideshowIncludeTags.map((tag) => tag.toLowerCase());
@@ -367,7 +390,7 @@ export default function App() {
 
   const slideshowSets = useMemo(() => {
     const { include, exclude } = slideshowTagFilters;
-    return metadata.sets.filter((set) => {
+    return visibleSets.filter((set) => {
       const tags = set.tags.map((tag) => tag.toLowerCase());
       if (include.length > 0 && !include.every((tag) => tags.includes(tag))) {
         return false;
@@ -377,27 +400,27 @@ export default function App() {
       }
       return true;
     });
-  }, [metadata.sets, slideshowTagFilters]);
+  }, [slideshowTagFilters, visibleSets]);
 
   const availableTags = useMemo(() => {
     const tagSet = new Set<string>();
-    for (const set of metadata.sets) {
+    for (const set of visibleSets) {
       for (const tag of set.tags) {
         tagSet.add(tag);
       }
     }
     return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
-  }, [metadata.sets]);
+  }, [visibleSets]);
 
   const tagUsageCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const set of metadata.sets) {
+    for (const set of visibleSets) {
       for (const tag of set.tags) {
         counts[tag] = (counts[tag] ?? 0) + 1;
       }
     }
     return counts;
-  }, [metadata.sets]);
+  }, [visibleSets]);
 
   const sortedQuickTags = useMemo(() => {
     return [...availableTags].sort((a, b) => {
@@ -438,7 +461,7 @@ export default function App() {
       tags.every((tag) => set.tags.some((value) => value.toLowerCase() === tag));
 
     const counts: Record<string, number> = {};
-    const baseSet = metadata.sets.filter((set) => matchesQuery(set));
+    const baseSet = visibleSets.filter((set) => matchesQuery(set));
 
     for (const tag of availableTags) {
       const lower = tag.toLowerCase();
@@ -448,7 +471,7 @@ export default function App() {
       counts[tag] = baseSet.filter((set) => matchesSelected(set, nextTags)).length;
     }
     return counts;
-  }, [availableTags, metadata.sets, selectedTags, setFilter]);
+  }, [availableTags, selectedTags, setFilter, visibleSets]);
 
   const sortedTags = useMemo(() => {
     return [...availableTags].sort((a, b) => {
@@ -459,6 +482,7 @@ export default function App() {
       return a.localeCompare(b);
     });
   }, [availableTags, tagCounts]);
+
 
   useEffect(() => {
     if (!error || error === lastToastRef.current) {
@@ -893,26 +917,16 @@ export default function App() {
     if (!isConnected || !selectedFolder) {
       return;
     }
-    setIsLoadingPreview(true);
-    setPreviewCount(null);
-    setPreviewIndexProgress('Indexing…');
-    setError('');
-    try {
-      const items = await buildSetIndex(selectedFolder.id, (progress) => {
-        setPreviewIndexProgress(formatIndexProgress(progress));
-      });
-      const existingIndexId = await findSetIndexFileId(selectedFolder.id);
-      const indexFileId = await saveSetIndex(selectedFolder.id, existingIndexId, items);
-      prebuiltIndexRef.current = { folderId: selectedFolder.id, items, fileId: indexFileId };
-      const images = indexItemsToImages(items);
-      setPreviewImages(pickRandom(images, 8));
-      setPreviewCount(images.length);
-    } catch (previewError) {
-      setError((previewError as Error).message);
-    } finally {
-      setIsLoadingPreview(false);
-      setPreviewIndexProgress('');
+    const prebuilt = prebuiltIndexRef.current;
+    if (!prebuilt || prebuilt.folderId !== selectedFolder.id) {
+      return;
     }
+    setIsLoadingPreview(true);
+    setPreviewIndexProgress('');
+    const images = indexItemsToImages(prebuilt.items);
+    setPreviewImages(pickRandom(images, 8));
+    setPreviewCount(images.length);
+    setIsLoadingPreview(false);
   }, [isConnected, selectedFolder]);
 
   const handleHideFolder = (folder: FolderPath) => {
@@ -1639,6 +1653,9 @@ export default function App() {
   };
 
   const handleOpenSet = async (set: PoseSet) => {
+    if (!showExplicit && isExplicitSet(set)) {
+      return;
+    }
     const nextSet =
       !set.indexFileId && prebuiltIndexRef.current?.folderId === set.rootFolderId
         ? { ...set, indexFileId: prebuiltIndexRef.current.fileId ?? undefined }
@@ -1664,6 +1681,16 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!showExplicit && activeSet && isExplicitSet(activeSet)) {
+      setActiveSet(null);
+      setActiveImages([]);
+      setFavoriteImages([]);
+      setImageLoadStatus('');
+      setPage('overview');
+    }
+  }, [activeSet, isExplicitSet, showExplicit]);
+
+  useEffect(() => {
     if (appliedNavRef.current) {
       return;
     }
@@ -1677,7 +1704,7 @@ export default function App() {
     }
     appliedNavRef.current = true;
     setPage(initial.page);
-  }, [handleOpenSet, isLoadingMetadata, metadata.sets]);
+  }, [handleOpenSet, isLoadingMetadata, visibleSets]);
 
   useEffect(() => {
     const raw = window.location.pathname;
@@ -1700,7 +1727,7 @@ export default function App() {
     };
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
-  }, [handleOpenSet, metadata.sets]);
+  }, [handleOpenSet, visibleSets]);
 
   useEffect(() => {
     if (!appliedNavRef.current) {
@@ -1728,7 +1755,7 @@ export default function App() {
       pendingSetIdRef.current = null;
       return;
     }
-    const match = metadata.sets.find((item) => item.id === pendingId);
+    const match = visibleSets.find((item) => item.id === pendingId);
     if (match) {
       pendingSetIdRef.current = null;
       void handleOpenSet(match);
@@ -1753,7 +1780,7 @@ export default function App() {
     handleOpenSet,
     isConnected,
     isLoadingMetadata,
-    metadata.sets,
+    visibleSets,
     page,
   ]);
 
@@ -2103,6 +2130,7 @@ export default function App() {
             activeSet={activeSet}
             isConnected={isConnected}
             onConnect={handleConnect}
+            onTitleClick={handleTitleClick}
             onNavigate={setPage}
           />
           {isLoadingMetadata ? (
@@ -2162,7 +2190,7 @@ export default function App() {
             onToggleFilterTag={toggleFilterTag}
             onClearFilters={clearSetFilters}
             filteredSets={filteredSets}
-            totalSets={metadata.sets.length}
+            totalSets={visibleSets.length}
             onOpenSet={handleOpenSet}
             cardThumbSize={CARD_THUMB_SIZE}
           />

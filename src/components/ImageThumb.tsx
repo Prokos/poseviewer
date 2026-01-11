@@ -38,8 +38,10 @@ export function ImageThumb({
   const [isInView, setIsInView] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const loadDelayRef = useRef<number | null>(null);
   const resolvedRef = containerRef ?? localRef;
   const resolvedPos = thumbPos ?? 50;
+  const loadDelayMs = 120;
   const setRef = (node: HTMLDivElement | null) => {
     localRef.current = node;
     setObserverNode(node);
@@ -78,16 +80,32 @@ export function ImageThumb({
         (entries) => {
           for (const entry of entries) {
             if (entry.isIntersecting) {
-              setIsInView(true);
-              observer.disconnect();
-              break;
+              if (loadDelayRef.current !== null) {
+                return;
+              }
+              loadDelayRef.current = window.setTimeout(() => {
+                setIsInView(true);
+                observer.disconnect();
+                loadDelayRef.current = null;
+              }, loadDelayMs);
+              return;
+            }
+            if (loadDelayRef.current !== null) {
+              window.clearTimeout(loadDelayRef.current);
+              loadDelayRef.current = null;
             }
           }
         },
         { rootMargin: `${margin}px 0px`, threshold: 0.01 }
       );
       observer.observe(node);
-      return () => observer.disconnect();
+      return () => {
+        observer.disconnect();
+        if (loadDelayRef.current !== null) {
+          window.clearTimeout(loadDelayRef.current);
+          loadDelayRef.current = null;
+        }
+      };
     } catch {
       setIsInView(true);
       return;

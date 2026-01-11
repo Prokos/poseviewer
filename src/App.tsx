@@ -55,7 +55,19 @@ import { SetViewerProvider } from './features/setViewer/SetViewerContext';
 import { SlideshowProvider } from './features/slideshow/SlideshowContext';
 import { useSlideshowState } from './features/slideshow/useSlideshowState';
 
-const DEFAULT_ROOT_ID = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
+const ROOT_FOLDER_IDS = (() => {
+  const raw = import.meta.env.VITE_ROOT_FOLDER_IDS as string | undefined;
+  const legacy = import.meta.env.VITE_ROOT_FOLDER_ID as string | undefined;
+  const ids = (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (ids.length === 0 && legacy) {
+    ids.push(legacy);
+  }
+  return Array.from(new Set(ids));
+})();
+const DEFAULT_ROOT_ID = ROOT_FOLDER_IDS[0] ?? '';
 const IMAGE_PAGE_SIZE = 96;
 const THUMB_SIZE = 320;
 const CARD_THUMB_SIZE = 500;
@@ -107,7 +119,7 @@ export default function App() {
   const { cacheKey, bumpCacheKey } = useImageCache();
   const [isConnected, setIsConnected] = useState(false);
   const [tokenStatus, setTokenStatus] = useState<string>('');
-  const rootId = DEFAULT_ROOT_ID ?? '';
+  const rootId = DEFAULT_ROOT_ID;
   const [page, setPage] = useState<'overview' | 'create' | 'set' | 'slideshow'>('overview');
   const [folderPaths, setFolderPaths] = useLocalStorage<FolderPath[]>(
     'poseviewer-folder-paths',
@@ -592,17 +604,26 @@ export default function App() {
       const excludePaths = base.sets.map((set) => set.rootPath);
       const ignoreIds = new Set(hiddenFolders.map((folder) => folder.id));
       const ignorePaths = hiddenFolders.map((folder) => folder.path);
-      const folders = await listFolderPaths(rootId, {
-        excludeIds,
-        excludePaths,
-        ignoreIds,
-        ignorePaths,
-        maxCount: 50,
-        onProgress: (count, path) => {
-          setScanCount(count);
-          setScanPath(path);
-        },
-      });
+      const maxCount = 50;
+      const folders: FolderPath[] = [];
+      for (const scanRootId of ROOT_FOLDER_IDS) {
+        if (folders.length >= maxCount) {
+          break;
+        }
+        const baseCount = folders.length;
+        const next = await listFolderPaths(scanRootId, {
+          excludeIds,
+          excludePaths,
+          ignoreIds,
+          ignorePaths,
+          maxCount: maxCount - baseCount,
+          onProgress: (count, path) => {
+            setScanCount(baseCount + count);
+            setScanPath(path);
+          },
+        });
+        folders.push(...next);
+      }
       setFolderPaths(folders);
       if (metadataDirtyRef.current) {
         const saved = await saveMetadataWithInfo(rootId, meta.fileId, base);

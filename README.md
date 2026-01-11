@@ -15,8 +15,9 @@ cp .env.example .env
 
 ```env
 VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-VITE_ROOT_FOLDER_ID=1-3_0DhIrYRZQC1FhvQ_Eu-UfSRvcLaMn
+VITE_ROOT_FOLDER_IDS=1-3_0DhIrYRZQC1FhvQ_Eu-UfSRvcLaMn,1g4QcQsmA6wCt7Jr566oaDOzHqmpwT6EM
 ```
+`VITE_ROOT_FOLDER_ID` is still supported for single-root setups.
 
 5. Install dependencies and run the app + proxy:
 
@@ -27,7 +28,7 @@ npm run dev:all
 
 ## Metadata format
 
-`metadata.txt` is stored in the root Drive folder as JSON:
+`metadata.txt` is stored in the first root Drive folder as JSON:
 
 ```json
 {

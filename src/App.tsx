@@ -7,6 +7,7 @@ import {
 } from 'react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, type FolderPath } from './drive/scan';
+import { driveRotateImage } from './drive/api';
 import {
   buildSetIndex,
   findSetIndexFileId,
@@ -30,6 +31,7 @@ import { normalizeTags } from './utils/tags';
 import { hashStringToUnit, pickRandom, shuffleItems, shuffleItemsSeeded } from './utils/random';
 import { formatDownloadProgress, formatIndexProgress, startIndexTimer } from './utils/progress';
 import { createProxyThumbUrl } from './utils/driveUrls';
+import { useImageCache } from './features/imageCache/ImageCacheContext';
 import {
   readImageListCache,
   readMetadataCache,
@@ -102,6 +104,7 @@ function mergeMetadata(local: MetadataDocument, remote: MetadataDocument): Metad
 }
 
 export default function App() {
+  const { cacheKey, bumpCacheKey } = useImageCache();
   const [isConnected, setIsConnected] = useState(false);
   const [tokenStatus, setTokenStatus] = useState<string>('');
   const rootId = DEFAULT_ROOT_ID ?? '';
@@ -150,6 +153,12 @@ export default function App() {
   const [activeImages, setActiveImages] = useState<DriveImage[]>([]);
   const [isLoadingImages, setIsLoadingImages] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isRotatingSet, setIsRotatingSet] = useState(false);
+  const [rotateSetProgress, setRotateSetProgress] = useState<null | {
+    total: number;
+    completed: number;
+    angle: 90 | -90;
+  }>(null);
   const [setViewerTab, setSetViewerTab] = useState<
     'samples' | 'favorites' | 'nonfavorites' | 'all'
   >('all');
@@ -468,7 +477,7 @@ export default function App() {
     } catch (statusError) {
       setError((statusError as Error).message);
     }
-  }, []);
+  }, [cacheKey]);
 
   const handleConnect = useCallback(() => {
     window.open('/api/auth/start', '_blank', 'noopener');
@@ -810,6 +819,10 @@ export default function App() {
     await handleUpdateSet(setId, { favoriteImageIds: next });
   };
 
+  const rotateImage = useCallback(async (fileId: string, angle: 90 | -90) => {
+    await driveRotateImage(fileId, angle);
+  }, []);
+
   useEffect(() => {
     if (!isConnected || !selectedFolder) {
       setPreviewImages([]);
@@ -1145,6 +1158,85 @@ export default function App() {
     [getPrebuiltIndexForSet, isConnected, loadIndexItemsForSet]
   );
 
+  const handleRotateSet = useCallback(
+    async (set: PoseSet, angle: 90 | -90) => {
+      if (isRotatingSet) {
+        return;
+      }
+      setIsRotatingSet(true);
+      setRotateSetProgress({ total: 0, completed: 0, angle });
+      try {
+        const images = await resolveSetImages(set, true);
+        if (images.length === 0) {
+          setError('No images found in this set.');
+          setRotateSetProgress(null);
+          return;
+        }
+        const ok = window.confirm(
+          `Rotate ${images.length} image${images.length === 1 ? '' : 's'} ${
+            angle === 90 ? 'clockwise' : 'counter clockwise'
+          }?`
+        );
+        if (!ok) {
+          setRotateSetProgress(null);
+          return;
+        }
+        const total = images.length;
+        const concurrency = Math.min(4, total);
+        let completed = 0;
+        let nextIndex = 0;
+        setRotateSetProgress({ total, completed, angle });
+
+        const wait = (ms: number) =>
+          new Promise<void>((resolve) => {
+            window.setTimeout(resolve, ms);
+          });
+
+        const rotateWithRetry = async (imageId: string) => {
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            try {
+              await rotateImage(imageId, angle);
+              return;
+            } catch (error) {
+              const message = (error as Error).message ?? '';
+              const shouldRetry = /429|503|timeout/i.test(message);
+              if (!shouldRetry || attempt >= 3) {
+                throw error;
+              }
+              await wait(400 * 2 ** attempt);
+            }
+          }
+        };
+
+        const worker = async () => {
+          while (true) {
+            const index = nextIndex;
+            nextIndex += 1;
+            if (index >= total) {
+              return;
+            }
+            const image = images[index];
+            await rotateWithRetry(image.id);
+            completed += 1;
+            setRotateSetProgress({ total, completed, angle });
+          }
+        };
+
+        await Promise.all(Array.from({ length: concurrency }, () => worker()));
+        bumpCacheKey();
+        window.setTimeout(() => {
+          setRotateSetProgress(null);
+        }, 1200);
+      } catch (error) {
+        setError((error as Error).message);
+        setRotateSetProgress(null);
+      } finally {
+        setIsRotatingSet(false);
+      }
+    },
+    [bumpCacheKey, isRotatingSet, resolveSetImages, rotateImage, setError]
+  );
+
   const getOrderedAllImages = useCallback(
     (setId: string, images: DriveImage[]) => {
       if (viewerSort === 'chronological') {
@@ -1300,7 +1392,7 @@ export default function App() {
       thumbPrefetchInFlightRef.current += 1;
       const controller = new AbortController();
       thumbPrefetchAbortRef.current.set(nextId, controller);
-      const url = createProxyThumbUrl(nextId, THUMB_SIZE);
+      const url = createProxyThumbUrl(nextId, THUMB_SIZE, cacheKey);
       const finalize = () => {
         thumbPrefetchInFlightRef.current = Math.max(
           0,
@@ -1897,6 +1989,9 @@ export default function App() {
     onUpdateSetName: handleUpdateSetName,
     onRefreshSet: handleRefreshSet,
     onDeleteSet: handleDeleteSet,
+    onRotateSet: handleRotateSet,
+    isRotatingSet,
+    rotateSetProgress,
     thumbSize: THUMB_SIZE,
     viewerThumbSize: VIEWER_THUMB_SIZE,
     sampleGridRef,
@@ -1930,6 +2025,7 @@ export default function App() {
     slideshowPageSize,
     prefetchThumbs,
     setError,
+    rotateImage,
   };
 
   const modalActions = useMemo(() => ({ openModal }), [openModal]);

@@ -1,3 +1,5 @@
+add support for multiple root drive folders to generate sets from and add https://drive.google.com/drive/folders/1g4QcQsmA6wCt7Jr566oaDOzHqmpwT6EM
+
 get rid of the 5 col breakpoints
 
 Refresh sample on create set card should refresh the images not the index
@@ -13,11 +15,9 @@ Add a hide button next to favorite in the modal. Pressing it removes the image f
 
 If all images are loaded on a tab  we dont need to show the load more or load all buttons anymore.
 
-Persist choice of sorting on set overview page in localstorage
 
 
 
-pinching or double tap zooming back to 100% doesnt snap the image back to non-zoomed state
 
 clicking on a set should start at top of the page
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MutableRefObject, PointerEventHandler } from 'react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
+import { useImageCache } from '../features/imageCache/ImageCacheContext';
 
 type ImageThumbProps = {
   isConnected: boolean;
@@ -31,6 +32,7 @@ export function ImageThumb({
   onPointerUp,
   onPointerCancel,
 }: ImageThumbProps) {
+  const { cacheKey } = useImageCache();
   const localRef = useRef<HTMLDivElement | null>(null);
   const [observerNode, setObserverNode] = useState<HTMLDivElement | null>(null);
   const [isInView, setIsInView] = useState(false);
@@ -147,7 +149,7 @@ export function ImageThumb({
     >
       {shouldLoad && !hasError ? (
         <img
-          src={createProxyThumbUrl(fileId, size)}
+          src={createProxyThumbUrl(fileId, size, cacheKey)}
           alt={alt}
           loading={eager ? 'eager' : 'lazy'}
           decoding="async"

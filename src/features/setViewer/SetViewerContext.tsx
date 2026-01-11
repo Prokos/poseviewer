@@ -54,6 +54,13 @@ export type SetViewerContextValue = {
   onUpdateSetName: (value: string) => void;
   onRefreshSet: (set: PoseSet) => void;
   onDeleteSet: (set: PoseSet) => void;
+  onRotateSet: (set: PoseSet, angle: 90 | -90) => void;
+  isRotatingSet: boolean;
+  rotateSetProgress: null | {
+    total: number;
+    completed: number;
+    angle: 90 | -90;
+  };
   thumbSize: number;
   viewerThumbSize: number;
   sampleGridRef: RefObject<HTMLDivElement>;

@@ -173,6 +173,54 @@ function clampSize(value) {
   return Math.max(64, Math.min(MAX_SIZE, value));
 }
 
+function resolveOutputFormat(inputFormat, contentType) {
+  const normalized =
+    inputFormat ??
+    (contentType
+      ? contentType.replace(/^image\//, '').toLowerCase()
+      : null);
+  switch (normalized) {
+    case 'jpeg':
+    case 'jpg':
+      return { format: 'jpeg', mimeType: 'image/jpeg' };
+    case 'png':
+      return { format: 'png', mimeType: 'image/png' };
+    case 'webp':
+      return { format: 'webp', mimeType: 'image/webp' };
+    case 'tiff':
+    case 'tif':
+      return { format: 'tiff', mimeType: 'image/tiff' };
+    case 'avif':
+      return { format: 'avif', mimeType: 'image/avif' };
+    default:
+      return { format: 'jpeg', mimeType: 'image/jpeg' };
+  }
+}
+
+async function clearMediaCache(fileId) {
+  const cachePath = path.join(MEDIA_CACHE_DIR, `${fileId}.bin`);
+  const metaPath = path.join(MEDIA_CACHE_DIR, `${fileId}.json`);
+  await fs.rm(cachePath, { force: true });
+  await fs.rm(metaPath, { force: true });
+}
+
+async function clearThumbCache(fileId) {
+  try {
+    const entries = await fs.readdir(THUMB_CACHE_DIR);
+    const prefix = `${fileId}-`;
+    const matches = entries.filter((name) => name.startsWith(prefix));
+    await Promise.all(
+      matches.map((name) => fs.rm(path.join(THUMB_CACHE_DIR, name), { force: true }))
+    );
+  } catch {
+    // Ignore cache cleanup failures.
+  }
+}
+
+async function clearImageCaches(fileId) {
+  await Promise.all([clearMediaCache(fileId), clearThumbCache(fileId)]);
+}
+
 async function readCache(filePath) {
   try {
     const stat = await fs.stat(filePath);
@@ -331,6 +379,7 @@ app.get('/api/thumb/:fileId', async (req, res) => {
   }
   const sizeParam = Number(req.query.size);
   const size = clampSize(sizeParam || DEFAULT_SIZE);
+  const forceFresh = req.query.fresh === '1';
   const { fileId } = req.params;
   const token = await getAccessToken();
 
@@ -361,18 +410,20 @@ app.get('/api/thumb/:fileId', async (req, res) => {
   }
 
   try {
-    const thumbResult = await fetchDriveThumbnail(fileId, token, size, controller.signal);
-    if (thumbResult) {
-      await writeCacheWithMeta(cachePath, cacheMetaPath, thumbResult.data, {
-        contentType: thumbResult.contentType,
-      });
-      if (controller.signal.aborted) {
+    if (!forceFresh) {
+      const thumbResult = await fetchDriveThumbnail(fileId, token, size, controller.signal);
+      if (thumbResult) {
+        await writeCacheWithMeta(cachePath, cacheMetaPath, thumbResult.data, {
+          contentType: thumbResult.contentType,
+        });
+        if (controller.signal.aborted) {
+          return;
+        }
+        res.set('Cache-Control', 'public, max-age=86400');
+        res.set('X-Cache', 'MISS');
+        res.type(thumbResult.contentType).send(thumbResult.data);
         return;
       }
-      res.set('Cache-Control', 'public, max-age=86400');
-      res.set('X-Cache', 'MISS');
-      res.type(thumbResult.contentType).send(thumbResult.data);
-      return;
     }
 
     let buffer;
@@ -706,6 +757,91 @@ app.get('/api/drive/download/:fileId', async (req, res) => {
     }
   }
   res.end();
+});
+
+app.post('/api/drive/rotate', async (req, res) => {
+  const token = await getAccessToken();
+  if (!token) {
+    res.status(401).json({ error: 'Missing access token.' });
+    return;
+  }
+  const { fileId, angle } = req.body ?? {};
+  if (!fileId || (angle !== 90 && angle !== -90)) {
+    res.status(400).json({ error: 'Missing fileId or angle.' });
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${DRIVE_BASE}/files/${fileId}?alt=media&supportsAllDrives=true`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      res.status(response.status).send(text);
+      return;
+    }
+    const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
+    const arrayBuffer = await response.arrayBuffer();
+    const inputBuffer = Buffer.from(arrayBuffer);
+    const metadata = await sharp(inputBuffer).metadata();
+    const { format, mimeType } = resolveOutputFormat(metadata.format, contentType);
+    let pipeline = sharp(inputBuffer).rotate(angle);
+    if (format === 'jpeg') {
+      pipeline = pipeline.jpeg({ quality: 92 });
+    } else if (format === 'png') {
+      pipeline = pipeline.png();
+    } else if (format === 'webp') {
+      pipeline = pipeline.webp({ quality: 92 });
+    } else if (format === 'tiff') {
+      pipeline = pipeline.tiff();
+    } else if (format === 'avif') {
+      pipeline = pipeline.avif({ quality: 60 });
+    }
+    const outputBuffer = await pipeline.toBuffer();
+
+    const boundary = 'poseviewer-rotate-boundary';
+    const metadataPart = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Type: application/json; charset=UTF-8',
+        '',
+        JSON.stringify({ mimeType }),
+        '',
+      ].join('\r\n')
+    );
+    const mediaHeader = Buffer.from(
+      [`--${boundary}`, `Content-Type: ${mimeType}`, '', ''].join('\r\n')
+    );
+    const closing = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const body = Buffer.concat([metadataPart, mediaHeader, outputBuffer, closing]);
+
+    const uploadResponse = await fetch(
+      `${DRIVE_UPLOAD_BASE}/files/${fileId}?uploadType=multipart&supportsAllDrives=true`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+        },
+        body,
+      }
+    );
+    if (!uploadResponse.ok) {
+      const text = await uploadResponse.text();
+      res.status(uploadResponse.status).send(text);
+      return;
+    }
+
+    await clearImageCaches(fileId);
+    res.json({ ok: true });
+  } catch (error) {
+    logServerError(req, 'rotate handler failed', error);
+    res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
+  }
 });
 
 app.post('/api/drive/upload', async (req, res) => {

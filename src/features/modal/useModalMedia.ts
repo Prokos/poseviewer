@@ -8,6 +8,7 @@ type UseModalMediaOptions = {
   modalIndex: number | null;
   modalItems: DriveImage[];
   modalLoadKey: number;
+  cacheKey: number;
   prefetchThumbs: (images: DriveImage[]) => void;
   setError: (message: string) => void;
 };
@@ -17,6 +18,7 @@ export function useModalMedia({
   modalIndex,
   modalItems,
   modalLoadKey,
+  cacheKey,
   prefetchThumbs,
   setError,
 }: UseModalMediaOptions) {
@@ -164,7 +166,7 @@ export function useModalMedia({
       const controller = new AbortController();
       modalPrefetchAbortRef.current.set(imageId, controller);
       setModalPrefetchCount(modalPrefetchAbortRef.current.size);
-      const url = createProxyMediaUrl(imageId);
+      const url = createProxyMediaUrl(imageId, cacheKey);
       fetchImageBlob(url, controller.signal)
         .then((blob) => {
           if (controller.signal.aborted) {
@@ -243,8 +245,8 @@ export function useModalMedia({
       cancelPrefetches();
       const controller = new AbortController();
       modalFullAbortRef.current = controller;
-      const url = createProxyMediaUrl(modalImageId);
-      fetchImageBlob(url, controller.signal)
+      const url = createProxyMediaUrl(modalImageId, cacheKey);
+    fetchImageBlob(url, controller.signal)
         .then((blob) => {
           if (controller.signal.aborted) {
             return;
@@ -271,6 +273,7 @@ export function useModalMedia({
     fetchImageBlob,
     modalImageId,
     modalLoadKey,
+    cacheKey,
     setError,
     storeModalFullCache,
   ]);

@@ -88,3 +88,15 @@ export async function driveUploadText(
   await ensureOk(response, 'Drive upload');
   return response.json() as Promise<{ id: string }>;
 }
+
+export async function driveRotateImage(fileId: string, angle: 90 | -90) {
+  const response = await fetch('/api/drive/rotate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ fileId, angle }),
+  });
+  await ensureOk(response, 'Drive rotate');
+  return response.json() as Promise<{ ok: boolean }>;
+}

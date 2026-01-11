@@ -1,4 +1,10 @@
-import { IconDotsVertical, IconFolder, IconPhoto, IconHeart } from '@tabler/icons-react';
+import {
+  IconDotsVertical,
+  IconFolder,
+  IconPhoto,
+  IconHeart,
+  IconRotateClockwise,
+} from '@tabler/icons-react';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from '../components/ImageThumb';
 import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
@@ -50,6 +56,9 @@ export function SetViewerPage() {
     onUpdateSetName,
     onRefreshSet,
     onDeleteSet,
+    onRotateSet,
+    isRotatingSet,
+    rotateSetProgress,
     thumbSize,
     viewerThumbSize,
     sampleGridRef,
@@ -294,6 +303,32 @@ export function SetViewerPage() {
                         >
                           {isRefreshingSet ? 'Refreshing…' : 'Refresh data'}
                         </button>
+                        <button
+                          className="ghost"
+                          onClick={() => onRotateSet(activeSet, 90)}
+                          disabled={isRotatingSet}
+                        >
+                          <IconRotateClockwise size={16} />
+                          Rotate set clockwise
+                        </button>
+                        <button
+                          className="ghost"
+                          onClick={() => onRotateSet(activeSet, -90)}
+                          disabled={isRotatingSet}
+                        >
+                          <IconRotateClockwise
+                            size={16}
+                            className="viewer-menu-icon viewer-menu-icon--ccw"
+                          />
+                          Rotate set counter clockwise
+                        </button>
+                        {rotateSetProgress ? (
+                          <div className="viewer-menu-progress">
+                            {rotateSetProgress.total > 0
+                              ? `Rotating ${rotateSetProgress.completed}/${rotateSetProgress.total}…`
+                              : 'Preparing rotation…'}
+                          </div>
+                        ) : null}
                         <button
                           className="ghost ghost--danger"
                           onClick={() => onDeleteSet(activeSet)}

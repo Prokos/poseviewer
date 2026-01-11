@@ -7,14 +7,17 @@ import {
   IconInfoCircle,
   IconLoader2,
   IconRefresh,
+  IconRotateClockwise,
   IconTimeline,
   IconX,
 } from '@tabler/icons-react';
 import { useEffect, type MouseEvent } from 'react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
 import { useModalState } from '../features/modal/ModalContext';
+import { useImageCache } from '../features/imageCache/ImageCacheContext';
 
 export function ModalViewer() {
+  const { cacheKey } = useImageCache();
   const {
     modalImage,
     modalItems,
@@ -29,6 +32,8 @@ export function ModalViewer() {
     modalLoadingCount,
     modalPulse,
     modalFavoritePulse,
+    modalIsRotating,
+    modalRotateProgress,
     modalFullSrc,
     modalFullImageId,
     modalFullAnimate,
@@ -68,6 +73,7 @@ export function ModalViewer() {
     onOpenChronologicalContext,
     onRestoreModalContext,
     onToggleFavoriteFromModal,
+    onRotateModalImage,
     onPrevImage,
     onNextImage,
     onCloseModal,
@@ -150,6 +156,46 @@ export function ModalViewer() {
                     <span className="muted">Unavailable</span>
                   )}
                 </div>
+                <div className="modal-info-row">
+                  <span className="modal-info-label">Rotate</span>
+                  <div className="modal-info-actions">
+                    <button
+                      type="button"
+                      className="modal-info-action"
+                      onClick={() => onRotateModalImage(90)}
+                      disabled={modalIsRotating}
+                    >
+                      <IconRotateClockwise size={16} className="modal-info-icon" />
+                      <span>Clockwise</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="modal-info-action"
+                      onClick={() => onRotateModalImage(-90)}
+                      disabled={modalIsRotating}
+                    >
+                      <IconRotateClockwise
+                        size={16}
+                        className="modal-info-icon modal-info-icon--ccw"
+                      />
+                      <span>Counter</span>
+                    </button>
+                  </div>
+                </div>
+                {modalRotateProgress ? (
+                  <div className="modal-info-row">
+                    <span className="modal-info-label">Rotation</span>
+                    <span className="modal-info-progress">
+                      {modalRotateProgress.scope === 'batch'
+                        ? modalRotateProgress.total > 0
+                          ? `${modalRotateProgress.completed}/${modalRotateProgress.total} rotated`
+                          : 'Preparing…'
+                        : modalRotateProgress.completed >= modalRotateProgress.total
+                          ? 'Done'
+                          : 'Rotating…'}
+                    </span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -250,7 +296,7 @@ export function ModalViewer() {
           <img
             className="modal-thumb"
             key={`thumb-${modalImage.id}`}
-            src={createProxyThumbUrl(modalImage.id, thumbSize)}
+            src={createProxyThumbUrl(modalImage.id, thumbSize, cacheKey, { fresh: true })}
             alt={modalImage.name}
             loading="eager"
             decoding="async"

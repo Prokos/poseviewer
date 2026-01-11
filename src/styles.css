@@ -985,6 +985,21 @@ button.ghost:hover:not(:disabled) {
   min-width: 160px;
 }
 
+.viewer-menu-icon {
+  display: inline-flex;
+  margin-right: 6px;
+}
+
+.viewer-menu-icon--ccw {
+  transform: scaleX(-1);
+}
+
+.viewer-menu-progress {
+  padding: 6px 8px;
+  font-size: 0.75rem;
+  color: rgba(31, 28, 23, 0.7);
+}
+
 .viewer-menu-panel::before {
   content: '';
   position: absolute;
@@ -1336,6 +1351,48 @@ button.ghost:hover:not(:disabled) {
 .modal-info-row {
   display: grid;
   gap: 4px;
+}
+
+.modal-info-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.modal-info-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.7rem;
+}
+
+.modal-info-icon {
+  display: inline-flex;
+}
+
+.modal-info-icon--ccw {
+  transform: scaleX(-1);
+}
+
+.modal-info-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-info-action:not(:disabled):hover {
+  border-color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 1);
+}
+
+.modal-info-progress {
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.75rem;
 }
 
 .modal-info-label {

@@ -18,6 +18,7 @@ import { useModalGestures } from '../features/modal/useModalGestures';
 import { useModalHistory } from '../features/modal/useModalHistory';
 import { useModalDataLoader } from '../features/modal/useModalDataLoader';
 import { useModalState } from '../features/modal/useModalState';
+import { useImageCache } from '../features/imageCache/ImageCacheContext';
 
 type ResolveSetImages = (
   set: PoseSet,
@@ -72,6 +73,7 @@ export type ModalDeps = {
   slideshowPageSize: number;
   prefetchThumbs: (images: DriveImage[]) => void;
   setError: (message: string) => void;
+  rotateImage: (fileId: string, angle: 90 | -90) => Promise<void>;
 };
 
 export type ModalViewerState = {
@@ -89,6 +91,13 @@ export type ModalViewerState = {
   modalLoadingCount: number;
   modalPulse: boolean;
   modalFavoritePulse: null | 'add' | 'remove';
+  modalIsRotating: boolean;
+  modalRotateProgress: null | {
+    scope: 'single' | 'batch';
+    total: number;
+    completed: number;
+    angle: 90 | -90;
+  };
   modalFullSrc: string | null;
   modalFullImageId: string | null;
   modalFullAnimate: boolean;
@@ -128,6 +137,7 @@ export type ModalViewerState = {
   onOpenChronologicalContext: () => void;
   onRestoreModalContext: () => void;
   onToggleFavoriteFromModal: () => void;
+  onRotateModalImage: (angle: 90 | -90) => void;
   onPrevImage: () => void;
   onNextImage: (options?: { suppressControls?: boolean }) => void;
   onCloseModal: () => void;
@@ -160,7 +170,9 @@ export function useModalViewer({
   filterImagesByFavoriteStatus,
   pickNext,
   isLoadingMore,
+  rotateImage,
 }: ModalDeps) {
+  const { cacheKey, bumpCacheKey } = useImageCache();
   const [modalIndex, setModalIndex] = useState<number | null>(null);
   const [modalImageId, setModalImageId] = useState<string | null>(null);
   const [modalItems, setModalItems] = useState<DriveImage[]>([]);
@@ -174,6 +186,13 @@ export function useModalViewer({
   const [modalControlsVisible, setModalControlsVisible] = useState(true);
   const [modalShake, setModalShake] = useState(false);
   const [isModalInfoOpen, setIsModalInfoOpen] = useState(false);
+  const [modalIsRotating, setModalIsRotating] = useState(false);
+  const [modalRotateProgress, setModalRotateProgress] = useState<null | {
+    scope: 'single' | 'batch';
+    total: number;
+    completed: number;
+    angle: 90 | -90;
+  }>(null);
 
   const modalPendingAdvanceRef = useRef(false);
   const modalItemsLengthRef = useRef(0);
@@ -181,6 +200,7 @@ export function useModalViewer({
   const modalFavoritePulseTimeout = useRef<number | null>(null);
   const modalControlsTimeoutRef = useRef<number | null>(null);
   const modalShakeTimeoutRef = useRef<number | null>(null);
+  const modalRotateClearTimeoutRef = useRef<number | null>(null);
   const modalHistoryEntryRef = useRef(false);
   const ignoreNextPopRef = useRef(false);
   const ignoreNextFullscreenRef = useRef(false);
@@ -223,6 +243,7 @@ export function useModalViewer({
     modalIndex,
     modalItems,
     modalLoadKey,
+    cacheKey,
     prefetchThumbs,
     setError,
   });
@@ -307,6 +328,17 @@ export function useModalViewer({
     }
     setModalControlsVisible(true);
   }, [isModalInfoOpen]);
+
+  useEffect(() => {
+    if (!modalIsRotating) {
+      return;
+    }
+    if (modalControlsTimeoutRef.current) {
+      window.clearTimeout(modalControlsTimeoutRef.current);
+      modalControlsTimeoutRef.current = null;
+    }
+    setModalControlsVisible(true);
+  }, [modalIsRotating]);
 
   const closeInfoMenu = useCallback(() => {
     setIsModalInfoOpen(false);
@@ -551,6 +583,61 @@ export function useModalViewer({
     toggleFavoriteImage,
     triggerFavoritePulse,
   ]);
+
+  const finalizeRotateProgress = useCallback(() => {
+    if (modalRotateClearTimeoutRef.current) {
+      window.clearTimeout(modalRotateClearTimeoutRef.current);
+      modalRotateClearTimeoutRef.current = null;
+    }
+    modalRotateClearTimeoutRef.current = window.setTimeout(() => {
+      setModalRotateProgress(null);
+      modalRotateClearTimeoutRef.current = null;
+    }, 800);
+  }, []);
+
+  const rotateModalImage = useCallback(
+    async (angle: 90 | -90) => {
+      if (!modalImage || modalIsRotating) {
+        return;
+      }
+      setModalIsRotating(true);
+      setModalRotateProgress({
+        scope: 'single',
+        total: 1,
+        completed: 0,
+        angle,
+      });
+      try {
+        await rotateImage(modalImage.id, angle);
+        clearModalMediaCache();
+        resetModalMediaState();
+        bumpCacheKey();
+        setModalRotateProgress({
+          scope: 'single',
+          total: 1,
+          completed: 1,
+          angle,
+        });
+        finalizeRotateProgress();
+      } catch (error) {
+        setError((error as Error).message);
+        setModalRotateProgress(null);
+      } finally {
+        setModalIsRotating(false);
+      }
+    },
+    [
+      bumpCacheKey,
+      clearModalMediaCache,
+      finalizeRotateProgress,
+      modalImage,
+      modalIsRotating,
+      resetModalMediaState,
+      rotateImage,
+      setError,
+    ]
+  );
+
 
   const resolveCurrentIndex = useCallback(() => {
     if (modalIndex !== null && modalItems[modalIndex]?.id === modalImageId) {
@@ -802,6 +889,9 @@ export function useModalViewer({
       if (modalShakeTimeoutRef.current) {
         window.clearTimeout(modalShakeTimeoutRef.current);
       }
+      if (modalRotateClearTimeoutRef.current) {
+        window.clearTimeout(modalRotateClearTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -848,6 +938,8 @@ export function useModalViewer({
     modalLoadingCount,
     modalPulse,
     modalFavoritePulse,
+    modalIsRotating,
+    modalRotateProgress,
     modalFullSrc,
     modalFullImageId,
     modalFullAnimate,
@@ -887,6 +979,7 @@ export function useModalViewer({
     onOpenChronologicalContext: openModalChronologicalContext,
     onRestoreModalContext: restoreModalContext,
     onToggleFavoriteFromModal: toggleFavoriteFromModal,
+    onRotateModalImage: rotateModalImage,
     onPrevImage: goPrevImage,
     onNextImage: goNextImage,
     onCloseModal: () => closeModalWithHistory('manual'),

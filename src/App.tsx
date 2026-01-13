@@ -31,8 +31,10 @@ import { normalizeTags } from './utils/tags';
 import { hashStringToUnit, pickRandom, shuffleItems, shuffleItemsSeeded } from './utils/random';
 import { formatDownloadProgress, formatIndexProgress, startIndexTimer } from './utils/progress';
 import { createProxyThumbUrl } from './utils/driveUrls';
+import { sortImagesChronological } from './utils/imageSorting';
 import { useImageCache } from './features/imageCache/ImageCacheContext';
 import {
+  loadImageListCache,
   readImageListCache,
   readMetadataCache,
   readMetadataDirtyFlag,
@@ -197,6 +199,8 @@ export default function App() {
   const [isRefreshingSet, setIsRefreshingSet] = useState(false);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
+  const activeSetIdRef = useRef<string | null>(null);
+  const loadSetImagesTokenRef = useRef(0);
   const allGridRef = useRef<HTMLDivElement | null>(null);
   const allImagesOrderRef = useRef<
     Map<string, { mode: 'random' | 'chronological'; ordered: DriveImage[]; seed: string | null }>
@@ -290,7 +294,7 @@ export default function App() {
 
   const filteredFolders = useMemo(() => {
     const query = folderFilter.trim().toLowerCase();
-    const setPrefixes = visibleSets.map((set) => set.rootPath);
+    const setPrefixes = metadata.sets.map((set) => set.rootPath);
     return folderPaths.filter((folder) => {
       if (hiddenFolders.some((hidden) => hidden.id === folder.id)) {
         return false;
@@ -772,6 +776,10 @@ export default function App() {
   }, [metadataDirty]);
 
   useEffect(() => {
+    activeSetIdRef.current = activeSet?.id ?? null;
+  }, [activeSet?.id]);
+
+  useEffect(() => {
     const readColumns = (element: HTMLDivElement | null) => {
       if (!element) {
         return 1;
@@ -1209,6 +1217,7 @@ export default function App() {
         !set.indexFileId && prebuilt?.fileId
           ? { ...set, indexFileId: prebuilt.fileId ?? undefined }
           : set;
+      await loadImageListCache(set.id);
       const cached = readImageListCache(set.id);
       if (cached) {
         return cached;
@@ -1350,8 +1359,17 @@ export default function App() {
   const getOrderedAllImages = useCallback(
     (setId: string, images: DriveImage[]) => {
       if (viewerSort === 'chronological') {
-        allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered: images, seed: null });
-        return images;
+        const cached = allImagesOrderRef.current.get(setId);
+        if (cached && cached.mode === viewerSort && cached.ordered.length === images.length) {
+          const currentIds = new Set(images.map((image) => image.id));
+          const missing = cached.ordered.some((image) => !currentIds.has(image.id));
+          if (!missing) {
+            return cached.ordered;
+          }
+        }
+        const ordered = sortImagesChronological(images);
+        allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered, seed: null });
+        return ordered;
       }
       const cached = allImagesOrderRef.current.get(setId);
       if (cached && cached.mode === viewerSort && cached.seed === viewerSortSeed) {
@@ -1640,6 +1658,10 @@ export default function App() {
     if (!isConnected) {
       return;
     }
+    const token = loadSetImagesTokenRef.current + 1;
+    loadSetImagesTokenRef.current = token;
+    const isCurrent = () =>
+      loadSetImagesTokenRef.current === token && activeSetIdRef.current === set.id;
     if (append) {
       setIsLoadingMore(true);
     } else {
@@ -1650,6 +1672,10 @@ export default function App() {
 
     try {
       const prebuilt = getPrebuiltIndexForSet(set);
+      await loadImageListCache(set.id);
+      if (!isCurrent()) {
+        return;
+      }
       const cached = readImageListCache(set.id);
       const favoriteIds = set.favoriteImageIds ?? [];
       const hiddenIds = set.hiddenImageIds ?? [];
@@ -1715,14 +1741,23 @@ export default function App() {
         set,
         true,
         (progress) => {
+          if (!isCurrent()) {
+            return;
+          }
           stopTimer();
           viewerIndexTimerRef.current = null;
           setViewerIndexProgress(formatDownloadProgress(progress));
         },
         (progress) => {
+          if (!isCurrent()) {
+            return;
+          }
           setViewerIndexProgress(formatIndexProgress(progress));
         }
       );
+      if (!isCurrent()) {
+        return;
+      }
       stopTimer();
       viewerIndexTimerRef.current = null;
       if (index) {
@@ -1752,14 +1787,18 @@ export default function App() {
         return;
       }
     } catch (loadError) {
-      setError((loadError as Error).message);
-      setImageLoadStatus('');
+      if (isCurrent()) {
+        setError((loadError as Error).message);
+        setImageLoadStatus('');
+      }
     } finally {
-      setViewerIndexProgress('');
-      if (append) {
-        setIsLoadingMore(false);
-      } else {
-        setIsLoadingImages(false);
+      if (isCurrent()) {
+        setViewerIndexProgress('');
+        if (append) {
+          setIsLoadingMore(false);
+        } else {
+          setIsLoadingImages(false);
+        }
       }
     }
   };
@@ -1952,6 +1991,7 @@ export default function App() {
       return;
     }
     const previousCount = activeImages.length;
+    await loadImageListCache(activeSet.id);
     const cached = readImageListCache(activeSet.id);
     const maxAvailable = activeSet.imageCount ?? cached?.length ?? Infinity;
     const nextLimit = Math.min(imageLimit + allPageSize, maxAvailable);
@@ -1971,6 +2011,7 @@ export default function App() {
     try {
       const favoriteIds = activeSet.favoriteImageIds ?? [];
       const hiddenIds = activeSet.hiddenImageIds ?? [];
+      await loadImageListCache(activeSet.id);
       const cached = readImageListCache(activeSet.id);
       if (cached) {
         updateFavoriteImagesFromSource(activeSet.id, cached, favoriteIds, hiddenIds, {
@@ -2041,6 +2082,7 @@ export default function App() {
       if (viewerSort !== 'chronological') {
         return;
       }
+      await loadImageListCache(activeSet.id);
       let images = readImageListCache(activeSet.id);
       if (!images || images.length === 0) {
         images = await resolveSetImages(activeSet, true, { suppressProgress: true });
@@ -2368,7 +2410,10 @@ export default function App() {
           </SetViewerProvider>
         ) : null}
 
-          <ToastStack toasts={toasts} />
+          <ToastStack
+            toasts={toasts}
+            onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+          />
           <ScrollControls
             canScrollUp={canScrollUp}
             canScrollDown={canScrollDown}

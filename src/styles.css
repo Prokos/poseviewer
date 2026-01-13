@@ -1527,6 +1527,16 @@ button.ghost:hover:not(:disabled) {
   animation: favorite-pop 0.52s ease;
 }
 
+.modal-timer-pop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 3;
+  animation: favorite-pop 0.52s ease;
+}
+
 .modal-favorite-pop.is-add {
   color: #d15647;
 }
@@ -1543,6 +1553,14 @@ button.ghost:hover:not(:disabled) {
   color: rgba(255, 255, 255, 0.65);
 }
 
+.modal-timer-pop.is-pause {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.modal-timer-pop.is-play {
+  color: rgba(108, 125, 94, 0.9);
+}
+
 .modal-favorite-pop svg {
   width: 30vmin;
   height: 30vmin;
@@ -1551,6 +1569,11 @@ button.ghost:hover:not(:disabled) {
 .modal-hide-pop svg {
   width: 30vmin;
   height: 30vmin;
+}
+
+.modal-timer-pop svg {
+  width: 28vmin;
+  height: 28vmin;
 }
 
 .modal-counter {
@@ -1671,6 +1694,50 @@ button.ghost:hover:not(:disabled) {
   color: rgba(255, 255, 255, 0.95);
 }
 
+.modal-timer-custom {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+
+.modal-timer-input {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.85);
+  text-align: center;
+  appearance: textfield;
+}
+
+.modal-timer-input::-webkit-outer-spin-button,
+.modal-timer-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.modal-timer-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.modal-timer-apply {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+}
+
+.modal-timer-apply:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .modal-timer-bar {
   position: absolute;
   left: var(--modal-safe-left);
@@ -1775,11 +1842,37 @@ button.ghost:hover:not(:disabled) {
 .toast {
   background: rgba(31, 28, 23, 0.9);
   color: var(--white);
-  padding: 10px 14px;
+  padding: 10px 10px 10px 14px;
   border-radius: 12px;
   box-shadow: var(--shadow);
   font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toast-message {
+  flex: 1;
   text-align: center;
+}
+
+.toast-dismiss {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--white);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toast-dismiss:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .scroll-control {

@@ -7,6 +7,8 @@ const INDEX_NAME = 'poseviewer-index.json';
 type PoseIndexItem = {
   id: string;
   name: string;
+  time?: string;
+  createdTime?: string;
 };
 
 export type PoseIndexDocument = {
@@ -100,7 +102,12 @@ export async function buildSetIndex(
   onProgress?: (progress: { folders: number; images: number }) => void
 ) {
   const images = await listImagesRecursive(folderId, Infinity, onProgress);
-  return images.map((image) => ({ id: image.id, name: image.name }));
+  return images.map((image) => ({
+    id: image.id,
+    name: image.name,
+    time: image.imageMediaMetadata?.time,
+    createdTime: image.createdTime,
+  }));
 }
 
 export function indexItemsToImages(items: PoseIndexItem[]): DriveImage[] {
@@ -108,5 +115,7 @@ export function indexItemsToImages(items: PoseIndexItem[]): DriveImage[] {
     id: item.id,
     name: item.name,
     mimeType: 'image/jpeg',
+    imageMediaMetadata: item.time ? { time: item.time } : undefined,
+    createdTime: item.createdTime,
   }));
 }

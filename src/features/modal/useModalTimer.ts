@@ -14,19 +14,25 @@ export function useModalTimer({
   goNextImageRef,
   setModalControlsVisible,
 }: UseModalTimerOptions) {
+  const lastTimerMsKey = 'poseviewer-modal-timer-last-ms';
+  const defaultTimerMs = 30_000;
   const [modalTimerMs, setModalTimerMs] = useState(0);
   const [modalTimerProgress, setModalTimerProgress] = useState(0);
   const [isModalTimerOpen, setIsModalTimerOpen] = useState(false);
   const [modalTimerFade, setModalTimerFade] = useState(false);
+  const [isModalTimerPaused, setIsModalTimerPaused] = useState(false);
   const modalTimerIntervalRef = useRef<number | null>(null);
   const modalTimerStartRef = useRef(0);
   const modalTimerElapsedRef = useRef(0);
   const modalTimerPausedRef = useRef(false);
+  const modalTimerManualPausedRef = useRef(false);
   const modalTimerResumeTimeoutRef = useRef<number | null>(null);
   const modalTimerFadeRef = useRef(false);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const wakeFallbackRef = useRef<HTMLVideoElement | null>(null);
   const modalAutoAdvanceRef = useRef(false);
+  const modalTimerAutoStopTimeoutRef = useRef<number | null>(null);
+  const modalTimerAutoStopMs = 60_000;
 
   const pauseModalTimer = useCallback(() => {
     if (modalTimerMs <= 0 || modalTimerPausedRef.current) {
@@ -34,6 +40,7 @@ export function useModalTimer({
     }
     modalTimerPausedRef.current = true;
     modalTimerElapsedRef.current += performance.now() - modalTimerStartRef.current;
+    setIsModalTimerPaused(true);
     if (modalTimerFadeRef.current) {
       modalTimerFadeRef.current = false;
       setModalTimerFade(false);
@@ -46,6 +53,7 @@ export function useModalTimer({
     }
     modalTimerPausedRef.current = false;
     modalTimerStartRef.current = performance.now();
+    setIsModalTimerPaused(false);
   }, [modalTimerMs]);
 
   const scheduleModalTimerResume = useCallback(() => {
@@ -55,11 +63,37 @@ export function useModalTimer({
     if (isModalTimerOpen) {
       return;
     }
+    if (modalTimerManualPausedRef.current) {
+      return;
+    }
     modalTimerResumeTimeoutRef.current = window.setTimeout(() => {
       modalTimerResumeTimeoutRef.current = null;
       resumeModalTimer();
     }, 300);
   }, [isModalTimerOpen, resumeModalTimer]);
+
+  const scheduleAutoStopIfPaused = useCallback(() => {
+    if (modalTimerAutoStopTimeoutRef.current) {
+      window.clearTimeout(modalTimerAutoStopTimeoutRef.current);
+    }
+    modalTimerAutoStopTimeoutRef.current = window.setTimeout(() => {
+      modalTimerAutoStopTimeoutRef.current = null;
+      modalTimerManualPausedRef.current = false;
+      modalTimerPausedRef.current = false;
+      setIsModalTimerPaused(false);
+      setModalTimerMs(0);
+      setModalTimerProgress(0);
+      setModalTimerFade(false);
+      setIsModalTimerOpen(false);
+    }, modalTimerAutoStopMs);
+  }, []);
+
+  const clearAutoStopIfPaused = useCallback(() => {
+    if (modalTimerAutoStopTimeoutRef.current) {
+      window.clearTimeout(modalTimerAutoStopTimeoutRef.current);
+      modalTimerAutoStopTimeoutRef.current = null;
+    }
+  }, []);
 
   const startWakeFallback = useCallback(() => {
     if (wakeFallbackRef.current) {
@@ -104,15 +138,21 @@ export function useModalTimer({
 
   const onSelectModalTimer = useCallback(
     (value: number) => {
+      modalTimerManualPausedRef.current = false;
+      setIsModalTimerPaused(false);
       setModalTimerMs(value);
       setIsModalTimerOpen(false);
+      clearAutoStopIfPaused();
+      if (value > 0) {
+        localStorage.setItem(lastTimerMsKey, String(value));
+      }
       if (value > 0) {
         startWakeFallback();
       } else {
         stopWakeFallback();
       }
     },
-    [startWakeFallback, stopWakeFallback]
+    [clearAutoStopIfPaused, startWakeFallback, stopWakeFallback]
   );
 
   const onResetModalTimer = useCallback(() => {
@@ -121,11 +161,36 @@ export function useModalTimer({
     }
     modalTimerElapsedRef.current = 0;
     modalTimerPausedRef.current = false;
+    setIsModalTimerPaused(false);
+    clearAutoStopIfPaused();
     modalTimerStartRef.current = performance.now();
     setModalTimerProgress(0);
     setModalTimerFade(false);
     setIsModalTimerOpen(false);
-  }, [modalTimerMs]);
+  }, [clearAutoStopIfPaused, modalTimerMs]);
+
+  const toggleModalTimerPause = useCallback(() => {
+    if (modalTimerMs <= 0) {
+      return;
+    }
+    if (modalTimerPausedRef.current) {
+      modalTimerManualPausedRef.current = false;
+      clearAutoStopIfPaused();
+      resumeModalTimer();
+      return;
+    }
+    modalTimerManualPausedRef.current = true;
+    pauseModalTimer();
+    scheduleAutoStopIfPaused();
+  }, [clearAutoStopIfPaused, modalTimerMs, pauseModalTimer, resumeModalTimer, scheduleAutoStopIfPaused]);
+
+  const startLastModalTimer = useCallback(() => {
+    const raw = localStorage.getItem(lastTimerMsKey);
+    const value = raw ? Number(raw) : Number.NaN;
+    const nextValue = Number.isFinite(value) && value > 0 ? value : defaultTimerMs;
+    onSelectModalTimer(nextValue);
+    return true;
+  }, [defaultTimerMs, onSelectModalTimer]);
 
   const onToggleTimerMenu = useCallback(() => {
     setModalControlsVisible(true);
@@ -161,17 +226,26 @@ export function useModalTimer({
         window.clearInterval(modalTimerIntervalRef.current);
         modalTimerIntervalRef.current = null;
       }
+      modalTimerPausedRef.current = false;
+      setIsModalTimerPaused(false);
       setModalTimerProgress(0);
       setModalTimerFade(false);
+      clearAutoStopIfPaused();
       stopWakeFallback();
       return;
     }
     let isActive = true;
     modalTimerElapsedRef.current = 0;
-    modalTimerPausedRef.current = false;
     modalTimerStartRef.current = performance.now();
     setModalTimerProgress(0);
     setModalTimerFade(false);
+    if (modalTimerManualPausedRef.current) {
+      modalTimerPausedRef.current = true;
+      setIsModalTimerPaused(true);
+    } else {
+      modalTimerPausedRef.current = false;
+      setIsModalTimerPaused(false);
+    }
     const tick = (now: number) => {
       if (!isActive) {
         return;
@@ -208,7 +282,14 @@ export function useModalTimer({
         modalTimerIntervalRef.current = null;
       }
     };
-  }, [goNextImageRef, modalImageId, modalTimerMs, setModalControlsVisible, stopWakeFallback]);
+  }, [
+    clearAutoStopIfPaused,
+    goNextImageRef,
+    modalImageId,
+    modalTimerMs,
+    setModalControlsVisible,
+    stopWakeFallback,
+  ]);
 
   useEffect(() => {
     if (!modalImageId || modalTimerMs <= 0 || typeof navigator === 'undefined') {
@@ -259,22 +340,28 @@ export function useModalTimer({
       window.clearTimeout(modalTimerResumeTimeoutRef.current);
       modalTimerResumeTimeoutRef.current = null;
     }
+    clearAutoStopIfPaused();
+    modalTimerManualPausedRef.current = false;
+    setIsModalTimerPaused(false);
     setModalTimerMs(0);
     setModalTimerProgress(0);
     setModalTimerFade(false);
     setIsModalTimerOpen(false);
-  }, []);
+  }, [clearAutoStopIfPaused]);
 
   return {
     modalTimerMs,
     modalTimerProgress,
     isModalTimerOpen,
     modalTimerFade,
+    isModalTimerPaused,
     modalTimerOptions,
     onSelectModalTimer,
     onResetModalTimer,
     onToggleTimerMenu,
     pauseModalTimer,
+    toggleModalTimerPause,
+    startLastModalTimer,
     scheduleModalTimerResume,
     resetModalTimerState,
   };

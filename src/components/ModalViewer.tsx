@@ -8,12 +8,14 @@ import {
   IconHeartFilled,
   IconInfoCircle,
   IconLoader2,
+  IconPlayerPauseFilled,
+  IconPlayerPlayFilled,
   IconRefresh,
   IconRotateClockwise,
   IconTimeline,
   IconX,
 } from '@tabler/icons-react';
-import { useEffect, type MouseEvent } from 'react';
+import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
 import { useModalState } from '../features/modal/ModalContext';
 import { useImageCache } from '../features/imageCache/ImageCacheContext';
@@ -51,6 +53,7 @@ export function ModalViewer() {
     modalTimerProgress,
     isModalTimerOpen,
     modalTimerFade,
+    modalTimerPulse,
     modalHasHistory,
     modalTimerOptions,
     modalTotalImagesKnown,
@@ -88,6 +91,23 @@ export function ModalViewer() {
   if (!modalImage) {
     return null;
   }
+  const maxCustomTimerSeconds = 86400;
+  const [customTimerInput, setCustomTimerInput] = useState('');
+  const parsedCustomTimer = Number(customTimerInput);
+  const customTimerSeconds = Number.isFinite(parsedCustomTimer)
+    ? Math.floor(parsedCustomTimer)
+    : NaN;
+  const customTimerValid =
+    Number.isFinite(customTimerSeconds) &&
+    customTimerSeconds > 0 &&
+    customTimerSeconds <= maxCustomTimerSeconds;
+  const handleCustomTimerSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!customTimerValid) {
+      return;
+    }
+    onSelectModalTimer(customTimerSeconds * 1000);
+  };
   useEffect(() => {
     onCloseInfoMenu();
   }, [modalImage.id, onCloseInfoMenu]);
@@ -253,6 +273,27 @@ export function ModalViewer() {
                     {option.label}
                   </button>
                 ))}
+                <form className="modal-timer-custom" onSubmit={handleCustomTimerSubmit}>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={maxCustomTimerSeconds}
+                    step={1}
+                    className="modal-timer-input"
+                    placeholder="seconds"
+                    value={customTimerInput}
+                    onChange={(event) => setCustomTimerInput(event.target.value)}
+                    aria-label="Custom timer seconds"
+                  />
+                  <button
+                    type="submit"
+                    className="modal-timer-apply"
+                    disabled={!customTimerValid}
+                  >
+                    Set
+                  </button>
+                </form>
                 <button
                   type="button"
                   className="modal-timer-reset"
@@ -300,6 +341,15 @@ export function ModalViewer() {
             className={`modal-hide-pop ${modalHiddenPulse === 'hide' ? 'is-hide' : 'is-unhide'}`}
           >
             {modalHiddenPulse === 'hide' ? <IconEyeOff size={1} /> : <IconEye size={1} />}
+          </div>
+        ) : null}
+        {modalTimerPulse ? (
+          <div className={`modal-timer-pop ${modalTimerPulse === 'pause' ? 'is-pause' : 'is-play'}`}>
+            {modalTimerPulse === 'pause' ? (
+              <IconPlayerPauseFilled size={1} />
+            ) : (
+              <IconPlayerPlayFilled size={1} />
+            )}
           </div>
         ) : null}
         <div

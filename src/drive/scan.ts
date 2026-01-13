@@ -126,7 +126,7 @@ export async function listImagesRecursive(
         {
           q: `'${current.id}' in parents and trashed=false`,
         },
-        'nextPageToken,files(id,name,mimeType)'
+        'nextPageToken,files(id,name,mimeType,createdTime,imageMediaMetadata(time))'
       );
       processed += 1;
       if (onProgress && (processed === 1 || processed % 3 === 0)) {

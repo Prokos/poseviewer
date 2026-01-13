@@ -16,6 +16,7 @@ import {
   filterImagesByFavoriteStatus,
   filterImagesByHiddenStatus,
 } from '../../utils/imageSampling';
+import { sortImagesChronological } from '../../utils/imageSorting';
 import { shuffleItemsSeeded } from '../../utils/random';
 
 type SetViewerTab = 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all';
@@ -109,13 +110,15 @@ export function useSetViewerGrids({
       const visibleImages = filterImagesByHiddenStatus(images, hiddenIds, 'visible');
       const hiddenImages = filterImagesByHiddenStatus(images, hiddenIds, 'hidden');
       if (viewerSort === 'chronological') {
-        const favorites = filterImagesByFavoriteStatus(visibleImages, favoriteIds, 'favorites');
-        const nonfavorites = filterImagesByFavoriteStatus(visibleImages, favoriteIds, 'nonfavorites');
+        const orderedVisible = sortImagesChronological(visibleImages);
+        const orderedHidden = sortImagesChronological(hiddenImages);
+        const favorites = filterImagesByFavoriteStatus(orderedVisible, favoriteIds, 'favorites');
+        const nonfavorites = filterImagesByFavoriteStatus(orderedVisible, favoriteIds, 'nonfavorites');
         const next = {
           mode: viewerSort,
           favorites,
           nonfavorites,
-          hidden: hiddenImages,
+          hidden: orderedHidden,
         };
         orderedListsRef.current.set(setId, next);
         return next;

@@ -6,6 +6,10 @@ export type DriveFile = {
   thumbnailLink?: string;
   md5Checksum?: string;
   modifiedTime?: string;
+  createdTime?: string;
+  imageMediaMetadata?: {
+    time?: string;
+  };
 };
 
 export type DriveFolder = DriveFile & {

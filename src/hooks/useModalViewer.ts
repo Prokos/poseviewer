@@ -122,6 +122,7 @@ export type ModalViewerState = {
   modalTimerProgress: number;
   isModalTimerOpen: boolean;
   modalTimerFade: boolean;
+  modalTimerPulse: null | 'pause' | 'play';
   modalHasHistory: boolean;
   modalTimerOptions: Array<{ label: string; value: number }>;
   modalTotalImagesKnown?: number;
@@ -197,6 +198,7 @@ export function useModalViewer({
   const [modalPulse, setModalPulse] = useState(false);
   const [modalFavoritePulse, setModalFavoritePulse] = useState<null | 'add' | 'remove'>(null);
   const [modalHiddenPulse, setModalHiddenPulse] = useState<null | 'hide' | 'unhide'>(null);
+  const [modalTimerPulse, setModalTimerPulse] = useState<null | 'pause' | 'play'>(null);
   const [modalLoadKey, setModalLoadKey] = useState(0);
   const [modalZoom, setModalZoom] = useState(1);
   const [modalPan, setModalPan] = useState({ x: 0, y: 0 });
@@ -216,6 +218,7 @@ export function useModalViewer({
   const modalPulseTimeout = useRef<number | null>(null);
   const modalFavoritePulseTimeout = useRef<number | null>(null);
   const modalHiddenPulseTimeout = useRef<number | null>(null);
+  const modalTimerPulseTimeout = useRef<number | null>(null);
   const modalControlsTimeoutRef = useRef<number | null>(null);
   const modalShakeTimeoutRef = useRef<number | null>(null);
   const modalRotateClearTimeoutRef = useRef<number | null>(null);
@@ -232,11 +235,14 @@ export function useModalViewer({
     modalTimerProgress,
     isModalTimerOpen,
     modalTimerFade,
+    isModalTimerPaused,
     modalTimerOptions,
     onSelectModalTimer,
     onResetModalTimer,
     onToggleTimerMenu,
     pauseModalTimer,
+    toggleModalTimerPause,
+    startLastModalTimer,
     scheduleModalTimerResume,
     resetModalTimerState,
   } = useModalTimer({
@@ -440,6 +446,19 @@ export function useModalViewer({
       setModalHiddenPulse(mode);
       modalHiddenPulseTimeout.current = window.setTimeout(() => {
         setModalHiddenPulse(null);
+      }, 520);
+    }, 10);
+  }, []);
+
+  const triggerTimerPulse = useCallback((mode: 'pause' | 'play') => {
+    setModalTimerPulse(null);
+    if (modalTimerPulseTimeout.current) {
+      window.clearTimeout(modalTimerPulseTimeout.current);
+    }
+    modalTimerPulseTimeout.current = window.setTimeout(() => {
+      setModalTimerPulse(mode);
+      modalTimerPulseTimeout.current = window.setTimeout(() => {
+        setModalTimerPulse(null);
       }, 520);
     }, 10);
   }, []);
@@ -917,13 +936,38 @@ export function useModalViewer({
       return;
     }
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === 'f') {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const normalizedKey = event.key.toLowerCase();
+      if (normalizedKey === 'p' || event.key === ' ') {
+        event.preventDefault();
+        if (modalTimerMs > 0) {
+          const mode = isModalTimerPaused ? 'play' : 'pause';
+          toggleModalTimerPause();
+          triggerTimerPulse(mode);
+          return;
+        }
+        const started = startLastModalTimer();
+        if (started) {
+          triggerTimerPulse('play');
+        }
+        return;
+      }
+      if (normalizedKey === 'f') {
         toggleFavoriteFromModal();
       }
-      if (event.key.toLowerCase() === 'h') {
+      if (normalizedKey === 'h') {
         toggleHiddenFromModal();
       }
-      if (event.key.toLowerCase() === 'c') {
+      if (normalizedKey === 'c') {
         if (modalContextLabel === 'Set') {
           if (modalHasHistory) {
             restoreModalContext();
@@ -964,7 +1008,12 @@ export function useModalViewer({
     openModalChronologicalContext,
     restoreModalContext,
     toggleFavoriteFromModal,
+    toggleModalTimerPause,
+    startLastModalTimer,
     toggleHiddenFromModal,
+    modalTimerMs,
+    isModalTimerPaused,
+    triggerTimerPulse,
     viewerSort,
   ]);
 
@@ -978,6 +1027,9 @@ export function useModalViewer({
       }
       if (modalHiddenPulseTimeout.current) {
         window.clearTimeout(modalHiddenPulseTimeout.current);
+      }
+      if (modalTimerPulseTimeout.current) {
+        window.clearTimeout(modalTimerPulseTimeout.current);
       }
       if (modalControlsTimeoutRef.current) {
         window.clearTimeout(modalControlsTimeoutRef.current);
@@ -1051,6 +1103,7 @@ export function useModalViewer({
     modalTimerProgress,
     isModalTimerOpen,
     modalTimerFade,
+    modalTimerPulse,
     modalHasHistory,
     modalTimerOptions,
     modalTotalImagesKnown,

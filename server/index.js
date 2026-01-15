@@ -45,6 +45,7 @@ function logServerError(req, message, error) {
   console.error(`[server 500] ${req.method} ${req.originalUrl} - ${message}`, details);
 }
 
+
 async function pruneCacheDir(dir, dataExt, maxBytes) {
   let entries = [];
   let totalBytes = 0;
@@ -144,6 +145,7 @@ function createSemaphore(limit, maxQueue = Infinity) {
 
 const mediaSemaphore = createSemaphore(MAX_MEDIA_CONCURRENCY, MAX_MEDIA_QUEUE);
 const thumbSemaphore = createSemaphore(MAX_THUMB_CONCURRENCY, MAX_THUMB_QUEUE);
+
 
 async function fetchWithTimeout(url, options, timeoutMs, signal) {
   const controller = new AbortController();
@@ -360,6 +362,8 @@ async function fetchDriveThumbnail(fileId, token, size, signal) {
 }
 
 app.get('/api/thumb/:fileId', async (req, res) => {
+  const start = Date.now();
+  const queueStart = Date.now();
   const controller = new AbortController();
   const handleClose = () => {
     controller.abort();
@@ -373,6 +377,7 @@ app.get('/api/thumb/:fileId', async (req, res) => {
     res.status(429).json({ error: 'Thumb queue full.' });
     return;
   }
+  const queueMs = Date.now() - queueStart;
   if (controller.signal.aborted) {
     thumbSemaphore.release();
     return;
@@ -395,6 +400,9 @@ app.get('/api/thumb/:fileId', async (req, res) => {
   if (cached) {
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'HIT');
+    res.set('X-Queue', String(queueMs));
+    res.set('X-Elapsed', String(Date.now() - start));
+    res.set('X-Source', 'cache-meta');
     res.type(cached.meta.contentType || 'image/webp').send(cached.data);
     thumbSemaphore.release();
     return;
@@ -404,6 +412,9 @@ app.get('/api/thumb/:fileId', async (req, res) => {
   if (legacyCached) {
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'HIT');
+    res.set('X-Queue', String(queueMs));
+    res.set('X-Elapsed', String(Date.now() - start));
+    res.set('X-Source', 'cache-legacy');
     res.type('image/webp').send(legacyCached);
     thumbSemaphore.release();
     return;
@@ -421,6 +432,9 @@ app.get('/api/thumb/:fileId', async (req, res) => {
         }
         res.set('Cache-Control', 'public, max-age=86400');
         res.set('X-Cache', 'MISS');
+        res.set('X-Queue', String(queueMs));
+        res.set('X-Elapsed', String(Date.now() - start));
+        res.set('X-Source', 'drive-thumb');
         res.type(thumbResult.contentType).send(thumbResult.data);
         return;
       }
@@ -464,6 +478,9 @@ app.get('/api/thumb/:fileId', async (req, res) => {
     }
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'MISS');
+    res.set('X-Queue', String(queueMs));
+    res.set('X-Elapsed', String(Date.now() - start));
+    res.set('X-Source', 'sharp');
     res.type('image/webp').send(output);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
@@ -477,6 +494,8 @@ app.get('/api/thumb/:fileId', async (req, res) => {
 });
 
 app.get('/api/media/:fileId', async (req, res) => {
+  const start = Date.now();
+  const queueStart = Date.now();
   const controller = new AbortController();
   const handleClose = () => {
     controller.abort();
@@ -490,6 +509,7 @@ app.get('/api/media/:fileId', async (req, res) => {
     res.status(429).json({ error: 'Media queue full.' });
     return;
   }
+  const queueMs = Date.now() - queueStart;
   if (controller.signal.aborted) {
     mediaSemaphore.release();
     return;
@@ -509,6 +529,9 @@ app.get('/api/media/:fileId', async (req, res) => {
   if (cached) {
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'HIT');
+    res.set('X-Queue', String(queueMs));
+    res.set('X-Elapsed', String(Date.now() - start));
+    res.set('X-Source', 'cache-meta');
     res.type(cached.meta.contentType || 'application/octet-stream').send(cached.data);
     mediaSemaphore.release();
     return;
@@ -559,6 +582,9 @@ app.get('/api/media/:fileId', async (req, res) => {
 
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'MISS');
+    res.set('X-Queue', String(queueMs));
+    res.set('X-Elapsed', String(Date.now() - start));
+    res.set('X-Source', 'drive-media');
     res.type(contentType).send(buffer);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
@@ -840,6 +866,40 @@ app.post('/api/drive/rotate', async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     logServerError(req, 'rotate handler failed', error);
+    res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
+  }
+});
+
+app.post('/api/drive/delete', async (req, res) => {
+  const token = await getAccessToken();
+  if (!token) {
+    res.status(401).json({ error: 'Missing access token.' });
+    return;
+  }
+  const { fileId } = req.body ?? {};
+  if (!fileId) {
+    res.status(400).json({ error: 'Missing fileId.' });
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${DRIVE_BASE}/files/${fileId}?supportsAllDrives=true`,
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      res.status(response.status).send(text);
+      return;
+    }
+    await clearImageCaches(fileId);
+    res.json({ ok: true });
+  } catch (error) {
+    logServerError(req, 'delete handler failed', error);
     res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
   }
 });

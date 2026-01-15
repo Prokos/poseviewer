@@ -2,13 +2,20 @@ import { useEffect, useMemo } from 'react';
 import { ModalStateContextProvider } from './ModalContext';
 import { ModalViewer } from '../../components/ModalViewer';
 import type { DriveImage } from '../../drive/types';
+import type { ModalOpenOptions } from './types';
 import { useModalViewer, type ModalDeps } from '../../hooks/useModalViewer';
 
 type ModalStateProviderProps = {
   deps: ModalDeps;
   thumbSize: number;
   onOpenModalReady?: (
-    openModal: (imageId: string, images: DriveImage[], label: string, index?: number) => void
+    openModal: (
+      imageId: string,
+      images: DriveImage[],
+      label: string,
+      index?: number,
+      options?: ModalOpenOptions
+    ) => void
   ) => void;
 };
 

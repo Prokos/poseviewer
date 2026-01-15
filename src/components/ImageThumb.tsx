@@ -38,6 +38,7 @@ export function ImageThumb({
   const [isInView, setIsInView] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const loadDelayRef = useRef<number | null>(null);
   const resolvedRef = containerRef ?? localRef;
   const resolvedPos = thumbPos ?? 50;
@@ -63,7 +64,7 @@ export function ImageThumb({
   }, [eager, fileId]);
 
   useEffect(() => {
-    if (eager || isInView) {
+    if (eager || isInView || isModalOpen) {
       return;
     }
     const node = observerNode;
@@ -110,7 +111,23 @@ export function ImageThumb({
       setIsInView(true);
       return;
     }
-  }, [eager, isInView, observerNode]);
+  }, [eager, isInView, isModalOpen, observerNode]);
+
+  useEffect(() => {
+    const readModalState = () => document.body.dataset.modalOpen === 'true';
+    setIsModalOpen(readModalState());
+    const handleModalToggle = (event: Event) => {
+      if (event instanceof CustomEvent && typeof event.detail?.open === 'boolean') {
+        setIsModalOpen(event.detail.open);
+      } else {
+        setIsModalOpen(readModalState());
+      }
+    };
+    window.addEventListener('poseviewer-modal', handleModalToggle);
+    return () => {
+      window.removeEventListener('poseviewer-modal', handleModalToggle);
+    };
+  }, []);
   if (!fileId) {
     return <div className="thumb thumb--empty">No thumbnail</div>;
   }
@@ -119,7 +136,7 @@ export function ImageThumb({
     return <div className="thumb thumb--empty">Connect to load</div>;
   }
 
-  const shouldLoad = eager || isInView;
+  const shouldLoad = eager || (isInView && (!isModalOpen || isLoaded));
 
   return (
     <div

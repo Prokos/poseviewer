@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import type { DriveImage } from '../../drive/types';
 import type { PoseSet } from '../../metadata';
+import type { ModalOpenOptions } from '../modal/types';
 import {
   appendUniqueImages,
   filterImagesByFavoriteStatus,
@@ -29,7 +30,13 @@ type UseSlideshowStateArgs = {
   setViewerIndexProgress: (value: string) => void;
   setError: (message: string) => void;
   openModalRef: MutableRefObject<
-    (imageId: string, images: DriveImage[], label: string, index?: number) => void
+    (
+      imageId: string,
+      images: DriveImage[],
+      label: string,
+      index?: number,
+      options?: ModalOpenOptions
+    ) => void
   >;
   slideshowPageSize: number;
 };

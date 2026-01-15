@@ -16,8 +16,7 @@ import {
   filterImagesByFavoriteStatus,
   filterImagesByHiddenStatus,
 } from '../../utils/imageSampling';
-import { sortImagesChronological } from '../../utils/imageSorting';
-import { shuffleItemsSeeded } from '../../utils/random';
+import { sortImagesChronological, sortImagesRandomSeeded } from '../../utils/imageSorting';
 
 type SetViewerTab = 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all';
 
@@ -29,6 +28,7 @@ type ResolveSetImages = (
 type ViewerGridKind = 'sample' | 'favorites' | 'nonfavorites' | 'hidden';
 
 type ViewerSortMode = 'random' | 'chronological';
+type ViewerSortOrder = 'asc' | 'desc';
 
 type ViewerGridConfig = {
   label: string;
@@ -44,6 +44,7 @@ type UseSetViewerGridsArgs = {
   isConnected: boolean;
   setViewerTab: SetViewerTab;
   viewerSort: ViewerSortMode;
+  viewerSortOrder: ViewerSortOrder;
   viewerSortSeed: string;
   resolveSetImages: ResolveSetImages;
   setError: (message: string) => void;
@@ -56,6 +57,7 @@ export function useSetViewerGrids({
   isConnected,
   setViewerTab,
   viewerSort,
+  viewerSortOrder,
   viewerSortSeed,
   resolveSetImages,
   setError,
@@ -112,13 +114,19 @@ export function useSetViewerGrids({
       if (viewerSort === 'chronological') {
         const orderedVisible = sortImagesChronological(visibleImages);
         const orderedHidden = sortImagesChronological(hiddenImages);
+        const orderedVisibleFinal =
+          viewerSortOrder === 'desc' ? orderedVisible.slice().reverse() : orderedVisible;
+        const orderedHiddenFinal =
+          viewerSortOrder === 'desc' ? orderedHidden.slice().reverse() : orderedHidden;
         const favorites = filterImagesByFavoriteStatus(orderedVisible, favoriteIds, 'favorites');
         const nonfavorites = filterImagesByFavoriteStatus(orderedVisible, favoriteIds, 'nonfavorites');
         const next = {
           mode: viewerSort,
-          favorites,
-          nonfavorites,
-          hidden: orderedHidden,
+          favorites:
+            viewerSortOrder === 'desc' ? favorites.slice().reverse() : favorites,
+          nonfavorites:
+            viewerSortOrder === 'desc' ? nonfavorites.slice().reverse() : nonfavorites,
+          hidden: orderedHiddenFinal,
         };
         orderedListsRef.current.set(setId, next);
         return next;
@@ -153,13 +161,13 @@ export function useSetViewerGrids({
         const next = {
           mode: viewerSort,
           favorites: keepFavorites.concat(
-            shuffleItemsSeeded(missingFavorites, `${viewerSortSeed}|${setId}|favorites`)
+            sortImagesRandomSeeded(missingFavorites, `${viewerSortSeed}|${setId}|favorites`)
           ),
           nonfavorites: keepNonFavorites.concat(
-            shuffleItemsSeeded(missingNonFavorites, `${viewerSortSeed}|${setId}|nonfavorites`)
+            sortImagesRandomSeeded(missingNonFavorites, `${viewerSortSeed}|${setId}|nonfavorites`)
           ),
           hidden: keepHidden.concat(
-            shuffleItemsSeeded(missingHidden, `${viewerSortSeed}|${setId}|hidden`)
+            sortImagesRandomSeeded(missingHidden, `${viewerSortSeed}|${setId}|hidden`)
           ),
         };
         orderedListsRef.current.set(setId, next);
@@ -170,14 +178,14 @@ export function useSetViewerGrids({
       const nonfavorites = filterImagesByFavoriteStatus(visibleImages, favoriteIds, 'nonfavorites');
       const next = {
         mode: viewerSort,
-        favorites: shuffleItemsSeeded(favorites, `${viewerSortSeed}|${setId}|favorites`),
-        nonfavorites: shuffleItemsSeeded(nonfavorites, `${viewerSortSeed}|${setId}|nonfavorites`),
-        hidden: shuffleItemsSeeded(hiddenImages, `${viewerSortSeed}|${setId}|hidden`),
+        favorites: sortImagesRandomSeeded(favorites, `${viewerSortSeed}|${setId}|favorites`),
+        nonfavorites: sortImagesRandomSeeded(nonfavorites, `${viewerSortSeed}|${setId}|nonfavorites`),
+        hidden: sortImagesRandomSeeded(hiddenImages, `${viewerSortSeed}|${setId}|hidden`),
       };
       orderedListsRef.current.set(setId, next);
       return next;
     },
-    [viewerSort, viewerSortSeed]
+    [viewerSort, viewerSortOrder, viewerSortSeed]
   );
 
   const getOrderedLists = useCallback(
@@ -323,7 +331,7 @@ export function useSetViewerGrids({
 
   useEffect(() => {
     orderedListsRef.current.clear();
-  }, [viewerSort]);
+  }, [viewerSort, viewerSortOrder, viewerSortSeed]);
 
   const getViewerGridConfig = useCallback(
     (kind: ViewerGridKind): ViewerGridConfig => {
@@ -461,7 +469,7 @@ export function useSetViewerGrids({
             config.setImages([]);
             return;
           }
-          const shuffled = shuffleItemsSeeded(filtered, `${viewerSortSeed}|${activeSet.id}|sample`);
+          const shuffled = sortImagesRandomSeeded(filtered, `${viewerSortSeed}|${activeSet.id}|sample`);
           config.setImages(shuffled);
           config.seenRef.current.set(
             activeSet.id,

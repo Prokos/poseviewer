@@ -1,4 +1,5 @@
 import type { DriveImage } from '../drive/types';
+import { hashStringToUnit } from './random';
 
 function parseTimestamp(value: string | undefined) {
   if (!value) {
@@ -40,5 +41,16 @@ export function sortImagesChronological(images: DriveImage[]) {
       return aCreated !== null ? -1 : 1;
     }
     return compareImageNames(a, b);
+  });
+}
+
+export function sortImagesRandomSeeded(images: DriveImage[], seed: string) {
+  return [...images].sort((a, b) => {
+    const aWeight = hashStringToUnit(`${seed}|${a.id}`);
+    const bWeight = hashStringToUnit(`${seed}|${b.id}`);
+    if (aWeight !== bWeight) {
+      return aWeight - bWeight;
+    }
+    return a.id.localeCompare(b.id);
   });
 }

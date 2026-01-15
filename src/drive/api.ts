@@ -100,3 +100,15 @@ export async function driveRotateImage(fileId: string, angle: 90 | -90) {
   await ensureOk(response, 'Drive rotate');
   return response.json() as Promise<{ ok: boolean }>;
 }
+
+export async function driveDeleteFile(fileId: string) {
+  const response = await fetch('/api/drive/delete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ fileId }),
+  });
+  await ensureOk(response, 'Drive delete');
+  return response.json() as Promise<{ ok: boolean }>;
+}

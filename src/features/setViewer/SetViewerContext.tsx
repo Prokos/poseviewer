@@ -13,10 +13,15 @@ export type SetViewerContextValue = {
   isConnected: boolean;
   isSaving: boolean;
   isRefreshingSet: boolean;
+  isDeletingHidden: boolean;
+  hiddenDeleteProgress: null | { total: number; completed: number };
   setViewerTab: 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all';
   onSetViewerTab: (tab: 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all') => void;
   viewerSort: 'random' | 'chronological';
+  viewerSortOrder: 'asc' | 'desc';
   onViewerSortChange: (value: 'random' | 'chronological') => void;
+  onShuffleViewerSort: () => void;
+  onToggleViewerSortOrder: () => void;
   viewerQuickTags: ViewerQuickTags;
   onToggleActiveSetTag: (tag: string) => void;
   favoriteIds: string[];
@@ -52,6 +57,7 @@ export type SetViewerContextValue = {
   onLoadAllFavorites: () => void | Promise<void>;
   onLoadMoreHidden: () => void | Promise<void>;
   onLoadAllHidden: () => void | Promise<void>;
+  onDeleteHiddenImages: () => void | Promise<void>;
   onLoadMoreImages: () => void | Promise<void>;
   onLoadAllPreloaded: () => void | Promise<void>;
   onEnsureImageInView: (imageId: string) => void | Promise<void>;

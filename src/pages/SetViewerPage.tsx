@@ -1,4 +1,7 @@
 import {
+  IconArrowDown,
+  IconArrowUp,
+  IconArrowsShuffle,
   IconDotsVertical,
   IconFolder,
   IconPhoto,
@@ -20,10 +23,15 @@ export function SetViewerPage() {
     isConnected,
     isSaving,
     isRefreshingSet,
+    isDeletingHidden,
+    hiddenDeleteProgress,
     setViewerTab,
     onSetViewerTab,
     viewerSort,
+    viewerSortOrder,
     onViewerSortChange,
+    onShuffleViewerSort,
+    onToggleViewerSortOrder,
     viewerQuickTags,
     onToggleActiveSetTag,
     favoriteIds,
@@ -54,6 +62,7 @@ export function SetViewerPage() {
     onLoadAllFavorites,
     onLoadMoreHidden,
     onLoadAllHidden,
+    onDeleteHiddenImages,
     onLoadMoreImages,
     onLoadAllPreloaded,
     onEnsureImageInView,
@@ -228,6 +237,12 @@ export function SetViewerPage() {
   );
   const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
   const hiddenRemaining = Math.max(0, hiddenCount - hiddenImages.length);
+  const nonFavoritesRemaining =
+    nonFavoritesCount !== undefined
+      ? Math.max(0, nonFavoritesCount - nonFavoriteImages.length)
+      : undefined;
+  const showNonFavoritesLoadButtons =
+    nonFavoritesRemaining !== undefined ? nonFavoritesRemaining > 0 : true;
   const favoriteAction = activeSet
     ? {
         isActive: (image: DriveImage) => favoriteIds.includes(image.id),
@@ -445,15 +460,29 @@ export function SetViewerPage() {
                 <button
                   type="button"
                   className={`viewer-sort-button ${viewerSort === 'random' ? 'is-active' : ''}`}
-                  onClick={() => onViewerSortChange('random')}
+                  onClick={() =>
+                    viewerSort === 'random'
+                      ? onShuffleViewerSort()
+                      : onViewerSortChange('random')
+                  }
                 >
+                  <IconArrowsShuffle size={14} />
                   Random
                 </button>
                 <button
                   type="button"
                   className={`viewer-sort-button ${viewerSort === 'chronological' ? 'is-active' : ''}`}
-                  onClick={() => onViewerSortChange('chronological')}
+                  onClick={() =>
+                    viewerSort === 'chronological'
+                      ? onToggleViewerSortOrder()
+                      : onViewerSortChange('chronological')
+                  }
                 >
+                  {viewerSortOrder === 'desc' ? (
+                    <IconArrowDown size={14} />
+                  ) : (
+                    <IconArrowUp size={14} />
+                  )}
                   Chronological
                 </button>
               </div>
@@ -490,6 +519,8 @@ export function SetViewerPage() {
                   currentCount={nonFavoriteImages.length}
                   pendingCount={nonFavoritesPendingExtra}
                   totalCount={nonFavoritesCount}
+                  showLoadMore={showNonFavoritesLoadButtons}
+                  showLoadAll={showNonFavoritesLoadButtons}
                   onLoadMore={onLoadMoreNonFavorites}
                   onLoadAll={onLoadAllNonFavorites}
                 />
@@ -527,6 +558,8 @@ export function SetViewerPage() {
                   pendingCount={favoritesPendingExtra}
                   totalCount={favoritesCount}
                   remainingCount={favoritesRemaining}
+                  showLoadMore={favoritesRemaining > 0}
+                  showLoadAll={favoritesRemaining > 0}
                   onLoadMore={onLoadMoreFavorites}
                   onLoadAll={onLoadAllFavorites}
                 />
@@ -534,6 +567,20 @@ export function SetViewerPage() {
             ) : null}
             {setViewerTab === 'hidden' ? (
               <div className="preview">
+                <div className="viewer-hidden-actions">
+                  <button
+                    type="button"
+                    className="primary primary--danger"
+                    onClick={onDeleteHiddenImages}
+                    disabled={!isConnected || hiddenCount === 0 || isDeletingHidden}
+                  >
+                    {isDeletingHidden
+                      ? `Deleting ${hiddenDeleteProgress?.completed ?? 0}/${
+                          hiddenDeleteProgress?.total ?? hiddenCount
+                        }…`
+                      : `Delete hidden from Drive (${hiddenCount})`}
+                  </button>
+                </div>
                 {isLoadingHidden ? (
                   <div className="stack">
                     <p className="empty">Loading hidden…</p>
@@ -565,6 +612,8 @@ export function SetViewerPage() {
                   pendingCount={hiddenPendingExtra}
                   totalCount={hiddenCount}
                   remainingCount={hiddenRemaining}
+                  showLoadMore={hiddenRemaining > 0}
+                  showLoadAll={hiddenRemaining > 0}
                   onLoadMore={onLoadMoreHidden}
                   onLoadAll={onLoadAllHidden}
                 />

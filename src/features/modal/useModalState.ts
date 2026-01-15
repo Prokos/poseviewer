@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { PoseSet } from '../../metadata';
 import type { DriveImage } from '../../drive/types';
+import type { ModalOpenOptions } from './types';
 
 type UseModalStateOptions = {
   activeSet: PoseSet | null;
@@ -63,7 +64,13 @@ export function useModalState({
   modalControlsTimeoutRef,
 }: UseModalStateOptions) {
   const openModal = useCallback(
-    (imageId: string, items: DriveImage[], label: string, index?: number) => {
+    (
+      imageId: string,
+      items: DriveImage[],
+      label: string,
+      index?: number,
+      options?: ModalOpenOptions
+    ) => {
       requestViewerFullscreen();
       scheduleModalControlsHide(true);
       const resolvedIndex =
@@ -72,7 +79,9 @@ export function useModalState({
           : items.findIndex((image) => image.id === imageId);
       updateModalItems(items);
       setModalContextLabel(label);
-      setModalContextSetId(label === 'Set' && activeSet ? activeSet.id : null);
+      setModalContextSetId(
+        label === 'Set' ? options?.contextSetId ?? activeSet?.id ?? null : null
+      );
       resetModalMediaState();
       if (label === 'Sample' && activeSet) {
         sampleHistoryRef.current = items;

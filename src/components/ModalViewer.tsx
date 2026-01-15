@@ -370,7 +370,7 @@ export function ModalViewer() {
           <img
             className="modal-thumb"
             key={`thumb-${modalImage.id}`}
-            src={createProxyThumbUrl(modalImage.id, thumbSize, cacheKey, { fresh: true })}
+            src={createProxyThumbUrl(modalImage.id, thumbSize, cacheKey)}
             alt={modalImage.name}
             loading="eager"
             decoding="async"

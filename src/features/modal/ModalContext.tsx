@@ -2,9 +2,16 @@ import { createContext, useContext } from 'react';
 import type { ReactNode } from 'react';
 import type { DriveImage } from '../../drive/types';
 import type { ModalViewerState } from '../../hooks/useModalViewer';
+import type { ModalOpenOptions } from './types';
 
 type ModalActionsContextValue = {
-  openModal: (imageId: string, images: DriveImage[], label: string, index?: number) => void;
+  openModal: (
+    imageId: string,
+    images: DriveImage[],
+    label: string,
+    index?: number,
+    options?: ModalOpenOptions
+  ) => void;
 };
 
 type ModalStateContextValue = ModalViewerState & {

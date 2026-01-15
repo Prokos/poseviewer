@@ -35,6 +35,7 @@ export function useModalMedia({
   const modalPrefetchAbortRef = useRef<Map<string, AbortController>>(new Map());
   const modalPrefetchCacheRef = useRef<Map<string, string>>(new Map());
   const modalFullCacheRef = useRef<Map<string, string>>(new Map());
+  const modalIdlePrefetchRef = useRef<number | null>(null);
   const modalFullCacheMax = 20;
   const modalImageSizeRef = useRef<{ width: number; height: number } | null>(null);
   const modalImageSizeCacheRef = useRef<Map<string, { width: number; height: number }>>(
@@ -45,6 +46,18 @@ export function useModalMedia({
     modalPrefetchAbortRef.current.forEach((controller) => controller.abort());
     modalPrefetchAbortRef.current.clear();
     setModalPrefetchCount(0);
+  }, []);
+
+  const cancelIdlePrefetch = useCallback(() => {
+    if (modalIdlePrefetchRef.current === null) {
+      return;
+    }
+    if (typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(modalIdlePrefetchRef.current);
+    } else {
+      window.clearTimeout(modalIdlePrefetchRef.current);
+    }
+    modalIdlePrefetchRef.current = null;
   }, []);
 
   const resetModalMediaState = useCallback(() => {
@@ -208,6 +221,7 @@ export function useModalMedia({
       return;
     }
     setModalFullAnimate(false);
+    cancelPrefetches();
     if (modalFullAbortRef.current) {
       modalFullAbortRef.current.abort();
     }
@@ -215,6 +229,7 @@ export function useModalMedia({
       window.clearTimeout(modalFullDelayRef.current);
       modalFullDelayRef.current = null;
     }
+    cancelIdlePrefetch();
     modalFullUrlRef.current = null;
     const cacheHit = modalFullCacheRef.current.get(modalImageId);
     if (cacheHit) {
@@ -283,11 +298,12 @@ export function useModalMedia({
       modalIndex === null ||
       modalIndex < 0 ||
       modalItems.length === 0 ||
-      modalFullImageId !== modalImageId
+      modalFullImageId !== modalImageId ||
+      modalIsLoading
     ) {
       return;
     }
-    const range = 3;
+    const range = 1;
     const nextIds: string[] = [];
     for (let offset = 1; offset <= range; offset += 1) {
       const prev = modalItems[modalIndex - offset]?.id;
@@ -313,18 +329,50 @@ export function useModalMedia({
       }
     });
     setModalPrefetchCount(modalPrefetchAbortRef.current.size);
-    nextIds.forEach((id) => prefetchModalImage(id));
-  }, [modalFullImageId, modalImageId, modalIndex, modalItems, prefetchModalImage]);
+    cancelIdlePrefetch();
+    const currentImageId = modalImageId;
+    const schedule =
+      typeof window.requestIdleCallback === 'function'
+        ? window.requestIdleCallback
+        : (callback: () => void) => window.setTimeout(callback, 250);
+    modalIdlePrefetchRef.current = schedule(() => {
+      modalIdlePrefetchRef.current = null;
+      if (modalImageId !== currentImageId) {
+        return;
+      }
+      nextIds.forEach((id) => prefetchModalImage(id));
+    });
+  }, [
+    cancelIdlePrefetch,
+    modalFullImageId,
+    modalImageId,
+    modalIndex,
+    modalIsLoading,
+    modalItems,
+    prefetchModalImage,
+  ]);
 
   useEffect(() => {
-    if (modalIndex === null || modalItems.length === 0) {
+    if (
+      modalIndex === null ||
+      modalItems.length === 0 ||
+      modalFullImageId !== modalImageId ||
+      modalIsLoading
+    ) {
       return;
     }
-    const range = 6;
+    const range = 1;
     const start = Math.max(0, modalIndex - range);
     const end = Math.min(modalItems.length, modalIndex + range + 1);
     prefetchThumbs(modalItems.slice(start, end));
-  }, [modalIndex, modalItems, prefetchThumbs]);
+  }, [
+    modalFullImageId,
+    modalImageId,
+    modalIndex,
+    modalIsLoading,
+    modalItems,
+    prefetchThumbs,
+  ]);
 
   useEffect(() => {
     if (!modalImageId) {
@@ -332,17 +380,22 @@ export function useModalMedia({
     }
     modalImageSizeRef.current = modalImageSizeCacheRef.current.get(modalImageId) ?? null;
     const previousOverflow = document.body.style.overflow;
+    document.body.dataset.modalOpen = 'true';
+    window.dispatchEvent(new CustomEvent('poseviewer-modal', { detail: { open: true } }));
     document.body.style.overflow = 'hidden';
     return () => {
+      document.body.dataset.modalOpen = 'false';
+      window.dispatchEvent(new CustomEvent('poseviewer-modal', { detail: { open: false } }));
       document.body.style.overflow = previousOverflow;
     };
   }, [modalImageId]);
 
   useEffect(() => {
     return () => {
+      cancelIdlePrefetch();
       clearModalMediaCache();
     };
-  }, [clearModalMediaCache]);
+  }, [cancelIdlePrefetch, clearModalMediaCache]);
 
   return {
     modalIsLoading,

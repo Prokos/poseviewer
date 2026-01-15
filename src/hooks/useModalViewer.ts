@@ -12,6 +12,7 @@ import type {
 import type { FavoriteFilterMode } from '../utils/imageSampling';
 import type { PoseSet } from '../metadata';
 import type { DriveImage } from '../drive/types';
+import type { ModalOpenOptions } from '../features/modal/types';
 import { useModalTimer } from '../features/modal/useModalTimer';
 import { useModalMedia } from '../features/modal/useModalMedia';
 import { useModalGestures } from '../features/modal/useModalGestures';
@@ -602,14 +603,35 @@ export function useModalViewer({
     modalControlsTimeoutRef,
   });
 
+  const modalContextItemsRef = useRef<DriveImage[] | null>(null);
+  const modalContextItemsSetIdRef = useRef<string | null>(null);
+
   const openModalWithHistory = useCallback(
-    (imageId: string, items: DriveImage[], label: string, index?: number) => {
+    (
+      imageId: string,
+      items: DriveImage[],
+      label: string,
+      index?: number,
+      options?: ModalOpenOptions
+    ) => {
       if (!modalHistoryEntryRef.current) {
         const nextState = { ...(window.history.state ?? {}), modal: true };
         window.history.pushState(nextState, '');
         modalHistoryEntryRef.current = true;
       }
-      openModal(imageId, items, label, index);
+      if (options?.contextItems && options?.contextSetId) {
+        modalContextItemsRef.current = options.contextItems;
+        modalContextItemsSetIdRef.current = options.contextSetId;
+      } else {
+        modalContextItemsRef.current = null;
+        modalContextItemsSetIdRef.current = null;
+      }
+      const baseItems = options?.contextItems ?? items;
+      const limitedItems =
+        options?.initialLimit && options.initialLimit > 0
+          ? baseItems.slice(0, Math.max(1, options.initialLimit))
+          : baseItems;
+      openModal(imageId, limitedItems, label, index, options);
     },
     [openModal]
   );
@@ -622,6 +644,8 @@ export function useModalViewer({
       }
       setIsModalInfoOpen(false);
       closeModal();
+      modalContextItemsRef.current = null;
+      modalContextItemsSetIdRef.current = null;
       if (modalHistoryEntryRef.current && source !== 'popstate') {
         ignoreNextPopRef.current = true;
         window.history.back();
@@ -806,7 +830,11 @@ export function useModalViewer({
             return;
           }
           (async () => {
-            const images = await resolveSetImages(contextSet, true);
+            const contextItems =
+              modalContextItemsSetIdRef.current === modalContextSetId
+                ? modalContextItemsRef.current
+                : null;
+            const images = contextItems ?? (await resolveSetImages(contextSet, true));
             if (images.length === 0) {
               return;
             }
@@ -1042,6 +1070,65 @@ export function useModalViewer({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (modalContextLabel !== 'Set') {
+      return;
+    }
+    if (modalPendingAdvanceRef.current) {
+      return;
+    }
+    if (modalHasHistory) {
+      return;
+    }
+    if (
+      modalContextItemsRef.current &&
+      modalContextItemsSetIdRef.current === modalContextSetId
+    ) {
+      return;
+    }
+    if (modalContextSetId && activeSet?.id !== modalContextSetId) {
+      return;
+    }
+    if (activeImages.length === 0) {
+      if (modalItems.length > 0) {
+        updateModalItems([]);
+        setModalIndex(null);
+        setModalImageId(null);
+      }
+      return;
+    }
+    if (!modalImageId) {
+      updateModalItems(activeImages);
+      setModalIndex(0);
+      setModalImageId(activeImages[0]?.id ?? null);
+      return;
+    }
+    const nextIndex = activeImages.findIndex((image) => image.id === modalImageId);
+    updateModalItems(activeImages);
+    if (nextIndex === -1) {
+      const fallbackIndex =
+        modalIndex !== null ? Math.min(modalIndex, activeImages.length - 1) : 0;
+      setModalIndex(fallbackIndex);
+      setModalImageId(activeImages[fallbackIndex]?.id ?? null);
+      return;
+    }
+    if (nextIndex !== modalIndex) {
+      setModalIndex(nextIndex);
+    }
+  }, [
+    activeImages,
+    activeSet?.id,
+    modalContextLabel,
+    modalContextSetId,
+    modalHasHistory,
+    modalImageId,
+    modalIndex,
+    modalItems.length,
+    setModalImageId,
+    setModalIndex,
+    updateModalItems,
+  ]);
 
   useEffect(() => {
     if (

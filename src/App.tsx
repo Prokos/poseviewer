@@ -7,7 +7,7 @@ import {
 } from 'react';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { listFolderPaths, type FolderPath } from './drive/scan';
-import { driveRotateImage } from './drive/api';
+import { driveDeleteFile, driveRotateImage } from './drive/api';
 import {
   buildSetIndex,
   findSetIndexFileId,
@@ -28,10 +28,10 @@ import {
 } from './metadata';
 import type { DriveImage } from './drive/types';
 import { normalizeTags } from './utils/tags';
-import { hashStringToUnit, pickRandom, shuffleItems, shuffleItemsSeeded } from './utils/random';
+import { hashStringToUnit, pickRandom, shuffleItems } from './utils/random';
 import { formatDownloadProgress, formatIndexProgress, startIndexTimer } from './utils/progress';
 import { createProxyThumbUrl } from './utils/driveUrls';
-import { sortImagesChronological } from './utils/imageSorting';
+import { sortImagesChronological, sortImagesRandomSeeded } from './utils/imageSorting';
 import { useImageCache } from './features/imageCache/ImageCacheContext';
 import {
   loadImageListCache,
@@ -52,6 +52,7 @@ import { SlideshowPage } from './pages/SlideshowPage';
 import { SetViewerPage } from './pages/SetViewerPage';
 import { ModalActionsProvider } from './features/modal/ModalContext';
 import { ModalStateProvider } from './features/modal/ModalStateProvider';
+import type { ModalOpenOptions } from './features/modal/types';
 import { useSetViewerGrids } from './features/setViewer/useSetViewerGrids';
 import { SetViewerProvider } from './features/setViewer/SetViewerContext';
 import { SlideshowProvider } from './features/slideshow/SlideshowContext';
@@ -74,7 +75,7 @@ const IMAGE_PAGE_SIZE = 96;
 const THUMB_SIZE = 320;
 const CARD_THUMB_SIZE = 500;
 const VIEWER_THUMB_SIZE = CARD_THUMB_SIZE;
-const THUMB_PREFETCH_MAX_IN_FLIGHT = 3;
+const THUMB_PREFETCH_MAX_IN_FLIGHT = 10;
 const THUMB_PREFETCH_MAX_QUEUE = 80;
 const emptyFolders: FolderPath[] = [];
 const EXPLICIT_TAG = 'explicit';
@@ -183,6 +184,10 @@ export default function App() {
     'poseviewer-viewer-sort',
     'random'
   );
+  const [viewerSortOrder, setViewerSortOrder] = useLocalStorage<'asc' | 'desc'>(
+    'poseviewer-viewer-sort-order',
+    'asc'
+  );
   const defaultViewerSortSeed = useMemo(() => `${Math.random()}`, []);
   const [viewerSortSeed, setViewerSortSeed] = useLocalStorage(
     'poseviewer-viewer-sort-seed',
@@ -197,13 +202,26 @@ export default function App() {
   const [viewerIndexProgress, setViewerIndexProgress] = useState('');
   const [imageLimit, setImageLimit] = useState(IMAGE_PAGE_SIZE);
   const [isRefreshingSet, setIsRefreshingSet] = useState(false);
+  const [isDeletingHidden, setIsDeletingHidden] = useState(false);
+  const [hiddenDeleteProgress, setHiddenDeleteProgress] = useState<null | {
+    total: number;
+    completed: number;
+  }>(null);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
   const activeSetIdRef = useRef<string | null>(null);
   const loadSetImagesTokenRef = useRef(0);
   const allGridRef = useRef<HTMLDivElement | null>(null);
   const allImagesOrderRef = useRef<
-    Map<string, { mode: 'random' | 'chronological'; ordered: DriveImage[]; seed: string | null }>
+    Map<
+      string,
+      {
+        mode: 'random' | 'chronological';
+        order: 'asc' | 'desc' | null;
+        ordered: DriveImage[];
+        seed: string | null;
+      }
+    >
   >(new Map());
   const resetFavoritesRef = useRef<null | (() => void)>(null);
   const resetNonFavoritesRef = useRef<null | (() => void)>(null);
@@ -236,11 +254,23 @@ export default function App() {
   const metadataInfoRef = useRef<MetadataInfo>(metadataInfo);
   const metadataDirtyRef = useRef(metadataDirty);
   const openModalRef = useRef<
-    (imageId: string, images: DriveImage[], label: string, index?: number) => void
+    (
+      imageId: string,
+      images: DriveImage[],
+      label: string,
+      index?: number,
+      options?: ModalOpenOptions
+    ) => void
   >(() => {});
   const openModal = useCallback(
-    (imageId: string, images: DriveImage[], label: string, index?: number) => {
-      openModalRef.current(imageId, images, label, index);
+    (
+      imageId: string,
+      images: DriveImage[],
+      label: string,
+      index?: number,
+      options?: ModalOpenOptions
+    ) => {
+      openModalRef.current(imageId, images, label, index, options);
     },
     []
   );
@@ -374,6 +404,10 @@ export default function App() {
     }
     prevSetSortRef.current = setSort;
   }, [setSort, setSetSortSeed]);
+
+  const handleShuffleSets = useCallback(() => {
+    setSetSortSeed(`${Math.random()}`);
+  }, [setSetSortSeed]);
 
   const prevViewerSortRef = useRef(viewerSort);
   useEffect(() => {
@@ -908,9 +942,10 @@ export default function App() {
           const sourceIds = new Set(source.map((image) => image.id));
           const hasMissing = cached.ordered.some((image) => !sourceIds.has(image.id));
           if (hasMissing) {
-            const refreshed = shuffleItemsSeeded(source, `${viewerSortSeed}|${setId}`);
+            const refreshed = sortImagesRandomSeeded(source, `${viewerSortSeed}|${setId}`);
             allImagesOrderRef.current.set(setId, {
               mode: 'random',
+              order: null,
               ordered: refreshed,
               seed: viewerSortSeed,
             });
@@ -919,10 +954,11 @@ export default function App() {
             const known = new Set(cached.ordered.map((image) => image.id));
             const additions = source.filter((image) => !known.has(image.id));
             const extended = cached.ordered.concat(
-              shuffleItemsSeeded(additions, `${viewerSortSeed}|${setId}|append`)
+              sortImagesRandomSeeded(additions, `${viewerSortSeed}|${setId}|append`)
             );
             allImagesOrderRef.current.set(setId, {
               mode: 'random',
+              order: null,
               ordered: extended,
               seed: viewerSortSeed,
             });
@@ -931,9 +967,10 @@ export default function App() {
             ordered = cached.ordered.filter((image) => !hiddenSet.has(image.id));
           }
         } else {
-          const seeded = shuffleItemsSeeded(source, `${viewerSortSeed}|${setId}`);
+          const seeded = sortImagesRandomSeeded(source, `${viewerSortSeed}|${setId}`);
           allImagesOrderRef.current.set(setId, {
             mode: 'random',
+            order: null,
             ordered: seeded,
             seed: viewerSortSeed,
           });
@@ -1360,7 +1397,12 @@ export default function App() {
     (setId: string, images: DriveImage[]) => {
       if (viewerSort === 'chronological') {
         const cached = allImagesOrderRef.current.get(setId);
-        if (cached && cached.mode === viewerSort && cached.ordered.length === images.length) {
+        if (
+          cached &&
+          cached.mode === viewerSort &&
+          cached.order === viewerSortOrder &&
+          cached.ordered.length === images.length
+        ) {
           const currentIds = new Set(images.map((image) => image.id));
           const missing = cached.ordered.some((image) => !currentIds.has(image.id));
           if (!missing) {
@@ -1368,8 +1410,15 @@ export default function App() {
           }
         }
         const ordered = sortImagesChronological(images);
-        allImagesOrderRef.current.set(setId, { mode: viewerSort, ordered, seed: null });
-        return ordered;
+        const next =
+          viewerSortOrder === 'desc' ? ordered.slice().reverse() : ordered;
+        allImagesOrderRef.current.set(setId, {
+          mode: viewerSort,
+          order: viewerSortOrder,
+          ordered: next,
+          seed: null,
+        });
+        return next;
       }
       const cached = allImagesOrderRef.current.get(setId);
       if (cached && cached.mode === viewerSort && cached.seed === viewerSortSeed) {
@@ -1379,9 +1428,10 @@ export default function App() {
         const currentIds = new Set(images.map((image) => image.id));
         const missing = cached.ordered.some((image) => !currentIds.has(image.id));
         if (missing) {
-          const reordered = shuffleItemsSeeded(images, `${viewerSortSeed}|${setId}`);
+          const reordered = sortImagesRandomSeeded(images, `${viewerSortSeed}|${setId}`);
           allImagesOrderRef.current.set(setId, {
             mode: viewerSort,
+            order: null,
             ordered: reordered,
             seed: viewerSortSeed,
           });
@@ -1393,10 +1443,11 @@ export default function App() {
           return cached.ordered;
         }
         const extended = cached.ordered.concat(
-          shuffleItemsSeeded(additions, `${viewerSortSeed}|${setId}|append`)
+          sortImagesRandomSeeded(additions, `${viewerSortSeed}|${setId}|append`)
         );
         allImagesOrderRef.current.set(setId, {
           mode: viewerSort,
+          order: null,
           ordered: extended,
           seed: viewerSortSeed,
         });
@@ -1404,16 +1455,17 @@ export default function App() {
       }
       const ordered =
         viewerSort === 'random'
-          ? shuffleItemsSeeded(images, `${viewerSortSeed}|${setId}`)
+          ? sortImagesRandomSeeded(images, `${viewerSortSeed}|${setId}`)
           : images;
       allImagesOrderRef.current.set(setId, {
         mode: viewerSort,
+        order: viewerSort === 'chronological' ? viewerSortOrder : null,
         ordered,
         seed: viewerSort === 'random' ? viewerSortSeed : null,
       });
       return ordered;
     },
-    [viewerSort, viewerSortSeed]
+    [viewerSort, viewerSortOrder, viewerSortSeed]
   );
 
   const {
@@ -1450,6 +1502,7 @@ export default function App() {
     isConnected,
     setViewerTab,
     viewerSort,
+    viewerSortOrder,
     viewerSortSeed,
     resolveSetImages,
     setError,
@@ -1490,7 +1543,14 @@ export default function App() {
     if (setViewerTab === 'hidden') {
       resetHiddenRef.current?.();
     }
-  }, [activeSet?.id, allPageSize, setViewerTab, viewerSort]);
+  }, [
+    activeSet?.id,
+    allPageSize,
+    setViewerTab,
+    viewerSort,
+    viewerSortOrder,
+    viewerSortSeed,
+  ]);
 
   const {
     slideshowImages,
@@ -1807,6 +1867,8 @@ export default function App() {
     if (!showExplicit && isExplicitSet(set)) {
       return;
     }
+    pendingSetIdRef.current = null;
+    pendingSetFetchAttemptedRef.current = false;
     const nextSet =
       !set.indexFileId && prebuiltIndexRef.current?.folderId === set.rootFolderId
         ? { ...set, indexFileId: prebuiltIndexRef.current.fileId ?? undefined }
@@ -1830,6 +1892,51 @@ export default function App() {
       await handleUpdateSet(set.id, { indexFileId: nextSet.indexFileId });
     }
   };
+
+  const handleQuickPlaySet = useCallback(
+    async (set: PoseSet) => {
+      if (!showExplicit && isExplicitSet(set)) {
+        return;
+      }
+      if (!isConnected) {
+        setError('Connect to Drive to play this set.');
+        return;
+      }
+      try {
+        const images = await resolveSetImages(set, true, { suppressProgress: true });
+        if (images.length === 0) {
+          setError('No images found in this set.');
+          return;
+        }
+        const visible = filterImagesByHiddenStatus(
+          images,
+          set.hiddenImageIds ?? [],
+          'visible'
+        );
+        if (visible.length === 0) {
+          setError('No visible images found in this set.');
+          return;
+        }
+        const shuffled = shuffleItems(visible);
+        openModal(shuffled[0].id, shuffled, 'Set', 0, {
+          contextSetId: set.id,
+          contextItems: shuffled,
+          initialLimit: allPageSize,
+        });
+      } catch (loadError) {
+        setError((loadError as Error).message);
+      }
+    },
+    [
+      allPageSize,
+      isConnected,
+      isExplicitSet,
+      openModal,
+      resolveSetImages,
+      setError,
+      showExplicit,
+    ]
+  );
 
   useEffect(() => {
     if (!showExplicit && activeSet && isExplicitSet(activeSet)) {
@@ -1985,6 +2092,146 @@ export default function App() {
       setViewerIndexProgress('');
     }
   };
+
+  const handleDeleteHiddenImages = useCallback(async () => {
+    if (!activeSet || isDeletingHidden) {
+      return;
+    }
+    if (!isConnected) {
+      setError('Connect to Drive to delete images.');
+      return;
+    }
+    const hiddenToDelete = activeSet.hiddenImageIds ?? [];
+    if (hiddenToDelete.length === 0) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `Delete ${hiddenToDelete.length} hidden image${
+        hiddenToDelete.length === 1 ? '' : 's'
+      } from Drive? This cannot be undone.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    setIsDeletingHidden(true);
+    setError('');
+    try {
+      const queue = [...hiddenToDelete];
+      const deletedIds: string[] = [];
+      let completed = 0;
+      const concurrency = Math.min(3, queue.length);
+      setHiddenDeleteProgress({ total: hiddenToDelete.length, completed: 0 });
+      let deleteError: Error | null = null;
+      const worker = async () => {
+        while (queue.length > 0) {
+          if (deleteError) {
+            return;
+          }
+          const fileId = queue.pop();
+          if (!fileId) {
+            return;
+          }
+          try {
+            await driveDeleteFile(fileId);
+            deletedIds.push(fileId);
+            completed += 1;
+            setHiddenDeleteProgress({
+              total: hiddenToDelete.length,
+              completed,
+            });
+          } catch (error) {
+            deleteError = error as Error;
+            return;
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      if (deleteError) {
+        setError(deleteError.message);
+        if (deletedIds.length === 0) {
+          return;
+        }
+      }
+
+      if (deletedIds.length === 0) {
+        return;
+      }
+
+      const deletedSet = new Set(deletedIds);
+      const remainingHiddenIds = hiddenToDelete.filter((id) => !deletedSet.has(id));
+
+      await loadImageListCache(activeSet.id);
+      let images = readImageListCache(activeSet.id);
+      if (!images) {
+        images = await resolveSetImages(activeSet, true, { suppressProgress: true });
+      }
+      const remaining = images.filter((image) => !deletedSet.has(image.id));
+      writeImageListCache(activeSet.id, remaining);
+      allImagesOrderRef.current.delete(activeSet.id);
+
+      const nextFavoriteIds = (activeSet.favoriteImageIds ?? []).filter(
+        (id) => !deletedSet.has(id)
+      );
+      await handleUpdateSet(activeSet.id, {
+        hiddenImageIds: remainingHiddenIds,
+        favoriteImageIds: nextFavoriteIds,
+        imageCount: remaining.length,
+      });
+
+      updateFavoriteImagesFromSource(
+        activeSet.id,
+        remaining,
+        nextFavoriteIds,
+        remainingHiddenIds,
+        { keepLength: true }
+      );
+      updateHiddenImagesFromSource(
+        activeSet.id,
+        remaining,
+        nextFavoriteIds,
+        remainingHiddenIds,
+        { keepLength: true }
+      );
+      const nonfavorites = filterImagesByFavoriteStatus(
+        remaining,
+        nextFavoriteIds,
+        'nonfavorites'
+      );
+      setNonFavoriteImages(
+        nonfavorites.slice(0, Math.min(samplePageSize, nonfavorites.length))
+      );
+      setSampleImages(pickNext.sample(activeSet.id, remaining, samplePageSize));
+      const ordered = getOrderedAllImages(activeSet.id, remaining);
+      const nextLimit = Math.min(imageLimit, ordered.length);
+      setImageLimit(nextLimit);
+      setActiveImages(ordered.slice(0, nextLimit));
+    } finally {
+      setHiddenDeleteProgress(null);
+      setIsDeletingHidden(false);
+    }
+  }, [
+    activeSet,
+    filterImagesByFavoriteStatus,
+    getOrderedAllImages,
+    handleUpdateSet,
+    imageLimit,
+    isConnected,
+    isDeletingHidden,
+    loadImageListCache,
+    pickNext,
+    readImageListCache,
+    resolveSetImages,
+    samplePageSize,
+    setActiveImages,
+    setError,
+    setImageLimit,
+    setNonFavoriteImages,
+    setSampleImages,
+    setHiddenDeleteProgress,
+    updateFavoriteImagesFromSource,
+    updateHiddenImagesFromSource,
+    writeImageListCache,
+  ]);
 
   const handleLoadMoreImages = async () => {
     if (!activeSet) {
@@ -2169,6 +2416,14 @@ export default function App() {
     []
   );
 
+  const handleShuffleViewerSort = useCallback(() => {
+    setViewerSortSeed(`${Math.random()}`);
+  }, [setViewerSortSeed]);
+
+  const handleToggleViewerSortOrder = useCallback(() => {
+    setViewerSortOrder((current) => (current === 'asc' ? 'desc' : 'asc'));
+  }, [setViewerSortOrder]);
+
   const handleUpdateSetName = useCallback(
     (value: string) => {
       if (!activeSet) {
@@ -2186,10 +2441,15 @@ export default function App() {
     isConnected,
     isSaving,
     isRefreshingSet,
+    isDeletingHidden,
+    hiddenDeleteProgress,
     setViewerTab,
     onSetViewerTab: handleSetViewerTab,
     viewerSort,
+    viewerSortOrder,
     onViewerSortChange: handleViewerSortChange,
+    onShuffleViewerSort: handleShuffleViewerSort,
+    onToggleViewerSortOrder: handleToggleViewerSortOrder,
     viewerQuickTags,
     onToggleActiveSetTag: toggleActiveSetTag,
     favoriteIds,
@@ -2225,6 +2485,7 @@ export default function App() {
     onLoadAllFavorites: handleLoadAllFavorites,
     onLoadMoreHidden: handleLoadMoreHidden,
     onLoadAllHidden: handleLoadAllHidden,
+    onDeleteHiddenImages: handleDeleteHiddenImages,
     onLoadMoreImages: handleLoadMoreImages,
     onLoadAllPreloaded: handleLoadAllPreloaded,
     onEnsureImageInView: handleEnsureImageInView,
@@ -2386,6 +2647,7 @@ export default function App() {
             onSetFilterChange={setSetFilter}
             setSort={setSort}
             onSetSortChange={setSetSort}
+            onShuffleSets={handleShuffleSets}
             selectedTags={selectedTags}
             sortedTags={sortedTags}
             tagCounts={tagCounts}
@@ -2394,6 +2656,7 @@ export default function App() {
             filteredSets={filteredSets}
             totalSets={visibleSets.length}
             onOpenSet={handleOpenSet}
+            onQuickPlaySet={handleQuickPlaySet}
             cardThumbSize={CARD_THUMB_SIZE}
           />
         ) : null}

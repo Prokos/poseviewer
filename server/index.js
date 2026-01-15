@@ -572,20 +572,51 @@ app.get('/api/media/:fileId', async (req, res) => {
     }
 
     const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
-    const arrayBuffer = await response.arrayBuffer();
-    if (controller.signal.aborted) {
-      return;
-    }
-    const buffer = Buffer.from(arrayBuffer);
-
-    await writeCacheWithMeta(cachePath, metaPath, buffer, { contentType });
+    const contentLength = response.headers.get('content-length');
 
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Cache', 'MISS');
     res.set('X-Queue', String(queueMs));
     res.set('X-Elapsed', String(Date.now() - start));
     res.set('X-Source', 'drive-media');
-    res.type(contentType).send(buffer);
+    if (contentLength) {
+      res.set('Content-Length', contentLength);
+    }
+    res.type(contentType);
+
+    if (!response.body) {
+      const arrayBuffer = await response.arrayBuffer();
+      if (controller.signal.aborted) {
+        return;
+      }
+      const buffer = Buffer.from(arrayBuffer);
+      await writeCacheWithMeta(cachePath, metaPath, buffer, { contentType });
+      res.send(buffer);
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const chunks = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (controller.signal.aborted) {
+        await reader.cancel();
+        return;
+      }
+      if (value) {
+        const chunk = Buffer.from(value);
+        chunks.push(chunk);
+        res.write(chunk);
+      }
+    }
+    res.end();
+    if (controller.signal.aborted) {
+      return;
+    }
+    await writeCacheWithMeta(cachePath, metaPath, Buffer.concat(chunks), { contentType });
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       return;

@@ -98,7 +98,7 @@ export function useModalMedia({
   }, []);
 
   useEffect(() => {
-    setModalLoadingCount(modalIsLoading ? 1 : modalPrefetchCount);
+    setModalLoadingCount((modalIsLoading ? 1 : 0) + modalPrefetchCount);
   }, [modalIsLoading, modalPrefetchCount]);
 
   const storeModalFullCache = useCallback((imageId: string, url: string) => {
@@ -353,26 +353,14 @@ export function useModalMedia({
   ]);
 
   useEffect(() => {
-    if (
-      modalIndex === null ||
-      modalItems.length === 0 ||
-      modalFullImageId !== modalImageId ||
-      modalIsLoading
-    ) {
+    if (!modalImageId || modalIndex === null || modalItems.length === 0) {
       return;
     }
     const range = 1;
     const start = Math.max(0, modalIndex - range);
     const end = Math.min(modalItems.length, modalIndex + range + 1);
     prefetchThumbs(modalItems.slice(start, end));
-  }, [
-    modalFullImageId,
-    modalImageId,
-    modalIndex,
-    modalIsLoading,
-    modalItems,
-    prefetchThumbs,
-  ]);
+  }, [modalImageId, modalIndex, modalItems, prefetchThumbs]);
 
   useEffect(() => {
     if (!modalImageId) {

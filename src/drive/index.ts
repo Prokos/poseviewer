@@ -9,10 +9,11 @@ type PoseIndexItem = {
   name: string;
   time?: string;
   createdTime?: string;
+  folderPath?: string;
 };
 
 export type PoseIndexDocument = {
-  version: 1;
+  version: 2;
   updatedAt: string;
   count: number;
   items: PoseIndexItem[];
@@ -40,7 +41,7 @@ export async function loadSetIndex(
   try {
     const parsed = JSON.parse(text) as PoseIndexDocument;
     if (
-      parsed?.version === 1 &&
+      parsed?.version === 2 &&
       Array.isArray(parsed.items) &&
       typeof parsed.count === 'number'
     ) {
@@ -60,11 +61,7 @@ export async function loadSetIndexById(
   const text = await driveDownloadText(fileId, onProgress);
   try {
     const parsed = JSON.parse(text) as PoseIndexDocument;
-    if (
-      parsed?.version === 1 &&
-      Array.isArray(parsed.items) &&
-      typeof parsed.count === 'number'
-    ) {
+    if (parsed?.version === 2 && Array.isArray(parsed.items) && typeof parsed.count === 'number') {
       return { fileId, data: parsed };
     }
   } catch {
@@ -87,7 +84,7 @@ export async function findSetIndexFileId(folderId: string) {
 
 export async function saveSetIndex(folderId: string, fileId: string | null, items: PoseIndexItem[]) {
   const data: PoseIndexDocument = {
-    version: 1,
+    version: 2,
     updatedAt: new Date().toISOString(),
     count: items.length,
     items,
@@ -107,6 +104,7 @@ export async function buildSetIndex(
     name: image.name,
     time: image.imageMediaMetadata?.time,
     createdTime: image.createdTime,
+    folderPath: image.folderPath,
   }));
 }
 
@@ -117,5 +115,6 @@ export function indexItemsToImages(items: PoseIndexItem[]): DriveImage[] {
     mimeType: 'image/jpeg',
     imageMediaMetadata: item.time ? { time: item.time } : undefined,
     createdTime: item.createdTime,
+    folderPath: item.folderPath,
   }));
 }

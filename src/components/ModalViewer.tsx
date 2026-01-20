@@ -15,7 +15,7 @@ import {
   IconTimeline,
   IconX,
 } from '@tabler/icons-react';
-import { useEffect, useState, type FormEvent, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
 import { useModalState } from '../features/modal/ModalContext';
 import { useImageCache } from '../features/imageCache/ImageCacheContext';
@@ -115,6 +115,109 @@ export function ModalViewer() {
   const loadingLabel = `Loading ${modalLoadingCount} image${
     modalLoadingCount === 1 ? '' : 's'
   }`;
+  const thumbCacheRef = useRef<Map<string, string>>(new Map());
+  const thumbInFlightRef = useRef<Set<string>>(new Set());
+  const [thumbSrc, setThumbSrc] = useState<string | null>(null);
+  const thumbCacheMax = 80;
+  const thumbPrefetchRange = 6;
+
+  const storeThumb = useCallback((id: string, url: string) => {
+    const cache = thumbCacheRef.current;
+    if (cache.has(id)) {
+      return;
+    }
+    cache.set(id, url);
+    if (cache.size > thumbCacheMax) {
+      const oldest = cache.keys().next().value as string | undefined;
+      if (oldest) {
+        const existing = cache.get(oldest);
+        if (existing) {
+          URL.revokeObjectURL(existing);
+        }
+        cache.delete(oldest);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    thumbCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+    thumbCacheRef.current.clear();
+    thumbInFlightRef.current.clear();
+    setThumbSrc(null);
+  }, [cacheKey, thumbSize]);
+
+  useEffect(() => {
+    const cached = thumbCacheRef.current.get(modalImage.id);
+    if (cached) {
+      setThumbSrc(cached);
+      return;
+    }
+    setThumbSrc(null);
+    if (thumbInFlightRef.current.has(modalImage.id)) {
+      return;
+    }
+    const controller = new AbortController();
+    const url = createProxyThumbUrl(modalImage.id, thumbSize, cacheKey);
+    thumbInFlightRef.current.add(modalImage.id);
+    fetch(url, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Thumb fetch failed: ${response.status}`);
+        }
+        return response.blob();
+      })
+      .then((blob) => {
+        const objectUrl = URL.createObjectURL(blob);
+        storeThumb(modalImage.id, objectUrl);
+        setThumbSrc(objectUrl);
+      })
+      .catch(() => {
+        // Ignore thumb fetch errors; fallback to direct URL.
+      })
+      .finally(() => {
+        thumbInFlightRef.current.delete(modalImage.id);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [cacheKey, modalImage.id, storeThumb, thumbSize]);
+
+  useEffect(() => {
+    if (modalIndex === null || modalItems.length === 0) {
+      return;
+    }
+    const start = Math.max(0, modalIndex - thumbPrefetchRange);
+    const end = Math.min(modalItems.length - 1, modalIndex + thumbPrefetchRange);
+    for (let i = start; i <= end; i += 1) {
+      const id = modalItems[i]?.id;
+      if (!id || id === modalImage.id) {
+        continue;
+      }
+      if (thumbCacheRef.current.has(id) || thumbInFlightRef.current.has(id)) {
+        continue;
+      }
+      const controller = new AbortController();
+      const url = createProxyThumbUrl(id, thumbSize, cacheKey);
+      thumbInFlightRef.current.add(id);
+      fetch(url, { signal: controller.signal })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`Thumb fetch failed: ${response.status}`);
+          }
+          return response.blob();
+        })
+        .then((blob) => {
+          const objectUrl = URL.createObjectURL(blob);
+          storeThumb(id, objectUrl);
+        })
+        .catch(() => {
+          // Ignore prefetch failures.
+        })
+        .finally(() => {
+          thumbInFlightRef.current.delete(id);
+        });
+    }
+  }, [cacheKey, modalImage.id, modalIndex, modalItems, storeThumb, thumbSize]);
   const driveFileUrl = `https://drive.google.com/file/d/${encodeURIComponent(
     modalImage.id
   )}/view`;
@@ -370,7 +473,7 @@ export function ModalViewer() {
           <img
             className="modal-thumb"
             key={`thumb-${modalImage.id}`}
-            src={createProxyThumbUrl(modalImage.id, thumbSize, cacheKey)}
+            src={thumbSrc ?? createProxyThumbUrl(modalImage.id, thumbSize, cacheKey)}
             alt={modalImage.name}
             loading="eager"
             decoding="async"

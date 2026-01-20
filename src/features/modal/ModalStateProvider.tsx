@@ -3,7 +3,7 @@ import { ModalStateContextProvider } from './ModalContext';
 import { ModalViewer } from '../../components/ModalViewer';
 import type { DriveImage } from '../../drive/types';
 import type { ModalOpenOptions } from './types';
-import { useModalViewer, type ModalDeps } from '../../hooks/useModalViewer';
+import { useModalViewer, type ModalDeps, type ModalViewerState } from '../../hooks/useModalViewer';
 
 type ModalStateProviderProps = {
   deps: ModalDeps;
@@ -17,12 +17,14 @@ type ModalStateProviderProps = {
       options?: ModalOpenOptions
     ) => void
   ) => void;
+  onModalStateChange?: (state: ModalViewerState) => void;
 };
 
 export function ModalStateProvider({
   deps,
   thumbSize,
   onOpenModalReady,
+  onModalStateChange,
 }: ModalStateProviderProps) {
   const { modalState, openModal, closeModal } = useModalViewer(deps);
 
@@ -31,6 +33,12 @@ export function ModalStateProvider({
       onOpenModalReady(openModal);
     }
   }, [onOpenModalReady, openModal]);
+
+  useEffect(() => {
+    if (onModalStateChange) {
+      onModalStateChange(modalState);
+    }
+  }, [modalState, onModalStateChange]);
 
   const stateValue = useMemo(
     () => ({

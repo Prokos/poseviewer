@@ -855,7 +855,17 @@ export function useModalViewer({
             });
           return;
         }
+        if (modalPendingAdvanceRef.current) {
+          return;
+        }
         if (!isLoadingMore && activeSet) {
+          const cached = readImageListCache(activeSet.id);
+          const maxAvailable = activeSet.imageCount ?? cached?.length ?? Infinity;
+          const nextLimit = Math.min(activeImages.length + allPageSize, maxAvailable);
+          if (nextLimit <= activeImages.length) {
+            triggerModalShake();
+            return;
+          }
           modalPendingAdvanceRef.current = true;
           void handleLoadMoreImages();
           return;

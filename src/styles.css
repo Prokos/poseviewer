@@ -897,7 +897,7 @@ button.ghost:hover:not(:disabled) {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center var(--thumb-pos, 50%);
+  object-position: var(--thumb-pos-x, 50%) var(--thumb-pos-y, 50%);
   display: block;
   transition: object-position 120ms ease-out;
   opacity: 0;
@@ -958,6 +958,11 @@ button.ghost:hover:not(:disabled) {
 .image-grid--zoom .image-tile:hover {
   box-shadow: 0 18px 36px rgba(31, 28, 23, 0.2);
   z-index: 3;
+}
+
+.image-grid-spacer {
+  grid-column: 1 / -1;
+  height: 0;
 }
 
 .thumb-action {

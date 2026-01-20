@@ -75,6 +75,8 @@ export type SetViewerContextValue = {
     completed: number;
     angle: 90 | -90;
   };
+  modalImageId: string | null;
+  modalContextLabel: string;
   thumbSize: number;
   viewerThumbSize: number;
   sampleGridRef: RefObject<HTMLDivElement>;

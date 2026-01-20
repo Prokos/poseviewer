@@ -53,6 +53,7 @@ import { SetViewerPage } from './pages/SetViewerPage';
 import { ModalActionsProvider } from './features/modal/ModalContext';
 import { ModalStateProvider } from './features/modal/ModalStateProvider';
 import type { ModalOpenOptions } from './features/modal/types';
+import type { ModalViewerState } from './hooks/useModalViewer';
 import { useSetViewerGrids } from './features/setViewer/useSetViewerGrids';
 import { SetViewerProvider } from './features/setViewer/SetViewerContext';
 import { SlideshowProvider } from './features/slideshow/SlideshowContext';
@@ -79,6 +80,7 @@ const THUMB_PREFETCH_MAX_IN_FLIGHT = 10;
 const THUMB_PREFETCH_MAX_QUEUE = 80;
 const emptyFolders: FolderPath[] = [];
 const EXPLICIT_TAG = 'explicit';
+
 
 function parsePathState() {
   const raw = window.location.pathname;
@@ -122,6 +124,8 @@ function mergeMetadata(local: MetadataDocument, remote: MetadataDocument): Metad
 export default function App() {
   const { cacheKey, bumpCacheKey } = useImageCache();
   const [isConnected, setIsConnected] = useState(false);
+  const [modalImageId, setModalImageId] = useState<string | null>(null);
+  const [modalContextLabel, setModalContextLabel] = useState('');
   const [tokenStatus, setTokenStatus] = useState<string>('');
   const rootId = DEFAULT_ROOT_ID;
   const [page, setPage] = useState<'overview' | 'create' | 'set' | 'slideshow'>('overview');
@@ -280,24 +284,26 @@ export default function App() {
 
   const syncPathState = useCallback(
     (page: 'overview' | 'create' | 'set' | 'slideshow', setId?: string) => {
-      let next = '/';
+      let nextPath = '/';
       if (page === 'create') {
-        next = '/create';
+        nextPath = '/create';
       } else if (page === 'slideshow') {
-        next = '/slideshow';
+        nextPath = '/slideshow';
       } else if (page === 'set' && setId) {
-        next = `/set/${encodeURIComponent(setId)}`;
+        nextPath = `/set/${encodeURIComponent(setId)}`;
       }
-      if (lastHistoryPathRef.current === next) {
+      if (lastHistoryPathRef.current === nextPath) {
         return;
       }
+      const url = new URL(window.location.href);
+      url.pathname = nextPath;
       if (skipHistoryRef.current) {
         skipHistoryRef.current = false;
-        window.history.replaceState(null, '', next);
+        window.history.replaceState(null, '', url);
       } else {
-        window.history.pushState(null, '', next);
+        window.history.pushState(null, '', url);
       }
-      lastHistoryPathRef.current = next;
+      lastHistoryPathRef.current = nextPath;
     },
     []
   );
@@ -1970,6 +1976,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if ('scrollRestoration' in window.history) {
+      window.history.scrollRestoration = 'manual';
+    }
+  }, []);
+
+  useEffect(() => {
     const handlePop = () => {
       const next = parsePathState();
       skipHistoryRef.current = true;
@@ -2499,6 +2511,8 @@ export default function App() {
     onRotateSet: handleRotateSet,
     isRotatingSet,
     rotateSetProgress,
+    modalImageId,
+    modalContextLabel,
     thumbSize: THUMB_SIZE,
     viewerThumbSize: VIEWER_THUMB_SIZE,
     sampleGridRef,
@@ -2539,6 +2553,15 @@ export default function App() {
   };
 
   const modalActions = useMemo(() => ({ openModal }), [openModal]);
+  const handleModalStateChange = useCallback((state: ModalViewerState) => {
+    if (state.modalImage) {
+      setModalImageId(state.modalImage.id);
+      setModalContextLabel(state.modalContextLabel);
+      return;
+    }
+    setModalImageId(null);
+    setModalContextLabel('');
+  }, []);
 
   const slideshowValue = {
     isConnected,
@@ -2696,6 +2719,7 @@ export default function App() {
         onOpenModalReady={(modalOpen) => {
           openModalRef.current = modalOpen;
         }}
+        onModalStateChange={handleModalStateChange}
       />
     </>
   );

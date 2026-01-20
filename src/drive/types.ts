@@ -18,4 +18,5 @@ export type DriveFolder = DriveFile & {
 
 export type DriveImage = DriveFile & {
   mimeType: string;
+  folderPath?: string;
 };

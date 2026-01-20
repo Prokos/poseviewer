@@ -40,6 +40,7 @@ export function SetViewerPage() {
     hiddenCount,
     nonFavoritesCount,
     allImagesCount,
+    sampleImages,
     favoriteImages,
     nonFavoriteImages,
     hiddenImages,
@@ -76,18 +77,25 @@ export function SetViewerPage() {
     onRotateSet,
     isRotatingSet,
     rotateSetProgress,
+    modalImageId,
+    modalContextLabel,
     thumbSize,
     viewerThumbSize,
     sampleGridRef,
     allGridRef,
   } = useSetViewer();
   const thumbRef = useRef<HTMLDivElement | null>(null);
+  const favoritesGridRef = useRef<HTMLDivElement | null>(null);
+  const hiddenGridRef = useRef<HTMLDivElement | null>(null);
+  const nonFavoritesGridRef = useRef<HTMLDivElement | null>(null);
   const [thumbPos, setThumbPos] = useState(activeSet?.thumbnailPos ?? 50);
   const thumbPosRef = useRef(thumbPos);
   const isDraggingRef = useRef(false);
   const scrollTargetRef = useRef<{ setId: string; imageId: string } | null>(null);
   const hasScrolledRef = useRef(false);
   const [highlightedImageId, setHighlightedImageId] = useState<string | null>(null);
+  const modalScrollAttemptsRef = useRef(0);
+  const modalScrollTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     const nextPos = activeSet?.thumbnailPos ?? 50;
@@ -163,13 +171,129 @@ export function SetViewerPage() {
     return () => window.clearTimeout(timer);
   }, [highlightedImageId]);
 
-  const computeThumbPos = useCallback((clientY: number) => {
+  useEffect(() => {
+    if (!modalImageId) {
+      return;
+    }
+    const tabForLabel =
+      modalContextLabel === 'Set'
+        ? 'all'
+        : modalContextLabel === 'Favorites'
+          ? 'favorites'
+          : modalContextLabel === 'Non favorites'
+            ? 'nonfavorites'
+            : modalContextLabel === 'Hidden'
+              ? 'hidden'
+              : modalContextLabel === 'Sample'
+                ? 'samples'
+                : null;
+    if (!tabForLabel || tabForLabel !== setViewerTab) {
+      return;
+    }
+    const getGridContext = () => {
+      switch (tabForLabel) {
+        case 'all':
+          return { images: activeImages, grid: allGridRef.current };
+        case 'favorites':
+          return { images: favoriteImages, grid: favoritesGridRef.current };
+        case 'nonfavorites':
+          return { images: nonFavoriteImages, grid: nonFavoritesGridRef.current ?? sampleGridRef.current };
+        case 'hidden':
+          return { images: hiddenImages, grid: hiddenGridRef.current };
+        case 'samples':
+          return { images: sampleImages, grid: sampleGridRef.current };
+        default:
+          return { images: [], grid: null };
+      }
+    };
+    const gridContext = getGridContext();
+    const attemptScroll = () => {
+      const selector = `[data-image-id="${CSS.escape(modalImageId)}"]`;
+      const element = document.querySelector(selector);
+      if (!element || !(element instanceof HTMLElement)) {
+        if (gridContext.grid) {
+          const index = gridContext.images.findIndex((image) => image.id === modalImageId);
+          if (index >= 0) {
+            const grid = gridContext.grid;
+            const rect = grid.getBoundingClientRect();
+            const width = rect.width;
+            const gap = 4;
+            const minColWidth = 160;
+            const columns = Math.max(
+              1,
+              Math.floor((width + gap) / (minColWidth + gap))
+            );
+            const itemWidth = Math.max(
+              minColWidth,
+              Math.floor((width - gap * (columns - 1)) / columns)
+            );
+            const rowStride = itemWidth + gap;
+            const row = Math.floor(index / columns);
+            const targetTop =
+              rect.top + window.scrollY + row * rowStride - window.innerHeight * 0.5 + itemWidth * 0.5;
+            window.scrollTo({ top: Math.max(0, targetTop) });
+            setHighlightedImageId(modalImageId);
+            return true;
+          }
+        }
+        return false;
+      }
+      const rect = element.getBoundingClientRect();
+      const needsScroll = rect.top < 40 || rect.bottom > window.innerHeight - 40;
+      if (needsScroll) {
+        element.scrollIntoView({ block: 'center' });
+      }
+      setHighlightedImageId(modalImageId);
+      return true;
+    };
+    if (attemptScroll()) {
+      modalScrollAttemptsRef.current = 0;
+      return;
+    }
+    if (modalScrollAttemptsRef.current >= 8) {
+      modalScrollAttemptsRef.current = 0;
+      return;
+    }
+    modalScrollAttemptsRef.current += 1;
+    if (modalScrollTimeoutRef.current) {
+      window.clearTimeout(modalScrollTimeoutRef.current);
+    }
+    modalScrollTimeoutRef.current = window.setTimeout(() => {
+      modalScrollTimeoutRef.current = null;
+      attemptScroll();
+    }, 120);
+  }, [
+    activeImages,
+    allGridRef,
+    favoriteImages,
+    hiddenImages,
+    modalContextLabel,
+    modalImageId,
+    nonFavoriteImages,
+    sampleGridRef,
+    sampleImages,
+    setViewerTab,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (modalScrollTimeoutRef.current) {
+        window.clearTimeout(modalScrollTimeoutRef.current);
+        modalScrollTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  const computeThumbPos = useCallback((clientX: number, clientY: number) => {
     const bounds = thumbRef.current?.getBoundingClientRect();
     if (!bounds) {
       return thumbPosRef.current;
     }
-    const y = clientY - bounds.top;
-    const raw = y / bounds.height;
+    const axis = thumbRef.current?.dataset.thumbAxis === 'x' ? 'x' : 'y';
+    const raw =
+      axis === 'x'
+        ? (clientX - bounds.left) / bounds.width
+        : (clientY - bounds.top) / bounds.height;
     const clamped = Math.min(1, Math.max(0, raw));
     const start = 0.2;
     const end = 0.8;
@@ -190,7 +314,7 @@ export function SetViewerPage() {
       event.preventDefault();
       isDraggingRef.current = true;
       event.currentTarget.setPointerCapture(event.pointerId);
-      const nextPos = computeThumbPos(event.clientY);
+      const nextPos = computeThumbPos(event.clientX, event.clientY);
       thumbPosRef.current = nextPos;
       setThumbPos(nextPos);
     },
@@ -203,7 +327,7 @@ export function SetViewerPage() {
         return;
       }
       event.preventDefault();
-      const nextPos = computeThumbPos(event.clientY);
+      const nextPos = computeThumbPos(event.clientX, event.clientY);
       thumbPosRef.current = nextPos;
       setThumbPos(nextPos);
     },
@@ -504,7 +628,8 @@ export function SetViewerPage() {
                     alt={activeSet.name}
                     modalLabel="Non favorites"
                     gridClassName="image-grid image-grid--zoom"
-                    gridRef={sampleGridRef}
+                    gridRef={nonFavoritesGridRef}
+                    virtualize
                     favoriteAction={favoriteAction}
                     hideAction={hideAction}
                     thumbnailAction={thumbnailAction}
@@ -543,6 +668,8 @@ export function SetViewerPage() {
                     alt={activeSet.name}
                     modalLabel="Favorites"
                     gridClassName="image-grid image-grid--zoom image-grid--filled"
+                    gridRef={favoritesGridRef}
+                    virtualize
                     favoriteAction={favoriteAction}
                     hideAction={hideAction}
                     thumbnailAction={thumbnailAction}
@@ -586,8 +713,6 @@ export function SetViewerPage() {
                     <p className="empty">Loading hidden…</p>
                     {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
                   </div>
-                ) : viewerIndexProgress ? (
-                  <p className="muted">{viewerIndexProgress}</p>
                 ) : hiddenImages.length > 0 ? (
                   <ImageGrid
                     images={hiddenImages}
@@ -596,6 +721,8 @@ export function SetViewerPage() {
                     alt={activeSet.name}
                     modalLabel="Hidden"
                     gridClassName="image-grid image-grid--zoom image-grid--filled"
+                    gridRef={hiddenGridRef}
+                    virtualize
                     favoriteAction={favoriteAction}
                     hideAction={hideAction}
                     showHiddenAction
@@ -621,6 +748,11 @@ export function SetViewerPage() {
             ) : null}
             {setViewerTab === 'all' ? (
               <div className="stack">
+                {isLoadingImages || viewerIndexProgress ? (
+                  <p className="empty">
+                    {viewerIndexProgress || 'Loading images…'}
+                  </p>
+                ) : null}
                 <ImageGrid
                   images={activeImages}
                   isConnected={isConnected}
@@ -629,6 +761,7 @@ export function SetViewerPage() {
                   modalLabel="Set"
                   gridClassName="image-grid image-grid--zoom"
                   gridRef={allGridRef}
+                  virtualize
                   favoriteAction={favoriteAction}
                   hideAction={hideAction}
                   thumbnailAction={thumbnailAction}

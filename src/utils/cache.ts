@@ -22,7 +22,13 @@ type MetadataCache = {
   modifiedTime?: string;
 };
 
-type CachedImageListItem = { id: string; name: string; time?: string; createdTime?: string };
+type CachedImageListItem = {
+  id: string;
+  name: string;
+  time?: string;
+  createdTime?: string;
+  folderPath?: string;
+};
 type CachedImageListEntry = {
   setId: string;
   updatedAt: number;
@@ -65,6 +71,7 @@ function toCachedImageItems(images: DriveImage[]): CachedImageListItem[] {
     name: image.name,
     time: image.imageMediaMetadata?.time,
     createdTime: image.createdTime,
+    folderPath: image.folderPath,
   }));
 }
 
@@ -75,7 +82,12 @@ function fromCachedImageItems(items: CachedImageListItem[]): DriveImage[] {
     mimeType: 'image/jpeg',
     imageMediaMetadata: item.time ? { time: item.time } : undefined,
     createdTime: item.createdTime,
+    folderPath: item.folderPath ?? '',
   }));
+}
+
+function hasFolderPaths(items: CachedImageListItem[]) {
+  return items.every((item) => typeof item.folderPath === 'string');
 }
 
 function openImageListDb() {
@@ -270,6 +282,10 @@ export async function loadImageListCache(setId: string) {
       return null;
     }
     if (Date.now() - stored.updatedAt > IMAGE_LIST_CACHE_TTL) {
+      void deleteImageListEntry(setId);
+      return null;
+    }
+    if (!hasFolderPaths(stored.items ?? [])) {
       void deleteImageListEntry(setId);
       return null;
     }

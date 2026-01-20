@@ -252,7 +252,6 @@ export function useSetViewerGrids({
   const hydrateSetExtras = useCallback(
     async (set: PoseSet, buildIfMissing: boolean) => {
       setIsLoadingSample(true);
-      setViewerIndexProgress('Loading index…');
       try {
         const images = await resolveSetImages(set, buildIfMissing);
         updateFavoriteImagesFromSource(
@@ -276,7 +275,6 @@ export function useSetViewerGrids({
         setSampleImages([]);
       } finally {
         setIsLoadingSample(false);
-        setViewerIndexProgress('');
       }
     },
     [
@@ -284,7 +282,6 @@ export function useSetViewerGrids({
       resolveSetImages,
       samplePageSize,
       setError,
-      setViewerIndexProgress,
       updateFavoriteImagesFromSource,
       updateHiddenImagesFromSource,
     ]
@@ -297,7 +294,7 @@ export function useSetViewerGrids({
       hydratedSetIdRef.current = null;
       return;
     }
-    if (!activeSet) {
+    if (!activeSet || setViewerTab === 'all') {
       return;
     }
     if (hydratedSetIdRef.current === activeSet.id) {
@@ -305,7 +302,7 @@ export function useSetViewerGrids({
     }
     hydratedSetIdRef.current = activeSet.id;
     void hydrateSetExtras(activeSet, true);
-  }, [activeSet, hydrateSetExtras, isConnected]);
+  }, [activeSet, hydrateSetExtras, isConnected, setViewerTab]);
 
   useEffect(() => {
     if (!activeSet) {
@@ -582,7 +579,7 @@ export function useSetViewerGrids({
   ]);
 
   useEffect(() => {
-    if (setViewerTab !== 'favorites' || !activeSet || isLoadingFavorites) {
+    if (setViewerTab !== 'favorites' || !activeSet || isLoadingFavorites || isLoadingSample) {
       return;
     }
     if (favoriteImages.length === 0) {
@@ -602,6 +599,7 @@ export function useSetViewerGrids({
     activeSet,
     favoriteImages.length,
     isLoadingFavorites,
+    isLoadingSample,
     loadViewerGridBatch,
     sampleColumns,
     samplePageSize,
@@ -609,7 +607,7 @@ export function useSetViewerGrids({
   ]);
 
   useEffect(() => {
-    if (setViewerTab !== 'nonfavorites' || !activeSet || isLoadingNonFavorites) {
+    if (setViewerTab !== 'nonfavorites' || !activeSet || isLoadingNonFavorites || isLoadingSample) {
       return;
     }
     if (nonFavoriteImages.length === 0) {
@@ -628,6 +626,7 @@ export function useSetViewerGrids({
   }, [
     activeSet,
     isLoadingNonFavorites,
+    isLoadingSample,
     loadViewerGridBatch,
     nonFavoriteImages.length,
     sampleColumns,
@@ -636,7 +635,7 @@ export function useSetViewerGrids({
   ]);
 
   useEffect(() => {
-    if (setViewerTab !== 'hidden' || !activeSet || isLoadingHidden) {
+    if (setViewerTab !== 'hidden' || !activeSet || isLoadingHidden || isLoadingSample) {
       return;
     }
     if (hiddenImages.length === 0) {
@@ -656,6 +655,7 @@ export function useSetViewerGrids({
     activeSet,
     hiddenImages.length,
     isLoadingHidden,
+    isLoadingSample,
     loadViewerGridBatch,
     sampleColumns,
     samplePageSize,

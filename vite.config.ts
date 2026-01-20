@@ -5,7 +5,24 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://localhost:8787',
+      '/api': {
+        target: 'http://localhost:8787',
+        changeOrigin: true,
+        timeout: 10_000,
+        proxyTimeout: 10_000,
+        configure: (proxy) => {
+          proxy.on('error', (err, _req, res) => {
+            if (!res.headersSent) {
+              res.writeHead(504, { 'Content-Type': 'application/json' });
+            }
+            res.end(
+              JSON.stringify({
+                error: err.code === 'ETIMEDOUT' ? 'Gateway timeout' : 'Proxy error',
+              }),
+            );
+          });
+        },
+      },
     },
   },
 });

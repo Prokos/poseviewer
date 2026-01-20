@@ -156,6 +156,7 @@ export function SlideshowPage() {
               alt="Slideshow image"
               modalLabel="Slideshow"
               gridClassName="image-grid image-grid--zoom"
+              virtualize
               favoriteAction={favoriteAction}
               hideAction={hideAction}
             />

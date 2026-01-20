@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { MutableRefObject, PointerEventHandler } from 'react';
 import { createProxyThumbUrl } from '../utils/driveUrls';
 import { useImageCache } from '../features/imageCache/ImageCacheContext';
@@ -39,6 +39,7 @@ export function ImageThumb({
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [thumbAxis, setThumbAxis] = useState<'x' | 'y'>('y');
   const loadDelayRef = useRef<number | null>(null);
   const resolvedRef = containerRef ?? localRef;
   const resolvedPos = thumbPos ?? 50;
@@ -56,11 +57,13 @@ export function ImageThumb({
       setIsInView(true);
       setIsLoaded(false);
       setHasError(false);
+      setThumbAxis('y');
       return;
     }
     setIsInView(false);
     setIsLoaded(false);
     setHasError(false);
+    setThumbAxis('y');
   }, [eager, fileId]);
 
   useEffect(() => {
@@ -137,6 +140,8 @@ export function ImageThumb({
   }
 
   const shouldLoad = eager || (isInView && (!isModalOpen || isLoaded));
+  const thumbPosX = thumbAxis === 'x' ? `${resolvedPos}%` : '50%';
+  const thumbPosY = thumbAxis === 'y' ? `${resolvedPos}%` : '50%';
 
   return (
     <div
@@ -144,7 +149,13 @@ export function ImageThumb({
         hasError ? ' is-error' : ''
       }`}
       ref={setRef}
-      style={{ ['--thumb-pos' as string]: `${resolvedPos}%` }}
+      data-thumb-axis={thumbAxis}
+      style={
+        {
+          ['--thumb-pos-x' as string]: thumbPosX,
+          ['--thumb-pos-y' as string]: thumbPosY,
+        } as CSSProperties
+      }
       onDragStart={(event) => event.preventDefault()}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -157,8 +168,11 @@ export function ImageThumb({
               if (!bounds) {
                 return;
               }
-              const y = event.clientY - bounds.top;
-              const raw = y / bounds.height;
+              const axis = thumbAxis;
+              const raw =
+                axis === 'x'
+                  ? (event.clientX - bounds.left) / bounds.width
+                  : (event.clientY - bounds.top) / bounds.height;
               const clamped = Math.min(1, Math.max(0, raw));
               const start = 0.2;
               const end = 0.8;
@@ -170,14 +184,16 @@ export function ImageThumb({
               } else {
                 percent = ((clamped - start) / (end - start)) * 100;
               }
-              resolvedRef.current?.style.setProperty('--thumb-pos', `${percent}%`);
+              const prop = axis === 'x' ? '--thumb-pos-x' : '--thumb-pos-y';
+              resolvedRef.current?.style.setProperty(prop, `${percent}%`);
             }
           : undefined
       }
       onMouseLeave={
         hoverScroll
           ? () => {
-              resolvedRef.current?.style.setProperty('--thumb-pos', `${resolvedPos}%`);
+              const prop = thumbAxis === 'x' ? '--thumb-pos-x' : '--thumb-pos-y';
+              resolvedRef.current?.style.setProperty(prop, `${resolvedPos}%`);
             }
           : undefined
       }
@@ -189,7 +205,13 @@ export function ImageThumb({
           loading={eager ? 'eager' : 'lazy'}
           decoding="async"
           draggable={false}
-          onLoad={() => setIsLoaded(true)}
+          onLoad={(event) => {
+            setIsLoaded(true);
+            const img = event.currentTarget;
+            if (img.naturalWidth && img.naturalHeight) {
+              setThumbAxis(img.naturalWidth > img.naturalHeight ? 'x' : 'y');
+            }
+          }}
           onError={() => setHasError(true)}
         />
       ) : null}

@@ -52,6 +52,7 @@ export function SetViewerPage() {
     isLoadingImages,
     isLoadingMore,
     totalImagesKnown,
+    allPageSize,
     nonFavoritesPendingExtra,
     favoritesPendingExtra,
     hiddenPendingExtra,
@@ -96,6 +97,69 @@ export function SetViewerPage() {
   const [highlightedImageId, setHighlightedImageId] = useState<string | null>(null);
   const modalScrollAttemptsRef = useRef(0);
   const modalScrollTimeoutRef = useRef<number | null>(null);
+  const lastHiddenRef = useRef<{
+    setId: string;
+    imageId: string;
+    tab: 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all';
+    sort: 'random' | 'chronological';
+    sortOrder: 'asc' | 'desc';
+  } | null>(null);
+  const undoScrollTargetRef = useRef<{
+    imageId: string;
+    tab: 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all';
+  } | null>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const placeholderCount =
+    activeImages.length === 0 &&
+    (isLoadingImages || viewerIndexProgress) &&
+    typeof totalImagesKnown === 'number'
+      ? Math.min(totalImagesKnown, allPageSize)
+      : 0;
+  const viewerStatus =
+    isLoadingImages || viewerIndexProgress ? viewerIndexProgress || 'Loading images…' : '';
+  const activeGridTotals = (() => {
+    const tab = setViewerTab;
+    if (tab === 'favorites') {
+      return { loaded: favoriteImages.length, total: favoritesCount };
+    }
+    if (tab === 'nonfavorites') {
+      return {
+        loaded: nonFavoriteImages.length,
+        total: typeof nonFavoritesCount === 'number' ? nonFavoritesCount : undefined,
+      };
+    }
+    if (tab === 'hidden') {
+      return { loaded: hiddenImages.length, total: hiddenCount };
+    }
+    return { loaded: activeImages.length, total: totalImagesKnown };
+  })();
+
+  useEffect(() => {
+    if (setViewerTab !== 'all' || !activeSet) {
+      return;
+    }
+    const node = loadMoreSentinelRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) {
+          return;
+        }
+        if (typeof remainingImages !== 'number' || remainingImages <= 0) {
+          return;
+        }
+        if (isLoadingMore || isLoadingImages) {
+          return;
+        }
+        void onLoadMoreImages();
+      },
+      { rootMargin: '600px 0px', threshold: 0.01 }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [activeSet, isLoadingImages, isLoadingMore, onLoadMoreImages, remainingImages, setViewerTab]);
 
   useEffect(() => {
     const nextPos = activeSet?.thumbnailPos ?? 50;
@@ -106,7 +170,15 @@ export function SetViewerPage() {
   useEffect(() => {
     hasScrolledRef.current = false;
     setHighlightedImageId(null);
+    if (activeSet) {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }
   }, [activeSet?.id]);
+
+  useEffect(() => {
+    lastHiddenRef.current = null;
+    undoScrollTargetRef.current = null;
+  }, [activeSet?.id, modalImageId, setViewerTab, viewerSort, viewerSortOrder]);
 
   useEffect(() => {
     if (!scrollTargetRef.current) {
@@ -162,6 +234,51 @@ export function SetViewerPage() {
   ]);
 
   useEffect(() => {
+    if (modalImageId) {
+      return;
+    }
+    const handleKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.key.toLowerCase() !== 'z') {
+        return;
+      }
+      const lastHidden = lastHiddenRef.current;
+      if (
+        !lastHidden ||
+        !activeSet ||
+        lastHidden.setId !== activeSet.id ||
+        lastHidden.tab !== setViewerTab ||
+        lastHidden.sort !== viewerSort ||
+        lastHidden.sortOrder !== viewerSortOrder
+      ) {
+        return;
+      }
+      event.preventDefault();
+      undoScrollTargetRef.current = { imageId: lastHidden.imageId, tab: lastHidden.tab };
+      lastHiddenRef.current = null;
+      void onToggleHiddenImage(lastHidden.setId, lastHidden.imageId);
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [
+    activeSet,
+    modalImageId,
+    onToggleHiddenImage,
+    setViewerTab,
+    viewerSort,
+    viewerSortOrder,
+  ]);
+
+  useEffect(() => {
     if (!highlightedImageId) {
       return;
     }
@@ -172,11 +289,14 @@ export function SetViewerPage() {
   }, [highlightedImageId]);
 
   useEffect(() => {
-    if (!modalImageId) {
+    const modalTargetId = modalImageId;
+    const undoTarget = modalTargetId ? null : undoScrollTargetRef.current;
+    const targetId = modalTargetId ?? undoTarget?.imageId ?? null;
+    if (!targetId) {
       return;
     }
-    const tabForLabel =
-      modalContextLabel === 'Set'
+    const tabForLabel = modalTargetId
+      ? modalContextLabel === 'Set'
         ? 'all'
         : modalContextLabel === 'Favorites'
           ? 'favorites'
@@ -186,7 +306,8 @@ export function SetViewerPage() {
               ? 'hidden'
               : modalContextLabel === 'Sample'
                 ? 'samples'
-                : null;
+                : null
+      : undoTarget?.tab ?? null;
     if (!tabForLabel || tabForLabel !== setViewerTab) {
       return;
     }
@@ -208,11 +329,11 @@ export function SetViewerPage() {
     };
     const gridContext = getGridContext();
     const attemptScroll = () => {
-      const selector = `[data-image-id="${CSS.escape(modalImageId)}"]`;
+      const selector = `[data-image-id="${CSS.escape(targetId)}"]`;
       const element = document.querySelector(selector);
       if (!element || !(element instanceof HTMLElement)) {
         if (gridContext.grid) {
-          const index = gridContext.images.findIndex((image) => image.id === modalImageId);
+          const index = gridContext.images.findIndex((image) => image.id === targetId);
           if (index >= 0) {
             const grid = gridContext.grid;
             const rect = grid.getBoundingClientRect();
@@ -232,7 +353,7 @@ export function SetViewerPage() {
             const targetTop =
               rect.top + window.scrollY + row * rowStride - window.innerHeight * 0.5 + itemWidth * 0.5;
             window.scrollTo({ top: Math.max(0, targetTop) });
-            setHighlightedImageId(modalImageId);
+            setHighlightedImageId(targetId);
             return true;
           }
         }
@@ -243,15 +364,21 @@ export function SetViewerPage() {
       if (needsScroll) {
         element.scrollIntoView({ block: 'center' });
       }
-      setHighlightedImageId(modalImageId);
+      setHighlightedImageId(targetId);
       return true;
     };
     if (attemptScroll()) {
       modalScrollAttemptsRef.current = 0;
+      if (undoTarget) {
+        undoScrollTargetRef.current = null;
+      }
       return;
     }
     if (modalScrollAttemptsRef.current >= 8) {
       modalScrollAttemptsRef.current = 0;
+      if (undoTarget) {
+        undoScrollTargetRef.current = null;
+      }
       return;
     }
     modalScrollAttemptsRef.current += 1;
@@ -376,7 +503,22 @@ export function SetViewerPage() {
   const hideAction = activeSet
     ? {
         isActive: (image: DriveImage) => hiddenIds.includes(image.id),
-        onToggle: (image: DriveImage) => onToggleHiddenImage(activeSet.id, image.id),
+        onToggle: (image: DriveImage) => {
+          const wasHidden = hiddenIds.includes(image.id);
+          if (!wasHidden) {
+            lastHiddenRef.current = {
+              setId: activeSet.id,
+              imageId: image.id,
+              tab: setViewerTab,
+              sort: viewerSort,
+              sortOrder: viewerSortOrder,
+            };
+          } else {
+            lastHiddenRef.current = null;
+          }
+          undoScrollTargetRef.current = null;
+          onToggleHiddenImage(activeSet.id, image.id);
+        },
       }
     : undefined;
   const thumbnailAction = activeSet
@@ -748,17 +890,19 @@ export function SetViewerPage() {
             ) : null}
             {setViewerTab === 'all' ? (
               <div className="stack">
-                {isLoadingImages || viewerIndexProgress ? (
-                  <p className="empty">
-                    {viewerIndexProgress || 'Loading images…'}
-                  </p>
-                ) : null}
+                <div
+                  className={`viewer-status${viewerStatus ? '' : ' is-empty'}`}
+                  aria-live="polite"
+                >
+                  {viewerStatus}
+                </div>
                 <ImageGrid
                   images={activeImages}
                   isConnected={isConnected}
                   thumbSize={thumbSize}
                   alt={activeSet.name}
                   modalLabel="Set"
+                  placeholderCount={placeholderCount}
                   gridClassName="image-grid image-grid--zoom"
                   gridRef={allGridRef}
                   virtualize
@@ -788,6 +932,9 @@ export function SetViewerPage() {
                     onLoadAll={onLoadAllPreloaded}
                   />
                 ) : null}
+                {remainingImages !== undefined && remainingImages > 0 ? (
+                  <div className="load-more-sentinel" ref={loadMoreSentinelRef} />
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -795,6 +942,13 @@ export function SetViewerPage() {
           <p className="empty">Select a set above to view images.</p>
         )}
       </div>
+      {activeSet ? (
+        <div className="viewer-load-overlay" aria-live="polite">
+          {typeof activeGridTotals.total === 'number'
+            ? `Loaded ${activeGridTotals.loaded} / ${activeGridTotals.total}`
+            : `Loaded ${activeGridTotals.loaded}`}
+        </div>
+      ) : null}
     </section>
   );
 }

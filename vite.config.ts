@@ -8,8 +8,8 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8787',
         changeOrigin: true,
-        timeout: 10_000,
-        proxyTimeout: 10_000,
+        timeout: 120_000,
+        proxyTimeout: 120_000,
         configure: (proxy) => {
           proxy.on('error', (err, _req, res) => {
             if (!res.headersSent) {

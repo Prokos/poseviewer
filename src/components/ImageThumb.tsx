@@ -32,7 +32,7 @@ export function ImageThumb({
   onPointerUp,
   onPointerCancel,
 }: ImageThumbProps) {
-  const { cacheKey } = useImageCache();
+  const { cacheKey, getImageVersion } = useImageCache();
   const localRef = useRef<HTMLDivElement | null>(null);
   const [observerNode, setObserverNode] = useState<HTMLDivElement | null>(null);
   const [isInView, setIsInView] = useState(false);
@@ -41,7 +41,9 @@ export function ImageThumb({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [thumbAxis, setThumbAxis] = useState<'x' | 'y'>('y');
   const loadDelayRef = useRef<number | null>(null);
+  const shimmerDelayRef = useRef<string | null>(null);
   const resolvedRef = containerRef ?? localRef;
+  const imageVersion = getImageVersion(fileId);
   const resolvedPos = thumbPos ?? 50;
   const loadDelayMs = 120;
   const setRef = (node: HTMLDivElement | null) => {
@@ -64,7 +66,7 @@ export function ImageThumb({
     setIsLoaded(false);
     setHasError(false);
     setThumbAxis('y');
-  }, [eager, fileId]);
+  }, [eager, fileId, imageVersion]);
 
   useEffect(() => {
     if (eager || isInView || isModalOpen) {
@@ -139,6 +141,11 @@ export function ImageThumb({
     return <div className="thumb thumb--empty">Connect to load</div>;
   }
 
+  if (!shimmerDelayRef.current) {
+    const cycleMs = 1600;
+    shimmerDelayRef.current = `-${((Date.now() % cycleMs) / 1000).toFixed(3)}s`;
+  }
+
   const shouldLoad = eager || (isInView && (!isModalOpen || isLoaded));
   const thumbPosX = thumbAxis === 'x' ? `${resolvedPos}%` : '50%';
   const thumbPosY = thumbAxis === 'y' ? `${resolvedPos}%` : '50%';
@@ -146,14 +153,15 @@ export function ImageThumb({
   return (
     <div
       className={`thumb${isLoaded && !hasError ? ' is-loaded' : ''}${
-        hasError ? ' is-error' : ''
-      }`}
+        !isLoaded && !hasError ? ' is-pending' : ''
+      }${hasError ? ' is-error' : ''}`}
       ref={setRef}
       data-thumb-axis={thumbAxis}
       style={
         {
           ['--thumb-pos-x' as string]: thumbPosX,
           ['--thumb-pos-y' as string]: thumbPosY,
+          ['--thumb-shimmer-delay' as string]: shimmerDelayRef.current,
         } as CSSProperties
       }
       onDragStart={(event) => event.preventDefault()}
@@ -200,7 +208,7 @@ export function ImageThumb({
     >
       {shouldLoad && !hasError ? (
         <img
-          src={createProxyThumbUrl(fileId, size, cacheKey)}
+          src={createProxyThumbUrl(fileId, size, cacheKey, { version: imageVersion })}
           alt={alt}
           loading={eager ? 'eager' : 'lazy'}
           decoding="async"

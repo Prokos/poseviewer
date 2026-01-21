@@ -71,6 +71,9 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/media/')) {
     event.respondWith(
       (async () => {
+        if (url.searchParams.get('fresh') === '1') {
+          return fetch(request);
+        }
         const cache = await caches.open(MEDIA_CACHE);
         const cached = await cache.match(request);
         if (cached) {

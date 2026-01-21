@@ -28,6 +28,7 @@ type ImageGridProps = {
   thumbSize: number;
   alt: string | ((image: DriveImage) => string);
   modalLabel: string;
+  placeholderCount?: number;
   gridClassName?: string;
   gridRef?: RefObject<HTMLDivElement>;
   virtualize?: boolean;
@@ -44,6 +45,7 @@ export function ImageGrid({
   thumbSize,
   alt,
   modalLabel,
+  placeholderCount = 0,
   gridClassName = 'image-grid',
   gridRef,
   virtualize = false,
@@ -148,80 +150,105 @@ export function ImageGrid({
   const visibleImages =
     gridMetrics && virtualize ? images.slice(startIndex, endIndex) : images;
   const baseIndex = gridMetrics && virtualize ? startIndex : 0;
+  const showPlaceholders = images.length === 0 && placeholderCount > 0;
+  const placeholderShimmerDelay = useMemo(() => {
+    if (!showPlaceholders) {
+      return '0s';
+    }
+    const cycleMs = 1600;
+    return `-${((Date.now() % cycleMs) / 1000).toFixed(3)}s`;
+  }, [showPlaceholders]);
+  const placeholderTiles = showPlaceholders
+    ? Array.from({ length: placeholderCount }, (_, index) => index)
+    : [];
 
   return (
     <div className={gridClassName} ref={setMergedRef}>
-      {gridMetrics && virtualize && spacerBefore > 0 ? (
-        <div className="image-grid-spacer" style={{ height: spacerBefore }} />
-      ) : null}
-      {visibleImages.map((image, index) => {
-        const absoluteIndex = baseIndex + index;
-        const isFavorite = favoriteAction?.isActive(image) ?? false;
-        const canToggleFavorite = favoriteAction ? !favoriteAction.disabled?.(image) : false;
-        const isHidden = hideAction?.isActive(image) ?? false;
-        const canToggleHidden = hideAction ? !hideAction.disabled?.(image) : false;
-        const isThumbnail = thumbnailAction?.isActive(image) ?? false;
-        const canSetThumbnail = thumbnailAction ? !thumbnailAction.disabled?.(image) : false;
-        const isHighlighted = highlightedImageId === image.id;
-        return (
-          <div
-            key={image.id}
-            className={`image-tile${isHighlighted ? ' is-scroll-target' : ''}`}
-            data-image-id={image.id}
-          >
-            <button
-              type="button"
-              className="image-button"
-              onClick={() => openModal(image.id, images, modalLabel, absoluteIndex)}
-            >
-              <ImageThumb
-                isConnected={isConnected}
-                fileId={image.id}
-                alt={resolveAlt(image)}
-                size={thumbSize}
-              />
-            </button>
-            {favoriteAction ? (
-              <button
-                type="button"
-                className={`thumb-action thumb-action--favorite ${isFavorite ? 'is-active' : ''}`}
-                onClick={() => favoriteAction.onToggle(image)}
-                aria-pressed={isFavorite}
-                aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                disabled={!canToggleFavorite}
-              >
-                {isFavorite ? <IconHeartFilled size={16} /> : <IconHeart size={16} />}
-              </button>
-            ) : null}
-            {hideAction && (!isHidden || showHiddenAction) ? (
-              <button
-                type="button"
-                className="thumb-action thumb-action--hide"
-                onClick={() => hideAction.onToggle(image)}
-                aria-pressed={isHidden}
-                aria-label={isHidden ? 'Unhide image' : 'Hide image'}
-                disabled={!canToggleHidden}
-              >
-                {isHidden ? <IconEye size={16} /> : <IconEyeOff size={16} />}
-              </button>
-            ) : null}
-            {thumbnailAction ? (
-              <button
-                type="button"
-                className={`thumb-action ${isThumbnail ? 'is-active' : ''}`}
-                onClick={() => thumbnailAction.onSet(image)}
-                disabled={!canSetThumbnail}
-                aria-label="Use as thumbnail"
-              >
-                <IconPhotoStar size={16} />
-              </button>
-            ) : null}
+      {showPlaceholders ? (
+        placeholderTiles.map((index) => (
+          <div key={`placeholder-${index}`} className="image-tile image-tile--placeholder">
+            <div
+              className="thumb thumb--placeholder"
+              style={{ ['--thumb-shimmer-delay' as string]: placeholderShimmerDelay }}
+              aria-hidden="true"
+            />
           </div>
-        );
-      })}
-      {gridMetrics && virtualize && spacerAfter > 0 ? (
-        <div className="image-grid-spacer" style={{ height: spacerAfter }} />
-      ) : null}
+        ))
+      ) : (
+        <>
+          {gridMetrics && virtualize && spacerBefore > 0 ? (
+            <div className="image-grid-spacer" style={{ height: spacerBefore }} />
+          ) : null}
+          {visibleImages.map((image, index) => {
+            const absoluteIndex = baseIndex + index;
+            const isFavorite = favoriteAction?.isActive(image) ?? false;
+            const canToggleFavorite = favoriteAction ? !favoriteAction.disabled?.(image) : false;
+            const isHidden = hideAction?.isActive(image) ?? false;
+            const canToggleHidden = hideAction ? !hideAction.disabled?.(image) : false;
+            const isThumbnail = thumbnailAction?.isActive(image) ?? false;
+            const canSetThumbnail = thumbnailAction ? !thumbnailAction.disabled?.(image) : false;
+            const isHighlighted = highlightedImageId === image.id;
+            return (
+              <div
+                key={image.id}
+                className={`image-tile${isHighlighted ? ' is-scroll-target' : ''}`}
+                data-image-id={image.id}
+              >
+                <button
+                  type="button"
+                  className="image-button"
+                  onClick={() => openModal(image.id, images, modalLabel, absoluteIndex)}
+                >
+                  <ImageThumb
+                    isConnected={isConnected}
+                    fileId={image.id}
+                    alt={resolveAlt(image)}
+                    size={thumbSize}
+                  />
+                </button>
+                {favoriteAction ? (
+                  <button
+                    type="button"
+                    className={`thumb-action thumb-action--favorite ${isFavorite ? 'is-active' : ''}`}
+                    onClick={() => favoriteAction.onToggle(image)}
+                    aria-pressed={isFavorite}
+                    aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                    disabled={!canToggleFavorite}
+                  >
+                    {isFavorite ? <IconHeartFilled size={16} /> : <IconHeart size={16} />}
+                  </button>
+                ) : null}
+                {hideAction && (!isHidden || showHiddenAction) ? (
+                  <button
+                    type="button"
+                    className="thumb-action thumb-action--hide"
+                    onClick={() => hideAction.onToggle(image)}
+                    aria-pressed={isHidden}
+                    aria-label={isHidden ? 'Unhide image' : 'Hide image'}
+                    disabled={!canToggleHidden}
+                  >
+                    {isHidden ? <IconEye size={16} /> : <IconEyeOff size={16} />}
+                  </button>
+                ) : null}
+                {thumbnailAction ? (
+                  <button
+                    type="button"
+                    className={`thumb-action ${isThumbnail ? 'is-active' : ''}`}
+                    onClick={() => thumbnailAction.onSet(image)}
+                    disabled={!canSetThumbnail}
+                    aria-label="Use as thumbnail"
+                  >
+                    <IconPhotoStar size={16} />
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+          {gridMetrics && virtualize && spacerAfter > 0 ? (
+            <div className="image-grid-spacer" style={{ height: spacerAfter }} />
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

@@ -21,7 +21,7 @@ import { useModalState } from '../features/modal/ModalContext';
 import { useImageCache } from '../features/imageCache/ImageCacheContext';
 
 export function ModalViewer() {
-  const { cacheKey } = useImageCache();
+  const { cacheKey, getImageVersion } = useImageCache();
   const {
     modalImage,
     modalItems,
@@ -39,7 +39,7 @@ export function ModalViewer() {
     modalFavoritePulse,
     modalHiddenPulse,
     modalIsRotating,
-    modalRotateProgress,
+    modalRotateStatus,
     modalFullSrc,
     modalFullImageId,
     modalFullAnimate,
@@ -49,6 +49,7 @@ export function ModalViewer() {
     modalShake,
     modalSwipeAction,
     modalSwipeProgress,
+    isMouseZoomMode,
     modalTimerMs,
     modalTimerProgress,
     isModalTimerOpen,
@@ -138,6 +139,13 @@ export function ModalViewer() {
       }
     }
   }, []);
+  const resolveThumbCacheId = useCallback(
+    (id: string) => {
+      const version = getImageVersion(id);
+      return version > 0 ? `${id}|${version}` : id;
+    },
+    [getImageVersion]
+  );
 
   useEffect(() => {
     thumbCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
@@ -147,18 +155,21 @@ export function ModalViewer() {
   }, [cacheKey, thumbSize]);
 
   useEffect(() => {
-    const cached = thumbCacheRef.current.get(modalImage.id);
+    const cacheId = resolveThumbCacheId(modalImage.id);
+    const cached = thumbCacheRef.current.get(cacheId);
     if (cached) {
       setThumbSrc(cached);
       return;
     }
     setThumbSrc(null);
-    if (thumbInFlightRef.current.has(modalImage.id)) {
+    if (thumbInFlightRef.current.has(cacheId)) {
       return;
     }
     const controller = new AbortController();
-    const url = createProxyThumbUrl(modalImage.id, thumbSize, cacheKey);
-    thumbInFlightRef.current.add(modalImage.id);
+    const url = createProxyThumbUrl(modalImage.id, thumbSize, cacheKey, {
+      version: getImageVersion(modalImage.id),
+    });
+    thumbInFlightRef.current.add(cacheId);
     fetch(url, { signal: controller.signal })
       .then((response) => {
         if (!response.ok) {
@@ -168,19 +179,19 @@ export function ModalViewer() {
       })
       .then((blob) => {
         const objectUrl = URL.createObjectURL(blob);
-        storeThumb(modalImage.id, objectUrl);
+        storeThumb(cacheId, objectUrl);
         setThumbSrc(objectUrl);
       })
       .catch(() => {
         // Ignore thumb fetch errors; fallback to direct URL.
       })
       .finally(() => {
-        thumbInFlightRef.current.delete(modalImage.id);
+        thumbInFlightRef.current.delete(cacheId);
       });
     return () => {
       controller.abort();
     };
-  }, [cacheKey, modalImage.id, storeThumb, thumbSize]);
+  }, [cacheKey, getImageVersion, modalImage.id, resolveThumbCacheId, storeThumb, thumbSize]);
 
   useEffect(() => {
     if (modalIndex === null || modalItems.length === 0) {
@@ -193,12 +204,13 @@ export function ModalViewer() {
       if (!id || id === modalImage.id) {
         continue;
       }
-      if (thumbCacheRef.current.has(id) || thumbInFlightRef.current.has(id)) {
+      const cacheId = resolveThumbCacheId(id);
+      if (thumbCacheRef.current.has(cacheId) || thumbInFlightRef.current.has(cacheId)) {
         continue;
       }
       const controller = new AbortController();
-      const url = createProxyThumbUrl(id, thumbSize, cacheKey);
-      thumbInFlightRef.current.add(id);
+      const url = createProxyThumbUrl(id, thumbSize, cacheKey, { version: getImageVersion(id) });
+      thumbInFlightRef.current.add(cacheId);
       fetch(url, { signal: controller.signal })
         .then((response) => {
           if (!response.ok) {
@@ -206,18 +218,27 @@ export function ModalViewer() {
           }
           return response.blob();
         })
-        .then((blob) => {
-          const objectUrl = URL.createObjectURL(blob);
-          storeThumb(id, objectUrl);
-        })
+      .then((blob) => {
+        const objectUrl = URL.createObjectURL(blob);
+        storeThumb(cacheId, objectUrl);
+      })
         .catch(() => {
           // Ignore prefetch failures.
         })
-        .finally(() => {
-          thumbInFlightRef.current.delete(id);
-        });
+      .finally(() => {
+        thumbInFlightRef.current.delete(cacheId);
+      });
     }
-  }, [cacheKey, modalImage.id, modalIndex, modalItems, storeThumb, thumbSize]);
+  }, [
+    cacheKey,
+    getImageVersion,
+    modalImage.id,
+    modalIndex,
+    modalItems,
+    resolveThumbCacheId,
+    storeThumb,
+    thumbSize,
+  ]);
   const driveFileUrl = `https://drive.google.com/file/d/${encodeURIComponent(
     modalImage.id
   )}/view`;
@@ -238,7 +259,9 @@ export function ModalViewer() {
   return (
     <div className="modal" onClick={onCloseModal}>
       <div
-        className={`modal-content ${modalControlsVisible ? '' : 'is-controls-hidden'}`}
+        className={`modal-content ${modalControlsVisible ? '' : 'is-controls-hidden'}${
+          isMouseZoomMode ? ' is-mouse-zoom' : ''
+        }`}
         onClick={(event) => event.stopPropagation()}
         onWheel={onModalWheel}
         onPointerDown={onModalPointerDown}
@@ -309,22 +332,17 @@ export function ModalViewer() {
                       />
                       <span>Counter</span>
                     </button>
+                    {modalRotateStatus ? (
+                      <span className="modal-info-status">
+                        {modalRotateStatus.state === 'done'
+                          ? 'Done'
+                          : modalRotateStatus.state === 'error'
+                            ? 'Failed'
+                            : 'Rotating…'}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
-                {modalRotateProgress ? (
-                  <div className="modal-info-row">
-                    <span className="modal-info-label">Rotation</span>
-                    <span className="modal-info-progress">
-                      {modalRotateProgress.scope === 'batch'
-                        ? modalRotateProgress.total > 0
-                          ? `${modalRotateProgress.completed}/${modalRotateProgress.total} rotated`
-                          : 'Preparing…'
-                        : modalRotateProgress.completed >= modalRotateProgress.total
-                          ? 'Done'
-                          : 'Rotating…'}
-                    </span>
-                  </div>
-                ) : null}
               </div>
             ) : null}
           </div>
@@ -473,7 +491,12 @@ export function ModalViewer() {
           <img
             className="modal-thumb"
             key={`thumb-${modalImage.id}`}
-            src={thumbSrc ?? createProxyThumbUrl(modalImage.id, thumbSize, cacheKey)}
+            src={
+              thumbSrc ??
+              createProxyThumbUrl(modalImage.id, thumbSize, cacheKey, {
+                version: getImageVersion(modalImage.id),
+              })
+            }
             alt={modalImage.name}
             loading="eager"
             decoding="async"

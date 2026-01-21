@@ -6,6 +6,7 @@ import type {
   PointerEvent,
   RefObject,
   SetStateAction,
+  SyntheticEvent,
   TouchEvent,
   WheelEvent,
 } from 'react';
@@ -104,11 +105,10 @@ export type ModalViewerState = {
   modalFavoritePulse: null | 'add' | 'remove';
   modalHiddenPulse: null | 'hide' | 'unhide';
   modalIsRotating: boolean;
-  modalRotateProgress: null | {
-    scope: 'single' | 'batch';
-    total: number;
-    completed: number;
+  modalRotateStatus: null | {
+    state: 'rotating' | 'done' | 'error';
     angle: 90 | -90;
+    message?: string;
   };
   modalFullSrc: string | null;
   modalFullImageId: string | null;
@@ -119,6 +119,7 @@ export type ModalViewerState = {
   modalShake: boolean;
   modalSwipeAction: null | 'close' | 'favorite' | 'prev' | 'next';
   modalSwipeProgress: number;
+  isMouseZoomMode: boolean;
   modalTimerMs: number;
   modalTimerProgress: number;
   isModalTimerOpen: boolean;
@@ -190,7 +191,7 @@ export function useModalViewer({
   isLoadingMore,
   rotateImage,
 }: ModalDeps) {
-  const { cacheKey, bumpCacheKey } = useImageCache();
+  const { cacheKey, bumpImageVersion, getImageVersion } = useImageCache();
   const [modalIndex, setModalIndex] = useState<number | null>(null);
   const [modalImageId, setModalImageId] = useState<string | null>(null);
   const [modalItems, setModalItems] = useState<DriveImage[]>([]);
@@ -206,13 +207,45 @@ export function useModalViewer({
   const [modalControlsVisible, setModalControlsVisible] = useState(true);
   const [modalShake, setModalShake] = useState(false);
   const [isModalInfoOpen, setIsModalInfoOpen] = useState(false);
-  const [modalIsRotating, setModalIsRotating] = useState(false);
-  const [modalRotateProgress, setModalRotateProgress] = useState<null | {
-    scope: 'single' | 'batch';
-    total: number;
-    completed: number;
-    angle: 90 | -90;
-  }>(null);
+  const [isMouseZoomMode, setIsMouseZoomMode] = useState(false);
+  const [rotateStatusById, setRotateStatusById] = useState<
+    Record<string, { state: 'rotating' | 'done' | 'error'; angle: 90 | -90; message?: string }>
+  >({});
+  const freshRotateWindowMs = 30000;
+  const rotatedAtRef = useRef<Map<string, number>>(new Map());
+  const isFreshImage = useCallback(
+    (imageId: string) => {
+      const rotatedAt = rotatedAtRef.current.get(imageId);
+      if (!rotatedAt) {
+        return false;
+      }
+      if (Date.now() - rotatedAt > freshRotateWindowMs) {
+        rotatedAtRef.current.delete(imageId);
+        return false;
+      }
+      return true;
+    },
+    [freshRotateWindowMs]
+  );
+
+  const scheduleRotateStatusClear = useCallback((imageId: string, delayMs: number) => {
+    const existing = rotateStatusTimeoutRef.current.get(imageId);
+    if (existing) {
+      window.clearTimeout(existing);
+    }
+    const timeout = window.setTimeout(() => {
+      rotateStatusTimeoutRef.current.delete(imageId);
+      setRotateStatusById((current) => {
+        if (!current[imageId]) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[imageId];
+        return next;
+      });
+    }, delayMs);
+    rotateStatusTimeoutRef.current.set(imageId, timeout);
+  }, []);
 
   const modalPendingAdvanceRef = useRef(false);
   const modalItemsLengthRef = useRef(0);
@@ -222,7 +255,19 @@ export function useModalViewer({
   const modalTimerPulseTimeout = useRef<number | null>(null);
   const modalControlsTimeoutRef = useRef<number | null>(null);
   const modalShakeTimeoutRef = useRef<number | null>(null);
-  const modalRotateClearTimeoutRef = useRef<number | null>(null);
+  const rotateStatusTimeoutRef = useRef<Map<string, number>>(new Map());
+  const rotatingIdsRef = useRef<Set<string>>(new Set());
+  const lastHiddenFromModalRef = useRef<{
+    imageId: string;
+    setId: string;
+    contextLabel: string;
+    contextSetId: string | null;
+  } | null>(null);
+  const pendingHiddenRestoreRef = useRef<{
+    imageId: string;
+    contextLabel: string;
+    contextSetId: string | null;
+  } | null>(null);
   const modalHistoryEntryRef = useRef(false);
   const ignoreNextPopRef = useRef(false);
   const ignoreNextFullscreenRef = useRef(false);
@@ -269,6 +314,8 @@ export function useModalViewer({
     modalItems,
     modalLoadKey,
     cacheKey,
+    isFreshImage,
+    getImageVersion,
     prefetchThumbs,
     setError,
   });
@@ -277,6 +324,8 @@ export function useModalViewer({
     modalIndex !== null && modalIndex >= 0 && modalIndex < modalItems.length
       ? modalItems[modalIndex]
       : null;
+  const modalRotateStatus = modalImage ? rotateStatusById[modalImage.id] ?? null : null;
+  const modalIsRotating = modalRotateStatus?.state === 'rotating';
 
   const modalSetId =
     modalContextLabel === 'Set'
@@ -384,6 +433,13 @@ export function useModalViewer({
     }
     setModalControlsVisible(true);
   }, [modalIsRotating]);
+
+  useEffect(() => {
+    if (modalIndex !== null) {
+      return;
+    }
+    setIsMouseZoomMode(false);
+  }, [modalIndex]);
 
   const closeInfoMenu = useCallback(() => {
     setIsModalInfoOpen(false);
@@ -699,6 +755,16 @@ export function useModalViewer({
     const set = setsById.get(setId);
     const isHidden = set?.hiddenImageIds?.includes(modalImage.id) ?? false;
     triggerHiddenPulse(isHidden ? 'unhide' : 'hide');
+    if (!isHidden) {
+      lastHiddenFromModalRef.current = {
+        imageId: modalImage.id,
+        setId,
+        contextLabel: modalContextLabel,
+        contextSetId: modalContextSetId ?? null,
+      };
+    } else {
+      lastHiddenFromModalRef.current = null;
+    }
     void toggleHiddenImage(setId, modalImage.id);
   }, [
     activeSet,
@@ -711,54 +777,48 @@ export function useModalViewer({
     triggerHiddenPulse,
   ]);
 
-  const finalizeRotateProgress = useCallback(() => {
-    if (modalRotateClearTimeoutRef.current) {
-      window.clearTimeout(modalRotateClearTimeoutRef.current);
-      modalRotateClearTimeoutRef.current = null;
-    }
-    modalRotateClearTimeoutRef.current = window.setTimeout(() => {
-      setModalRotateProgress(null);
-      modalRotateClearTimeoutRef.current = null;
-    }, 800);
-  }, []);
-
   const rotateModalImage = useCallback(
     async (angle: 90 | -90) => {
-      if (!modalImage || modalIsRotating) {
+      if (!modalImage) {
         return;
       }
-      setModalIsRotating(true);
-      setModalRotateProgress({
-        scope: 'single',
-        total: 1,
-        completed: 0,
-        angle,
-      });
+      if (rotatingIdsRef.current.has(modalImage.id)) {
+        return;
+      }
+      rotatingIdsRef.current.add(modalImage.id);
+      setRotateStatusById((current) => ({
+        ...current,
+        [modalImage.id]: { state: 'rotating', angle },
+      }));
       try {
         await rotateImage(modalImage.id, angle);
-        clearModalMediaCache();
-        resetModalMediaState();
-        bumpCacheKey();
-        setModalRotateProgress({
-          scope: 'single',
-          total: 1,
-          completed: 1,
-          angle,
-        });
-        finalizeRotateProgress();
+        bumpImageVersion(modalImage.id);
+        rotatedAtRef.current.set(modalImage.id, Date.now());
+        if (modalImageId === modalImage.id) {
+          resetModalMediaState();
+          setModalLoadKey((key) => key + 1);
+        }
+        setRotateStatusById((current) => ({
+          ...current,
+          [modalImage.id]: { state: 'done', angle },
+        }));
+        scheduleRotateStatusClear(modalImage.id, 1200);
       } catch (error) {
         setError((error as Error).message);
-        setModalRotateProgress(null);
+        setRotateStatusById((current) => ({
+          ...current,
+          [modalImage.id]: { state: 'error', angle, message: (error as Error).message },
+        }));
+        scheduleRotateStatusClear(modalImage.id, 2400);
       } finally {
-        setModalIsRotating(false);
+        rotatingIdsRef.current.delete(modalImage.id);
       }
     },
     [
-      bumpCacheKey,
-      clearModalMediaCache,
-      finalizeRotateProgress,
+      bumpImageVersion,
       modalImage,
-      modalIsRotating,
+      scheduleRotateStatusClear,
+      modalImageId,
       resetModalMediaState,
       rotateImage,
       setError,
@@ -928,6 +988,7 @@ export function useModalViewer({
     goNextImage,
     onToggleFavoriteFromModal: toggleFavoriteFromModal,
     onCloseModal: () => closeModalWithHistory('manual'),
+    mouseZoomMode: isMouseZoomMode,
   });
 
   useEffect(() => {
@@ -1005,6 +1066,33 @@ export function useModalViewer({
       if (normalizedKey === 'h') {
         toggleHiddenFromModal();
       }
+      if (normalizedKey === 't') {
+        onToggleTimerMenu();
+      }
+      if (normalizedKey === 'i') {
+        toggleInfoMenu();
+      }
+      if (normalizedKey === 'v') {
+        setIsMouseZoomMode((current) => !current);
+      }
+      if (normalizedKey === 'z') {
+        const lastHidden = lastHiddenFromModalRef.current;
+        if (
+          lastHidden &&
+          lastHidden.contextLabel === modalContextLabel &&
+          lastHidden.contextSetId === (modalContextSetId ?? null)
+        ) {
+          event.preventDefault();
+          pendingHiddenRestoreRef.current = {
+            imageId: lastHidden.imageId,
+            contextLabel: lastHidden.contextLabel,
+            contextSetId: lastHidden.contextSetId,
+          };
+          triggerHiddenPulse('unhide');
+          lastHiddenFromModalRef.current = null;
+          void toggleHiddenImage(lastHidden.setId, lastHidden.imageId);
+        }
+      }
       if (normalizedKey === 'c') {
         if (modalContextLabel === 'Set') {
           if (modalHasHistory) {
@@ -1044,15 +1132,19 @@ export function useModalViewer({
     modalHasHistory,
     modalIndex,
     openModalChronologicalContext,
+    onToggleTimerMenu,
     restoreModalContext,
+    toggleInfoMenu,
     toggleFavoriteFromModal,
     toggleModalTimerPause,
     startLastModalTimer,
     toggleHiddenFromModal,
+    toggleHiddenImage,
     modalTimerMs,
     isModalTimerPaused,
     triggerTimerPulse,
     viewerSort,
+    modalContextSetId,
   ]);
 
   useEffect(() => {
@@ -1075,11 +1167,37 @@ export function useModalViewer({
       if (modalShakeTimeoutRef.current) {
         window.clearTimeout(modalShakeTimeoutRef.current);
       }
-      if (modalRotateClearTimeoutRef.current) {
-        window.clearTimeout(modalRotateClearTimeoutRef.current);
-      }
+      rotateStatusTimeoutRef.current.forEach((timeout) => {
+        window.clearTimeout(timeout);
+      });
+      rotateStatusTimeoutRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    const pending = pendingHiddenRestoreRef.current;
+    if (!pending) {
+      return;
+    }
+    if (
+      pending.contextLabel !== modalContextLabel ||
+      pending.contextSetId !== (modalContextSetId ?? null)
+    ) {
+      pendingHiddenRestoreRef.current = null;
+      return;
+    }
+    const index = modalItems.findIndex((image) => image.id === pending.imageId);
+    if (index === -1) {
+      return;
+    }
+    setModalImageAtIndex(modalItems, index);
+    pendingHiddenRestoreRef.current = null;
+  }, [modalContextLabel, modalContextSetId, modalItems, setModalImageAtIndex]);
+
+  useEffect(() => {
+    lastHiddenFromModalRef.current = null;
+    pendingHiddenRestoreRef.current = null;
+  }, [activeSet?.id, modalContextLabel, modalContextSetId]);
 
   useEffect(() => {
     if (modalContextLabel !== 'Set') {
@@ -1186,7 +1304,7 @@ export function useModalViewer({
     modalFavoritePulse,
     modalHiddenPulse,
     modalIsRotating,
-    modalRotateProgress,
+    modalRotateStatus,
     modalFullSrc,
     modalFullImageId,
     modalFullAnimate,
@@ -1196,6 +1314,7 @@ export function useModalViewer({
     modalShake,
     modalSwipeAction,
     modalSwipeProgress,
+    isMouseZoomMode,
     modalTimerMs,
     modalTimerProgress,
     isModalTimerOpen,

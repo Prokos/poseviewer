@@ -72,7 +72,7 @@ const ROOT_FOLDER_IDS = (() => {
   return Array.from(new Set(ids));
 })();
 const DEFAULT_ROOT_ID = ROOT_FOLDER_IDS[0] ?? '';
-const IMAGE_PAGE_SIZE = 96;
+const IMAGE_PAGE_SIZE = 48;
 const THUMB_SIZE = 320;
 const CARD_THUMB_SIZE = 500;
 const VIEWER_THUMB_SIZE = CARD_THUMB_SIZE;
@@ -281,6 +281,7 @@ export default function App() {
   const updateQueueRef = useRef(Promise.resolve());
   const lastHistoryPathRef = useRef<string | null>(null);
   const skipHistoryRef = useRef(false);
+  const pendingScrollRef = useRef<number | null>(null);
 
   const syncPathState = useCallback(
     (page: 'overview' | 'create' | 'set' | 'slideshow', setId?: string) => {
@@ -299,9 +300,16 @@ export default function App() {
       url.pathname = nextPath;
       if (skipHistoryRef.current) {
         skipHistoryRef.current = false;
-        window.history.replaceState(null, '', url);
+        const nextState = { ...(window.history.state ?? {}), page, setId };
+        window.history.replaceState(nextState, '', url);
       } else {
-        window.history.pushState(null, '', url);
+        const currentState = window.history.state ?? {};
+        window.history.replaceState(
+          { ...currentState, scrollY: window.scrollY },
+          '',
+          window.location.href
+        );
+        window.history.pushState({ page, setId, scrollY: 0 }, '', url);
       }
       lastHistoryPathRef.current = nextPath;
     },
@@ -1984,6 +1992,9 @@ export default function App() {
   useEffect(() => {
     const handlePop = () => {
       const next = parsePathState();
+      const scrollY =
+        typeof window.history.state?.scrollY === 'number' ? window.history.state.scrollY : 0;
+      pendingScrollRef.current = scrollY;
       skipHistoryRef.current = true;
       if (next.page === 'set' && next.setId) {
         pendingSetIdRef.current = next.setId;
@@ -1998,6 +2009,17 @@ export default function App() {
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
   }, [handleOpenSet, visibleSets]);
+
+  useEffect(() => {
+    if (pendingScrollRef.current === null || page !== 'overview') {
+      return;
+    }
+    const target = pendingScrollRef.current;
+    pendingScrollRef.current = null;
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: target, left: 0, behavior: 'auto' });
+    });
+  }, [page]);
 
   useEffect(() => {
     if (!appliedNavRef.current) {
@@ -2483,6 +2505,7 @@ export default function App() {
     isLoadingImages,
     isLoadingMore,
     totalImagesKnown,
+    allPageSize,
     samplePendingExtra,
     nonFavoritesPendingExtra,
     favoritesPendingExtra,

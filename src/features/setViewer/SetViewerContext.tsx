@@ -43,6 +43,7 @@ export type SetViewerContextValue = {
   isLoadingImages: boolean;
   isLoadingMore: boolean;
   totalImagesKnown?: number;
+  allPageSize: number;
   samplePendingExtra: number;
   nonFavoritesPendingExtra: number;
   favoritesPendingExtra: number;

@@ -891,6 +891,19 @@ button.ghost:hover:not(:disabled) {
   overflow: hidden;
 }
 
+.thumb--placeholder,
+.thumb.is-pending {
+  background: linear-gradient(
+    90deg,
+    rgba(31, 28, 23, 0.05) 0%,
+    rgba(31, 28, 23, 0.22) 45%,
+    rgba(31, 28, 23, 0.05) 100%
+  );
+  background-size: 260% 100%;
+  animation: thumb-sheen 1.6s linear infinite;
+  animation-delay: var(--thumb-shimmer-delay, 0s);
+}
+
 .thumb img {
   position: absolute;
   inset: 0;
@@ -906,6 +919,10 @@ button.ghost:hover:not(:disabled) {
 .thumb.is-loaded img {
   opacity: 1;
   transition: object-position 120ms ease-out, opacity 180ms ease-out;
+}
+
+.image-tile--placeholder {
+  pointer-events: none;
 }
 
 .thumb--empty {
@@ -964,6 +981,37 @@ button.ghost:hover:not(:disabled) {
   grid-column: 1 / -1;
   height: 0;
 }
+
+.load-more-sentinel {
+  height: 1px;
+}
+
+.viewer-status {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  margin: 0 0 8px;
+}
+
+.viewer-status.is-empty {
+  visibility: hidden;
+}
+
+.viewer-load-overlay {
+  position: fixed;
+  right: 70px;
+  bottom: 20px;
+  background: rgba(20, 18, 14, 0.78);
+  color: var(--white);
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  letter-spacing: 0.01em;
+  z-index: 5;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(6px);
+}
+
 
 .thumb-action {
   position: absolute;
@@ -1366,6 +1414,11 @@ button.ghost:hover:not(:disabled) {
   cursor: grabbing;
 }
 
+.modal-content.is-mouse-zoom,
+.modal-content.is-mouse-zoom .modal-media {
+  cursor: ns-resize;
+}
+
 .modal-media.is-shake {
   animation: modal-shake 0.38s ease;
 }
@@ -1569,6 +1622,13 @@ button.ghost:hover:not(:disabled) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+}
+
+.modal-info-status {
+  grid-column: 1 / -1;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.72rem;
+  text-align: center;
 }
 
 .modal-info-action {
@@ -2220,4 +2280,14 @@ button.ghost:hover:not(:disabled) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+}
+@keyframes thumb-sheen {
+  0% {
+    background-position: -30% 50%;
+    opacity: 0.75;
+  }
+  100% {
+    background-position: 130% 50%;
+    opacity: 0.75;
+  }
 }

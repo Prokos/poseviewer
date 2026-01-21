@@ -1,9 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 type ImageCacheContextValue = {
   cacheKey: number;
   bumpCacheKey: () => void;
+  getImageVersion: (fileId: string) => number;
+  bumpImageVersion: (fileId: string) => void;
 };
 
 const ImageCacheContext = createContext<ImageCacheContextValue | null>(null);
@@ -29,8 +31,18 @@ type ImageCacheProviderProps = {
 
 export function ImageCacheProvider({ children }: ImageCacheProviderProps) {
   const [cacheKey, setCacheKey] = useState(() => readInitialCacheKey());
+  const [imageVersionTick, setImageVersionTick] = useState(0);
+  const imageVersionsRef = useRef<Map<string, number>>(new Map());
   const bumpCacheKey = useCallback(() => {
     setCacheKey((value) => value + 1);
+  }, []);
+  const getImageVersion = useCallback((fileId: string) => {
+    return imageVersionsRef.current.get(fileId) ?? 0;
+  }, []);
+  const bumpImageVersion = useCallback((fileId: string) => {
+    const current = imageVersionsRef.current.get(fileId) ?? 0;
+    imageVersionsRef.current.set(fileId, current + 1);
+    setImageVersionTick((value) => value + 1);
   }, []);
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -38,7 +50,10 @@ export function ImageCacheProvider({ children }: ImageCacheProviderProps) {
     }
     window.localStorage.setItem(CACHE_KEY_STORAGE, String(cacheKey));
   }, [cacheKey]);
-  const value = useMemo(() => ({ cacheKey, bumpCacheKey }), [cacheKey, bumpCacheKey]);
+  const value = useMemo(
+    () => ({ cacheKey, bumpCacheKey, getImageVersion, bumpImageVersion }),
+    [cacheKey, bumpCacheKey, getImageVersion, bumpImageVersion, imageVersionTick]
+  );
   return <ImageCacheContext.Provider value={value}>{children}</ImageCacheContext.Provider>;
 }
 

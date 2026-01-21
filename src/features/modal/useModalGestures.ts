@@ -23,6 +23,7 @@ type UseModalGesturesOptions = {
   goNextImage: (options?: { suppressControls?: boolean }) => void;
   onToggleFavoriteFromModal: () => void;
   onCloseModal: () => void;
+  mouseZoomMode: boolean;
 };
 
 export function useModalGestures({
@@ -39,6 +40,7 @@ export function useModalGestures({
   goNextImage,
   onToggleFavoriteFromModal,
   onCloseModal,
+  mouseZoomMode,
 }: UseModalGesturesOptions) {
   const [modalSwipeAction, setModalSwipeAction] = useState<
     null | 'close' | 'favorite' | 'prev' | 'next'
@@ -69,6 +71,14 @@ export function useModalGestures({
     worldY: number;
   } | null>(null);
   const oneHandZoomMovedRef = useRef(false);
+  const mouseZoomStartRef = useRef<{
+    startY: number;
+    zoom: number;
+    pointerX: number;
+    pointerY: number;
+    worldX: number;
+    worldY: number;
+  } | null>(null);
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const lastDoubleTapRef = useRef(0);
   const touchMovedRef = useRef(false);
@@ -136,6 +146,10 @@ export function useModalGestures({
       resetZoomPan();
     }
   }, [modalImageId, resetZoomPan]);
+
+  useEffect(() => {
+    mouseZoomStartRef.current = null;
+  }, [modalImageId, mouseZoomMode]);
 
   const handleModalWheel = (event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -212,6 +226,43 @@ export function useModalGestures({
   };
 
   const handleModalMouseMove = (event: MouseEvent<HTMLDivElement>) => {
+    if (mouseZoomMode && !isPanningRef.current) {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest('button')) {
+        scheduleModalControlsHide(true);
+        pauseModalTimer();
+        scheduleModalTimerResume();
+        const rect = event.currentTarget.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        if (!mouseZoomStartRef.current) {
+          const pointerX = event.clientX - centerX;
+          const pointerY = event.clientY - centerY;
+          mouseZoomStartRef.current = {
+            startY: event.clientY,
+            zoom: modalZoom,
+            pointerX,
+            pointerY,
+            worldX: (pointerX - modalPan.x) / modalZoom,
+            worldY: (pointerY - modalPan.y) / modalZoom,
+          };
+        }
+        const start = mouseZoomStartRef.current;
+        const deltaY = event.clientY - start.startY;
+        const zoomFactor = Math.exp(deltaY / 200);
+        const nextZoom = Math.min(getModalMaxZoom(), Math.max(1, start.zoom * zoomFactor));
+        if (nextZoom === 1) {
+          setModalZoom(1);
+          setModalPan({ x: 0, y: 0 });
+          return;
+        }
+        const nextPanX = start.pointerX - start.worldX * nextZoom;
+        const nextPanY = start.pointerY - start.worldY * nextZoom;
+        setModalZoom(nextZoom);
+        setModalPan(clampModalPan({ x: nextPanX, y: nextPanY }, nextZoom));
+        return;
+      }
+    }
     if (event.movementX === 0 && event.movementY === 0) {
       return;
     }

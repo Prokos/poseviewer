@@ -515,6 +515,7 @@ app.get('/api/media/:fileId', async (req, res) => {
     return;
   }
   const { fileId } = req.params;
+  const fresh = req.query.fresh === '1';
   const token = await getAccessToken();
 
   if (!token) {
@@ -525,16 +526,18 @@ app.get('/api/media/:fileId', async (req, res) => {
 
   const cachePath = path.join(MEDIA_CACHE_DIR, `${fileId}.bin`);
   const metaPath = path.join(MEDIA_CACHE_DIR, `${fileId}.json`);
-  const cached = await readCacheWithMeta(cachePath, metaPath);
-  if (cached) {
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.set('X-Cache', 'HIT');
-    res.set('X-Queue', String(queueMs));
-    res.set('X-Elapsed', String(Date.now() - start));
-    res.set('X-Source', 'cache-meta');
-    res.type(cached.meta.contentType || 'application/octet-stream').send(cached.data);
-    mediaSemaphore.release();
-    return;
+  if (!fresh) {
+    const cached = await readCacheWithMeta(cachePath, metaPath);
+    if (cached) {
+      res.set('Cache-Control', 'public, max-age=86400');
+      res.set('X-Cache', 'HIT');
+      res.set('X-Queue', String(queueMs));
+      res.set('X-Elapsed', String(Date.now() - start));
+      res.set('X-Source', 'cache-meta');
+      res.type(cached.meta.contentType || 'application/octet-stream').send(cached.data);
+      mediaSemaphore.release();
+      return;
+    }
   }
 
   try {
@@ -574,7 +577,7 @@ app.get('/api/media/:fileId', async (req, res) => {
     const contentType = response.headers.get('content-type') ?? 'application/octet-stream';
     const contentLength = response.headers.get('content-length');
 
-    res.set('Cache-Control', 'public, max-age=86400');
+    res.set('Cache-Control', fresh ? 'no-store' : 'public, max-age=86400');
     res.set('X-Cache', 'MISS');
     res.set('X-Queue', String(queueMs));
     res.set('X-Elapsed', String(Date.now() - start));
@@ -590,7 +593,9 @@ app.get('/api/media/:fileId', async (req, res) => {
         return;
       }
       const buffer = Buffer.from(arrayBuffer);
-      await writeCacheWithMeta(cachePath, metaPath, buffer, { contentType });
+      if (!fresh) {
+        await writeCacheWithMeta(cachePath, metaPath, buffer, { contentType });
+      }
       res.send(buffer);
       return;
     }
@@ -616,7 +621,9 @@ app.get('/api/media/:fileId', async (req, res) => {
     if (controller.signal.aborted) {
       return;
     }
-    await writeCacheWithMeta(cachePath, metaPath, Buffer.concat(chunks), { contentType });
+    if (!fresh) {
+      await writeCacheWithMeta(cachePath, metaPath, Buffer.concat(chunks), { contentType });
+    }
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       return;
@@ -719,33 +726,40 @@ app.post('/api/drive/list', async (req, res) => {
   const searchParams = new URLSearchParams({
     fields: fields ?? 'nextPageToken,files(id,name,mimeType,parents,thumbnailLink)',
     pageSize: '1000',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
     ...params,
   });
 
-  const files = [];
-  let pageToken = '';
-  do {
-    if (pageToken) {
-      searchParams.set('pageToken', pageToken);
-    } else {
-      searchParams.delete('pageToken');
-    }
-    const response = await fetch(`${DRIVE_BASE}/files?${searchParams.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      res.status(response.status).send(text);
-      return;
-    }
-    const data = await response.json();
-    files.push(...(data.files ?? []));
-    pageToken = data.nextPageToken ?? '';
-  } while (pageToken);
+  try {
+    const files = [];
+    let pageToken = '';
+    do {
+      if (pageToken) {
+        searchParams.set('pageToken', pageToken);
+      } else {
+        searchParams.delete('pageToken');
+      }
+      const response = await fetch(`${DRIVE_BASE}/files?${searchParams.toString()}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        res.status(response.status).send(text);
+        return;
+      }
+      const data = await response.json();
+      files.push(...(data.files ?? []));
+      pageToken = data.nextPageToken ?? '';
+    } while (pageToken);
 
-  res.json({ files });
+    res.json({ files });
+  } catch (error) {
+    logServerError(req, 'drive list failed', error);
+    res.status(502).send('Drive list failed.');
+  }
 });
 
 app.get('/api/drive/file/:fileId', async (req, res) => {

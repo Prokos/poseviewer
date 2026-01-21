@@ -9,6 +9,8 @@ type UseModalMediaOptions = {
   modalItems: DriveImage[];
   modalLoadKey: number;
   cacheKey: number;
+  isFreshImage?: (imageId: string) => boolean;
+  getImageVersion?: (imageId: string) => number;
   prefetchThumbs: (images: DriveImage[]) => void;
   setError: (message: string) => void;
 };
@@ -19,6 +21,8 @@ export function useModalMedia({
   modalItems,
   modalLoadKey,
   cacheKey,
+  isFreshImage,
+  getImageVersion,
   prefetchThumbs,
   setError,
 }: UseModalMediaOptions) {
@@ -40,6 +44,14 @@ export function useModalMedia({
   const modalImageSizeRef = useRef<{ width: number; height: number } | null>(null);
   const modalImageSizeCacheRef = useRef<Map<string, { width: number; height: number }>>(
     new Map()
+  );
+  const modalImageVersion = modalImageId ? getImageVersion?.(modalImageId) ?? 0 : 0;
+  const resolveCacheId = useCallback(
+    (imageId: string) => {
+      const version = getImageVersion?.(imageId) ?? 0;
+      return version > 0 ? `${imageId}|${version}` : imageId;
+    },
+    [getImageVersion]
   );
 
   const cancelPrefetches = useCallback(() => {
@@ -138,10 +150,14 @@ export function useModalMedia({
     });
   }, []);
 
-  const fetchImageBlob = useCallback(async (url: string, signal: AbortSignal) => {
+  const fetchImageBlob = useCallback(
+    async (url: string, signal: AbortSignal, options?: { fresh?: boolean }) => {
     let lastStatus = 0;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const response = await fetch(url, { signal, cache: 'force-cache' });
+      const response = await fetch(url, {
+        signal,
+        cache: options?.fresh ? 'no-store' : 'force-cache',
+      });
       if (response.status === 429) {
         lastStatus = response.status;
         if (attempt < 2) {
@@ -170,23 +186,28 @@ export function useModalMedia({
       if (!imageId) {
         return;
       }
-      if (modalPrefetchCacheRef.current.has(imageId)) {
+      if (isFreshImage?.(imageId)) {
         return;
       }
-      if (modalPrefetchAbortRef.current.has(imageId)) {
+      const cacheId = resolveCacheId(imageId);
+      if (modalPrefetchCacheRef.current.has(cacheId)) {
+        return;
+      }
+      if (modalPrefetchAbortRef.current.has(cacheId)) {
         return;
       }
       const controller = new AbortController();
-      modalPrefetchAbortRef.current.set(imageId, controller);
+      modalPrefetchAbortRef.current.set(cacheId, controller);
       setModalPrefetchCount(modalPrefetchAbortRef.current.size);
-      const url = createProxyMediaUrl(imageId, cacheKey);
+      const version = getImageVersion?.(imageId) ?? 0;
+      const url = createProxyMediaUrl(imageId, cacheKey, { version });
       fetchImageBlob(url, controller.signal)
         .then((blob) => {
           if (controller.signal.aborted) {
             return;
           }
           const objectUrl = URL.createObjectURL(blob);
-          modalPrefetchCacheRef.current.set(imageId, objectUrl);
+          modalPrefetchCacheRef.current.set(cacheId, objectUrl);
         })
         .catch((prefetchError) => {
           if ((prefetchError as Error).name === 'AbortError') {
@@ -195,11 +216,11 @@ export function useModalMedia({
           setError((prefetchError as Error).message);
         })
         .finally(() => {
-          modalPrefetchAbortRef.current.delete(imageId);
+          modalPrefetchAbortRef.current.delete(cacheId);
           setModalPrefetchCount(modalPrefetchAbortRef.current.size);
         });
     },
-    [fetchImageBlob, setError]
+    [cacheKey, fetchImageBlob, getImageVersion, isFreshImage, resolveCacheId, setError]
   );
 
   const onModalFullLoad = useCallback(
@@ -220,6 +241,21 @@ export function useModalMedia({
       setModalIsLoading(false);
       return;
     }
+    const modalCacheId =
+      modalImageVersion > 0 ? `${modalImageId}|${modalImageVersion}` : modalImageId;
+    const isFresh = modalImageId ? isFreshImage?.(modalImageId) ?? false : false;
+    if (isFresh) {
+      const cachedFull = modalFullCacheRef.current.get(modalCacheId);
+      if (cachedFull) {
+        URL.revokeObjectURL(cachedFull);
+        modalFullCacheRef.current.delete(modalCacheId);
+      }
+      const cachedPrefetch = modalPrefetchCacheRef.current.get(modalCacheId);
+      if (cachedPrefetch) {
+        URL.revokeObjectURL(cachedPrefetch);
+        modalPrefetchCacheRef.current.delete(modalCacheId);
+      }
+    }
     setModalFullAnimate(false);
     cancelPrefetches();
     if (modalFullAbortRef.current) {
@@ -231,27 +267,29 @@ export function useModalMedia({
     }
     cancelIdlePrefetch();
     modalFullUrlRef.current = null;
-    const cacheHit = modalFullCacheRef.current.get(modalImageId);
-    if (cacheHit) {
-      modalFullCacheRef.current.delete(modalImageId);
-      modalFullCacheRef.current.set(modalImageId, cacheHit);
-      modalFullUrlRef.current = cacheHit;
-      setModalFullSrc(cacheHit);
-      setModalFullImageId(modalImageId);
-      setModalFullAnimate(false);
-      setModalIsLoading(false);
-      return;
-    }
-    const cachedUrl = modalPrefetchCacheRef.current.get(modalImageId);
-    if (cachedUrl) {
-      modalPrefetchCacheRef.current.delete(modalImageId);
-      modalFullUrlRef.current = cachedUrl;
-      setModalFullSrc(cachedUrl);
-      setModalFullImageId(modalImageId);
-      setModalFullAnimate(false);
-      storeModalFullCache(modalImageId, cachedUrl);
-      setModalIsLoading(false);
-      return;
+    if (!isFresh) {
+      const cacheHit = modalFullCacheRef.current.get(modalCacheId);
+      if (cacheHit) {
+        modalFullCacheRef.current.delete(modalCacheId);
+        modalFullCacheRef.current.set(modalCacheId, cacheHit);
+        modalFullUrlRef.current = cacheHit;
+        setModalFullSrc(cacheHit);
+        setModalFullImageId(modalImageId);
+        setModalFullAnimate(false);
+        setModalIsLoading(false);
+        return;
+      }
+      const cachedUrl = modalPrefetchCacheRef.current.get(modalCacheId);
+      if (cachedUrl) {
+        modalPrefetchCacheRef.current.delete(modalCacheId);
+        modalFullUrlRef.current = cachedUrl;
+        setModalFullSrc(cachedUrl);
+        setModalFullImageId(modalImageId);
+        setModalFullAnimate(false);
+        storeModalFullCache(modalCacheId, cachedUrl);
+        setModalIsLoading(false);
+        return;
+      }
     }
     setModalFullImageId(null);
     setModalFullSrc(null);
@@ -260,8 +298,11 @@ export function useModalMedia({
       cancelPrefetches();
       const controller = new AbortController();
       modalFullAbortRef.current = controller;
-      const url = createProxyMediaUrl(modalImageId, cacheKey);
-    fetchImageBlob(url, controller.signal)
+      const url = createProxyMediaUrl(modalImageId, cacheKey, {
+        fresh: isFresh,
+        version: modalImageVersion,
+      });
+      fetchImageBlob(url, controller.signal, { fresh: isFresh })
         .then((blob) => {
           if (controller.signal.aborted) {
             return;
@@ -271,7 +312,9 @@ export function useModalMedia({
           setModalFullSrc(objectUrl);
           setModalFullImageId(modalImageId);
           setModalFullAnimate(true);
-          storeModalFullCache(modalImageId, objectUrl);
+          if (!isFresh) {
+            storeModalFullCache(modalCacheId, objectUrl);
+          }
           setModalIsLoading(false);
         })
         .catch((loadError) => {
@@ -287,8 +330,11 @@ export function useModalMedia({
     cancelPrefetches,
     fetchImageBlob,
     modalImageId,
+    modalImageVersion,
     modalLoadKey,
     cacheKey,
+    getImageVersion,
+    isFreshImage,
     setError,
     storeModalFullCache,
   ]);
@@ -316,16 +362,18 @@ export function useModalMedia({
       }
     }
     const allowed = new Set(nextIds);
-    modalPrefetchAbortRef.current.forEach((controller, id) => {
-      if (!allowed.has(id)) {
+    modalPrefetchAbortRef.current.forEach((controller, cacheId) => {
+      const imageId = cacheId.split('|')[0];
+      if (!allowed.has(imageId)) {
         controller.abort();
-        modalPrefetchAbortRef.current.delete(id);
+        modalPrefetchAbortRef.current.delete(cacheId);
       }
     });
-    modalPrefetchCacheRef.current.forEach((url, id) => {
-      if (!allowed.has(id)) {
+    modalPrefetchCacheRef.current.forEach((url, cacheId) => {
+      const imageId = cacheId.split('|')[0];
+      if (!allowed.has(imageId)) {
         URL.revokeObjectURL(url);
-        modalPrefetchCacheRef.current.delete(id);
+        modalPrefetchCacheRef.current.delete(cacheId);
       }
     });
     setModalPrefetchCount(modalPrefetchAbortRef.current.size);

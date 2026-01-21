@@ -19,6 +19,32 @@ export type PoseIndexDocument = {
   items: PoseIndexItem[];
 };
 
+type PoseIndexDocumentV1 = {
+  version: 1;
+  updatedAt?: string;
+  count?: number;
+  items: PoseIndexItem[];
+};
+
+function normalizeIndexDocument(raw: unknown): PoseIndexDocument | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const parsed = raw as Partial<PoseIndexDocument | PoseIndexDocumentV1>;
+  if (parsed.version === 2 && Array.isArray(parsed.items) && typeof parsed.count === 'number') {
+    return parsed as PoseIndexDocument;
+  }
+  if (parsed.version === 1 && Array.isArray(parsed.items)) {
+    return {
+      version: 2,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+      count: typeof parsed.count === 'number' ? parsed.count : parsed.items.length,
+      items: parsed.items,
+    };
+  }
+  return null;
+}
+
 export async function loadSetIndex(
   folderId: string,
   onProgress?: (progress: { loaded: number }) => void
@@ -39,13 +65,10 @@ export async function loadSetIndex(
   const text = await driveDownloadText(fileId, onProgress);
 
   try {
-    const parsed = JSON.parse(text) as PoseIndexDocument;
-    if (
-      parsed?.version === 2 &&
-      Array.isArray(parsed.items) &&
-      typeof parsed.count === 'number'
-    ) {
-      return { fileId, data: parsed };
+    const parsed = JSON.parse(text) as PoseIndexDocument | PoseIndexDocumentV1;
+    const normalized = normalizeIndexDocument(parsed);
+    if (normalized) {
+      return { fileId, data: normalized };
     }
   } catch {
     // fall through to null
@@ -60,9 +83,10 @@ export async function loadSetIndexById(
 ) {
   const text = await driveDownloadText(fileId, onProgress);
   try {
-    const parsed = JSON.parse(text) as PoseIndexDocument;
-    if (parsed?.version === 2 && Array.isArray(parsed.items) && typeof parsed.count === 'number') {
-      return { fileId, data: parsed };
+    const parsed = JSON.parse(text) as PoseIndexDocument | PoseIndexDocumentV1;
+    const normalized = normalizeIndexDocument(parsed);
+    if (normalized) {
+      return { fileId, data: normalized };
     }
   } catch {
     return null;

@@ -89,6 +89,36 @@ export async function driveUploadText(
   return response.json() as Promise<{ id: string }>;
 }
 
+export async function driveCreateFolder(folderId: string, name: string) {
+  const response = await fetch('/api/drive/create-folder', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ folderId, name }),
+  });
+  await ensureOk(response, 'Drive create folder');
+  return response.json() as Promise<{ id: string }>;
+}
+
+export async function driveUploadBinaryFromUrl(
+  folderId: string,
+  filename: string,
+  url: string,
+  mimeType?: string,
+  referer?: string
+) {
+  const response = await fetch('/api/drive/upload-binary', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ folderId, filename, url, mimeType, referer }),
+  });
+  await ensureOk(response, 'Drive upload binary');
+  return response.json() as Promise<{ id: string }>;
+}
+
 export async function driveRotateImage(fileId: string, angle: 90 | -90) {
   const response = await fetch('/api/drive/rotate', {
     method: 'POST',

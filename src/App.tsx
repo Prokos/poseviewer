@@ -48,6 +48,7 @@ import { ToastStack } from './components/ToastStack';
 import { ScrollControls } from './components/ScrollControls';
 import { CreateSetPage } from './pages/CreateSetPage';
 import { OverviewPage } from './pages/OverviewPage';
+import { SourcesPage } from './pages/SourcesPage';
 import { SlideshowPage } from './pages/SlideshowPage';
 import { SetViewerPage } from './pages/SetViewerPage';
 import { ModalActionsProvider } from './features/modal/ModalContext';
@@ -87,6 +88,9 @@ function parsePathState() {
   const path = raw.endsWith('/') && raw.length > 1 ? raw.slice(0, -1) : raw;
   if (path === '/create') {
     return { page: 'create', setId: undefined };
+  }
+  if (path === '/sources') {
+    return { page: 'sources', setId: undefined };
   }
   if (path === '/slideshow') {
     return { page: 'slideshow', setId: undefined };
@@ -128,7 +132,9 @@ export default function App() {
   const [modalContextLabel, setModalContextLabel] = useState('');
   const [tokenStatus, setTokenStatus] = useState<string>('');
   const rootId = DEFAULT_ROOT_ID;
-  const [page, setPage] = useState<'overview' | 'create' | 'set' | 'slideshow'>('overview');
+  const [page, setPage] = useState<'overview' | 'create' | 'set' | 'slideshow' | 'sources'>(
+    'overview'
+  );
   const [folderPaths, setFolderPaths] = useLocalStorage<FolderPath[]>(
     'poseviewer-folder-paths',
     emptyFolders
@@ -284,10 +290,12 @@ export default function App() {
   const pendingScrollRef = useRef<number | null>(null);
 
   const syncPathState = useCallback(
-    (page: 'overview' | 'create' | 'set' | 'slideshow', setId?: string) => {
+    (page: 'overview' | 'create' | 'set' | 'slideshow' | 'sources', setId?: string) => {
       let nextPath = '/';
       if (page === 'create') {
         nextPath = '/create';
+      } else if (page === 'sources') {
+        nextPath = '/sources';
       } else if (page === 'slideshow') {
         nextPath = '/slideshow';
       } else if (page === 'set' && setId) {
@@ -1963,6 +1971,12 @@ export default function App() {
   }, [activeSet, isExplicitSet, showExplicit]);
 
   useEffect(() => {
+    if (!showExplicit && page === 'sources') {
+      setPage('overview');
+    }
+  }, [page, showExplicit]);
+
+  useEffect(() => {
     if (appliedNavRef.current) {
       return;
     }
@@ -2082,6 +2096,7 @@ export default function App() {
       return;
     }
     setIsRefreshingSet(true);
+    bumpCacheKey();
     try {
       const existingIndexId = await findSetIndexFileId(set.rootFolderId);
       setViewerIndexProgress('Indexing…');
@@ -2093,10 +2108,18 @@ export default function App() {
       if (!writeImageListCache(set.id, refreshed)) {
         setError('Image cache full. Cleared cache and continued without saving.');
       }
-      const updatedSet = { ...set, imageCount: refreshed.length, indexFileId };
+      const refreshedIds = new Set(refreshed.map((image) => image.id));
+      const prunedHidden = (set.hiddenImageIds ?? []).filter((id) => refreshedIds.has(id));
+      const updatedSet = {
+        ...set,
+        imageCount: refreshed.length,
+        indexFileId,
+        hiddenImageIds: prunedHidden,
+      };
       await handleUpdateSet(set.id, {
         imageCount: refreshed.length,
         indexFileId,
+        hiddenImageIds: prunedHidden,
       });
       setActiveSet(updatedSet);
       updateFavoriteImagesFromSource(
@@ -2638,6 +2661,7 @@ export default function App() {
             page={page}
             activeSet={activeSet}
             isConnected={isConnected}
+            showSources={showExplicit}
             onConnect={handleConnect}
             onTitleClick={handleTitleClick}
             onNavigate={setPage}
@@ -2705,6 +2729,10 @@ export default function App() {
             onQuickPlaySet={handleQuickPlaySet}
             cardThumbSize={CARD_THUMB_SIZE}
           />
+        ) : null}
+
+        {page === 'sources' ? (
+          <SourcesPage isConnected={isConnected} />
         ) : null}
 
         {page === 'slideshow' ? (

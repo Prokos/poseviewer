@@ -33,6 +33,7 @@ const MAX_MEDIA_QUEUE = Number(process.env.MEDIA_QUEUE ?? 120);
 const MAX_THUMB_CONCURRENCY = Number(process.env.THUMB_CONCURRENCY ?? 20);
 const MAX_THUMB_QUEUE = Number(process.env.THUMB_QUEUE ?? 50);
 const MEDIA_TIMEOUT_MS = Number(process.env.MEDIA_TIMEOUT_MS ?? 20000);
+const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 await fs.mkdir(THUMB_CACHE_DIR, { recursive: true });
 await fs.mkdir(MEDIA_CACHE_DIR, { recursive: true });
@@ -165,6 +166,43 @@ async function fetchWithTimeout(url, options, timeoutMs, signal) {
     if (signal) {
       signal.removeEventListener('abort', handleAbort);
     }
+  }
+}
+
+function resolveBinaryMimeType(contentType, filename) {
+  if (contentType && contentType !== 'application/octet-stream') {
+    return contentType;
+  }
+  const ext = filename ? path.extname(filename).toLowerCase() : '';
+  switch (ext) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.webp':
+      return 'image/webp';
+    case '.gif':
+      return 'image/gif';
+    case '.avif':
+      return 'image/avif';
+    case '.tif':
+    case '.tiff':
+      return 'image/tiff';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function isValidRemoteUrl(raw) {
+  if (!raw || typeof raw !== 'string') {
+    return false;
+  }
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
   }
 }
 
@@ -1000,6 +1038,387 @@ app.post('/api/drive/upload', async (req, res) => {
   }
 
   res.json(await response.json());
+});
+
+app.post('/api/drive/create-folder', async (req, res) => {
+  const token = await getAccessToken();
+  if (!token) {
+    res.status(401).json({ error: 'Missing access token.' });
+    return;
+  }
+  const { folderId, name } = req.body ?? {};
+  if (!folderId || !name) {
+    res.status(400).json({ error: 'Missing folderId or name.' });
+    return;
+  }
+  try {
+    const metadata = {
+      name,
+      mimeType: DRIVE_FOLDER_MIME,
+      parents: [folderId],
+    };
+    const response = await fetch(`${DRIVE_BASE}/files?supportsAllDrives=true`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(metadata),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      res.status(response.status).send(text);
+      return;
+    }
+    res.json(await response.json());
+  } catch (error) {
+    logServerError(req, 'create folder failed', error);
+    res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
+  }
+});
+
+app.post('/api/drive/upload-binary', async (req, res) => {
+  const token = await getAccessToken();
+  if (!token) {
+    res.status(401).json({ error: 'Missing access token.' });
+    return;
+  }
+  const { folderId, filename, url, mimeType, referer } = req.body ?? {};
+  if (!folderId || !filename || !url) {
+    res.status(400).json({ error: 'Missing upload parameters.' });
+    return;
+  }
+  if (!isValidRemoteUrl(url)) {
+    res.status(400).json({ error: 'Invalid URL.' });
+    return;
+  }
+  try {
+    const baseHeaders = {
+      'User-Agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+      Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+    };
+    const buildHeaders = (ref) => {
+      if (!ref) {
+        return baseHeaders;
+      }
+      const headers = { ...baseHeaders, Referer: ref };
+      try {
+        headers.Origin = new URL(ref).origin;
+      } catch {
+        // ignore invalid referer origin
+      }
+      return headers;
+    };
+    const urlOrigin = (() => {
+      try {
+        return new URL(url).origin;
+      } catch {
+        return null;
+      }
+    })();
+    const tryFetch = (ref) =>
+      fetchWithTimeout(url, { headers: buildHeaders(ref) }, MEDIA_TIMEOUT_MS);
+
+    let upstream;
+    try {
+      upstream = await tryFetch(referer);
+    } catch (error) {
+      if (referer) {
+        upstream = await tryFetch(null);
+      } else {
+        throw error;
+      }
+    }
+    if (!upstream.ok && referer) {
+      upstream = await tryFetch(null);
+    }
+    if (!upstream.ok && urlOrigin && referer !== urlOrigin) {
+      upstream = await tryFetch(urlOrigin);
+    }
+    if (!upstream.ok) {
+      const text = await upstream.text();
+      res.status(upstream.status).send(text);
+      return;
+    }
+    const contentLength = upstream.headers.get('content-length');
+    if (contentLength === '0') {
+      res.status(502).send('Upstream returned empty body.');
+      return;
+    }
+    const contentType = resolveBinaryMimeType(
+      mimeType ?? upstream.headers.get('content-type'),
+      filename
+    );
+    const arrayBuffer = await upstream.arrayBuffer();
+    let buffer = Buffer.from(arrayBuffer);
+    if (buffer.length < 100 * 1024) {
+      let retry = null;
+      if (referer) {
+        retry = await tryFetch(null);
+      } else if (urlOrigin) {
+        retry = await tryFetch(urlOrigin);
+      }
+      if (retry && retry.ok) {
+        const retryBuffer = Buffer.from(await retry.arrayBuffer());
+        if (retryBuffer.length >= 100 * 1024) {
+          buffer = retryBuffer;
+        } else {
+          res.status(422).json({
+            error: 'Upstream returned placeholder-sized image.',
+            size: retryBuffer.length,
+          });
+          return;
+        }
+      } else if (retry) {
+        const text = await retry.text();
+        res.status(retry.status).send(text);
+        return;
+      } else {
+        res
+          .status(422)
+          .json({ error: 'Upstream returned placeholder-sized image.', size: buffer.length });
+        return;
+      }
+    }
+    const boundary = 'poseviewer-binary-boundary';
+    const metadataPart = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Type: application/json; charset=UTF-8',
+        '',
+        JSON.stringify({ name: filename, parents: [folderId] }),
+        '',
+      ].join('\r\n')
+    );
+    const mediaHeader = Buffer.from(
+      [`--${boundary}`, `Content-Type: ${contentType}`, '', ''].join('\r\n')
+    );
+    const closing = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const body = Buffer.concat([metadataPart, mediaHeader, buffer, closing]);
+
+    const response = await fetch(
+      `${DRIVE_UPLOAD_BASE}/files?uploadType=multipart&supportsAllDrives=true`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+        },
+        body,
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      res.status(response.status).send(text);
+      return;
+    }
+    res.json(await response.json());
+  } catch (error) {
+    logServerError(req, 'upload binary failed', error);
+    res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
+  }
+});
+
+app.post(
+  '/api/drive/upload-bytes',
+  express.raw({ type: 'application/octet-stream', limit: '50mb' }),
+  async (req, res) => {
+    const token = await getAccessToken();
+    if (!token) {
+      res.status(401).json({ error: 'Missing access token.' });
+      return;
+    }
+    const folderId = req.query.folderId;
+    const filename = req.query.filename;
+    const contentType = req.query.contentType;
+    if (typeof folderId !== 'string' || typeof filename !== 'string') {
+      res.status(400).json({ error: 'Missing upload parameters.' });
+      return;
+    }
+    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+    if (!buffer.length) {
+      res.status(400).json({ error: 'Empty upload body.' });
+      return;
+    }
+    if (buffer.length < 100 * 1024) {
+      res
+        .status(422)
+        .json({ error: 'Upload body too small (likely placeholder).', size: buffer.length });
+      return;
+    }
+    try {
+      const boundary = 'poseviewer-bytes-boundary';
+      const metadataPart = Buffer.from(
+        [
+          `--${boundary}`,
+          'Content-Type: application/json; charset=UTF-8',
+          '',
+          JSON.stringify({ name: filename, parents: [folderId] }),
+          '',
+        ].join('\r\n')
+      );
+      const mediaHeader = Buffer.from(
+        [
+          `--${boundary}`,
+          `Content-Type: ${resolveBinaryMimeType(
+            typeof contentType === 'string' ? contentType : undefined,
+            filename
+          )}`,
+          '',
+          '',
+        ].join('\r\n')
+      );
+      const closing = Buffer.from(`\r\n--${boundary}--\r\n`);
+      const body = Buffer.concat([metadataPart, mediaHeader, buffer, closing]);
+      const response = await fetch(
+        `${DRIVE_UPLOAD_BASE}/files?uploadType=multipart&supportsAllDrives=true`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': `multipart/related; boundary=${boundary}`,
+          },
+          body,
+        }
+      );
+      if (!response.ok) {
+        const text = await response.text();
+        res.status(response.status).send(text);
+        return;
+      }
+      res.json(await response.json());
+    } catch (error) {
+      logServerError(req, 'upload bytes failed', error);
+      res.status(500).json({ error: (error instanceof Error && error.message) || 'Unknown error' });
+    }
+  }
+);
+
+app.post('/api/source/fetch', async (req, res) => {
+  const { url, headers } = req.body ?? {};
+  if (!isValidRemoteUrl(url)) {
+    res.status(400).json({ error: 'Invalid url.' });
+    return;
+  }
+  const safeHeaders = {};
+  if (headers && typeof headers === 'object') {
+    for (const [key, value] of Object.entries(headers)) {
+      if (typeof value === 'string') {
+        safeHeaders[key] = value;
+      }
+    }
+  }
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          'User-Agent': 'PoseViewer/1.0',
+          ...safeHeaders,
+        },
+      },
+      MEDIA_TIMEOUT_MS
+    );
+    res.status(response.status);
+    const contentType = response.headers.get('content-type');
+    if (contentType) {
+      res.set('Content-Type', contentType);
+    }
+    if (!response.body) {
+      res.send(Buffer.from(await response.arrayBuffer()));
+      return;
+    }
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value) {
+        res.write(Buffer.from(value));
+      }
+    }
+    res.end();
+  } catch (error) {
+    logServerError(req, 'source fetch failed', error);
+    res.status(502).json({ error: (error instanceof Error && error.message) || 'Fetch failed.' });
+  }
+});
+
+app.get('/api/source/image', async (req, res) => {
+  const url = req.query.url;
+  const referer = req.query.referer;
+  if (typeof url !== 'string' || !isValidRemoteUrl(url)) {
+    res.status(400).json({ error: 'Invalid url.' });
+    return;
+  }
+  const upstreamHeaders = {
+    'User-Agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+  };
+  if (typeof referer === 'string' && referer) {
+    upstreamHeaders.Referer = referer;
+  }
+  const urlOrigin = (() => {
+    try {
+      return new URL(url).origin;
+    } catch {
+      return null;
+    }
+  })();
+  try {
+    let response = await fetchWithTimeout(
+      url,
+      { headers: upstreamHeaders },
+      MEDIA_TIMEOUT_MS
+    );
+    if (
+      !response.ok &&
+      urlOrigin &&
+      (!upstreamHeaders.Referer || upstreamHeaders.Referer !== urlOrigin)
+    ) {
+      response = await fetchWithTimeout(
+        url,
+        { headers: { ...upstreamHeaders, Referer: urlOrigin } },
+        MEDIA_TIMEOUT_MS
+      );
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      res.status(response.status).send(text);
+      return;
+    }
+    const contentType = response.headers.get('content-type');
+    if (contentType) {
+      res.set('Content-Type', contentType);
+    }
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) {
+      res.set('Content-Length', contentLength);
+    }
+    if (!response.body) {
+      res.send(Buffer.from(await response.arrayBuffer()));
+      return;
+    }
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value) {
+        res.write(Buffer.from(value));
+      }
+    }
+    res.end();
+  } catch (error) {
+    logServerError(req, 'source image failed', error);
+    res.status(502).json({ error: (error instanceof Error && error.message) || 'Fetch failed.' });
+  }
 });
 
 app.listen(PORT, () => {

@@ -2,18 +2,20 @@ import { IconPlugConnected, IconPlugOff } from '@tabler/icons-react';
 import type { PoseSet } from '../metadata';
 
 type AppHeaderProps = {
-  page: 'overview' | 'create' | 'set' | 'slideshow';
+  page: 'overview' | 'create' | 'set' | 'slideshow' | 'sources';
   activeSet: PoseSet | null;
   isConnected: boolean;
+  showSources: boolean;
   onConnect: () => void;
   onTitleClick: () => void;
-  onNavigate: (page: 'overview' | 'create' | 'set' | 'slideshow') => void;
+  onNavigate: (page: 'overview' | 'create' | 'set' | 'slideshow' | 'sources') => void;
 };
 
 export function AppHeader({
   page,
   activeSet,
   isConnected,
+  showSources,
   onConnect,
   onTitleClick,
   onNavigate,
@@ -49,6 +51,15 @@ export function AppHeader({
         >
           Create
         </button>
+        {showSources ? (
+          <button
+            type="button"
+            className={`nav-tab ${page === 'sources' ? 'is-active' : ''}`}
+            onClick={() => onNavigate('sources')}
+          >
+            Sources
+          </button>
+        ) : null}
         <button
           type="button"
           className={`nav-tab ${page === 'slideshow' ? 'is-active' : ''}`}

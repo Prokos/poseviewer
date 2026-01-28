@@ -468,6 +468,15 @@ export function useModalViewer({
     });
   };
 
+  const toggleViewerFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      ignoreNextFullscreenRef.current = true;
+      exitViewerFullscreen();
+      return;
+    }
+    requestViewerFullscreen();
+  }, [exitViewerFullscreen, requestViewerFullscreen]);
+
   const triggerModalPulse = () => {
     setModalPulse(false);
     if (modalPulseTimeout.current) {
@@ -1061,7 +1070,11 @@ export function useModalViewer({
         return;
       }
       if (normalizedKey === 'f') {
-        toggleFavoriteFromModal();
+        if (event.shiftKey) {
+          toggleViewerFullscreen();
+        } else {
+          toggleFavoriteFromModal();
+        }
       }
       if (normalizedKey === 'h') {
         toggleHiddenFromModal();
@@ -1136,6 +1149,7 @@ export function useModalViewer({
     restoreModalContext,
     toggleInfoMenu,
     toggleFavoriteFromModal,
+    toggleViewerFullscreen,
     toggleModalTimerPause,
     startLastModalTimer,
     toggleHiddenFromModal,

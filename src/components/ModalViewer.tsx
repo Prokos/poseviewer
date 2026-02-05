@@ -359,7 +359,6 @@ export function ModalViewer() {
             </button>
           ) : modalSetId &&
             modalContextLabel !== 'Preview' &&
-            modalContextLabel !== 'Sample' &&
             (modalContextLabel !== 'Set' || viewerSort === 'random') ? (
             <button
               type="button"
@@ -524,10 +523,8 @@ export function ModalViewer() {
             {modalContextLabel} {modalIndex + 1}/{modalItems.length}
             {modalContextLabel === 'Set'
               ? ` [${modalTotalImagesKnown ?? totalImages}]`
-              : modalContextLabel === 'Sample'
-                ? ` [${totalImages}]`
-                : modalContextLabel === 'Favorites'
-                  ? ` [${favoritesCount}]`
+              : modalContextLabel === 'Favorites'
+                ? ` [${favoritesCount}]`
                   : modalContextLabel === 'Non favorites' && nonFavoritesCount !== undefined
                     ? ` [${nonFavoritesCount}]`
                     : modalContextLabel === 'Hidden'

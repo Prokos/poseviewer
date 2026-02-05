@@ -56,6 +56,11 @@ import { ModalStateProvider } from './features/modal/ModalStateProvider';
 import type { ModalOpenOptions } from './features/modal/types';
 import type { ModalViewerState } from './hooks/useModalViewer';
 import { useSetViewerGrids } from './features/setViewer/useSetViewerGrids';
+import {
+  buildViewerTabMetrics,
+  computeSetTotals,
+  type ViewerTabKey,
+} from './features/setViewer/viewerMetrics';
 import { SetViewerProvider } from './features/setViewer/SetViewerContext';
 import { SlideshowProvider } from './features/slideshow/SlideshowContext';
 import { useSlideshowState } from './features/slideshow/useSlideshowState';
@@ -187,9 +192,7 @@ export default function App() {
     completed: number;
     angle: 90 | -90;
   }>(null);
-  const [setViewerTab, setSetViewerTab] = useState<
-    'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all'
-  >('all');
+  const [setViewerTab, setSetViewerTab] = useState<ViewerTabKey>('all');
   const [viewerSort, setViewerSort] = useLocalStorage<'random' | 'chronological'>(
     'poseviewer-viewer-sort',
     'random'
@@ -952,9 +955,6 @@ export default function App() {
       updateHiddenImagesFromSource(setId, source, set.favoriteImageIds ?? [], next, {
         keepLength: true,
       });
-      setSampleImages((currentImages) =>
-        filterImagesByHiddenStatus(currentImages, next, 'visible')
-      );
       const hiddenSet = new Set(next);
       const visible = filterImagesByHiddenStatus(source, next, 'visible');
       let ordered = visible;
@@ -1491,25 +1491,19 @@ export default function App() {
   );
 
   const {
-    sampleImages,
-    setSampleImages,
     favoriteImages,
     setFavoriteImages,
     nonFavoriteImages,
     setNonFavoriteImages,
     hiddenImages,
     setHiddenImages,
-    isLoadingSample,
     isLoadingFavorites,
     isLoadingNonFavorites,
     isLoadingHidden,
-    samplePageSize,
-    sampleGridRef,
+    gridPageSize,
     pickNext,
     updateFavoriteImagesFromSource,
     updateHiddenImagesFromSource,
-    handleLoadMoreSample,
-    handleLoadAllSample,
     handleLoadMoreFavorites,
     handleLoadAllFavorites,
     handleLoadMoreNonFavorites,
@@ -1529,7 +1523,7 @@ export default function App() {
     resolveSetImages,
     setError,
     setViewerIndexProgress,
-    sampleBaseCount: 48,
+    gridBaseCount: 48,
   });
 
   useEffect(() => {
@@ -1902,7 +1896,6 @@ export default function App() {
       setImageLimit(0);
       setActiveImages([]);
       setFavoriteImages([]);
-      setSampleImages([]);
       setNonFavoriteImages([]);
       setImageLoadStatus('');
       if (setViewerTab === 'all') {
@@ -2136,8 +2129,11 @@ export default function App() {
         updatedSet.hiddenImageIds ?? [],
         { keepLength: true }
       );
-      const visible = filterImagesByHiddenStatus(refreshed, updatedSet.hiddenImageIds ?? [], 'visible');
-      setSampleImages(pickNext.sample(set.id, visible, samplePageSize));
+      const visible = filterImagesByHiddenStatus(
+        refreshed,
+        updatedSet.hiddenImageIds ?? [],
+        'visible'
+      );
       if (activeImages.length > 0) {
         const ordered = getOrderedAllImages(set.id, visible);
         setActiveImages(ordered.slice(0, imageLimit));
@@ -2255,9 +2251,8 @@ export default function App() {
         'nonfavorites'
       );
       setNonFavoriteImages(
-        nonfavorites.slice(0, Math.min(samplePageSize, nonfavorites.length))
+        nonfavorites.slice(0, Math.min(gridPageSize, nonfavorites.length))
       );
-      setSampleImages(pickNext.sample(activeSet.id, remaining, samplePageSize));
       const ordered = getOrderedAllImages(activeSet.id, remaining);
       const nextLimit = Math.min(imageLimit, ordered.length);
       setImageLimit(nextLimit);
@@ -2275,15 +2270,13 @@ export default function App() {
     isConnected,
     isDeletingHidden,
     loadImageListCache,
-    pickNext,
     readImageListCache,
     resolveSetImages,
-    samplePageSize,
+    gridPageSize,
     setActiveImages,
     setError,
     setImageLimit,
     setNonFavoriteImages,
-    setSampleImages,
     setHiddenDeleteProgress,
     updateFavoriteImagesFromSource,
     updateHiddenImagesFromSource,
@@ -2416,55 +2409,48 @@ export default function App() {
 
   const favoriteIds = activeSet?.favoriteImageIds ?? [];
   const hiddenIds = activeSet?.hiddenImageIds ?? [];
-  const hiddenSet = new Set(hiddenIds);
   const cachedCount = activeSet ? readImageListCache(activeSet.id)?.length : undefined;
   const totalImagesKnownRaw = activeSet?.imageCount ?? cachedCount;
-  const totalVisibleKnown =
-    totalImagesKnownRaw !== undefined
-      ? Math.max(0, totalImagesKnownRaw - hiddenIds.length)
-      : undefined;
+  const {
+    totalVisibleKnown,
+    allImagesCount,
+    favoritesCount,
+    hiddenCount,
+    nonFavoritesCount,
+  } = computeSetTotals({
+    totalImagesKnownRaw,
+    activeImagesLength: activeImages.length,
+    favoriteIds,
+    hiddenIds,
+  });
   const totalImagesKnown = totalVisibleKnown;
-  const totalImages = totalVisibleKnown ?? activeImages.length;
-  const remainingImages =
-    totalVisibleKnown !== undefined ? Math.max(0, totalVisibleKnown - activeImages.length) : undefined;
-  const pendingExtra =
-    totalVisibleKnown !== undefined
-      ? Math.max(0, Math.min(allPageSize, remainingImages))
-      : allPageSize;
-  const favoritesCount = favoriteIds.filter((id) => !hiddenSet.has(id)).length;
-  const hiddenCount = hiddenIds.length;
-  const allImagesCount = totalVisibleKnown ?? activeImages.length;
-  const nonFavoritesCount =
-    totalVisibleKnown !== undefined
-      ? Math.max(0, totalVisibleKnown - favoritesCount)
-      : undefined;
-  const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
-  const favoritesPendingExtra = Math.max(0, Math.min(samplePageSize, favoritesRemaining));
-  const sampleRemaining =
-    totalVisibleKnown !== undefined
-      ? Math.max(0, totalVisibleKnown - sampleImages.length)
-      : undefined;
-  const samplePendingExtra =
-    sampleRemaining !== undefined
-      ? Math.max(0, Math.min(samplePageSize, sampleRemaining))
-      : samplePageSize;
-  const nonFavoritesRemaining =
-    nonFavoritesCount !== undefined
-      ? Math.max(0, nonFavoritesCount - nonFavoriteImages.length)
-      : undefined;
-  const nonFavoritesPendingExtra =
-    nonFavoritesRemaining !== undefined
-      ? Math.max(0, Math.min(samplePageSize, nonFavoritesRemaining))
-      : samplePageSize;
-  const hiddenRemaining = Math.max(0, hiddenCount - hiddenImages.length);
-  const hiddenPendingExtra = Math.max(0, Math.min(samplePageSize, hiddenRemaining));
-
-  const handleSetViewerTab = useCallback(
-    (tab: 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all') => {
-      setSetViewerTab(tab);
+  const viewerTabMetrics = buildViewerTabMetrics({
+    favorites: {
+      loaded: favoriteImages.length,
+      total: favoritesCount,
+      pageSize: gridPageSize,
     },
-    []
-  );
+    nonfavorites: {
+      loaded: nonFavoriteImages.length,
+      total: nonFavoritesCount,
+      pageSize: gridPageSize,
+      allowLoadAllWithoutTotal: true,
+    },
+    hidden: {
+      loaded: hiddenImages.length,
+      total: hiddenCount,
+      pageSize: gridPageSize,
+    },
+    all: {
+      loaded: activeImages.length,
+      total: totalImagesKnown,
+      pageSize: allPageSize,
+    },
+  });
+
+  const handleSetViewerTab = useCallback((tab: ViewerTabKey) => {
+    setSetViewerTab(tab);
+  }, []);
 
   const handleViewerSortChange = useCallback(
     (value: 'random' | 'chronological') => {
@@ -2493,6 +2479,46 @@ export default function App() {
     [activeSet, handleUpdateSet]
   );
 
+  const loadMoreByTab = useMemo(
+    () => ({
+      favorites: handleLoadMoreFavorites,
+      nonfavorites: handleLoadMoreNonFavorites,
+      hidden: handleLoadMoreHidden,
+      all: handleLoadMoreImages,
+    }),
+    [
+      handleLoadMoreFavorites,
+      handleLoadMoreHidden,
+      handleLoadMoreImages,
+      handleLoadMoreNonFavorites,
+    ]
+  );
+
+  const loadAllByTab = useMemo(
+    () => ({
+      favorites: handleLoadAllFavorites,
+      nonfavorites: handleLoadAllNonFavorites,
+      hidden: handleLoadAllHidden,
+      all: handleLoadAllPreloaded,
+    }),
+    [
+      handleLoadAllFavorites,
+      handleLoadAllHidden,
+      handleLoadAllNonFavorites,
+      handleLoadAllPreloaded,
+    ]
+  );
+
+  const handleLoadMoreActiveTab = useCallback(() => {
+    const handler = loadMoreByTab[setViewerTab];
+    return handler ? handler() : undefined;
+  }, [loadMoreByTab, setViewerTab]);
+
+  const handleLoadAllActiveTab = useCallback(() => {
+    const handler = loadAllByTab[setViewerTab];
+    return handler ? handler() : undefined;
+  }, [loadAllByTab, setViewerTab]);
+
   const setViewerValue = {
     activeSet,
     isConnected,
@@ -2515,13 +2541,11 @@ export default function App() {
     hiddenCount,
     nonFavoritesCount,
     allImagesCount,
-    sampleImages,
     favoriteImages,
     nonFavoriteImages,
     hiddenImages,
     activeImages,
     viewerIndexProgress,
-    isLoadingSample,
     isLoadingFavorites,
     isLoadingNonFavorites,
     isLoadingHidden,
@@ -2529,23 +2553,10 @@ export default function App() {
     isLoadingMore,
     totalImagesKnown,
     allPageSize,
-    samplePendingExtra,
-    nonFavoritesPendingExtra,
-    favoritesPendingExtra,
-    hiddenPendingExtra,
-    pendingExtra,
-    remainingImages,
-    onLoadMoreSample: handleLoadMoreSample,
-    onLoadAllSample: handleLoadAllSample,
-    onLoadMoreNonFavorites: handleLoadMoreNonFavorites,
-    onLoadAllNonFavorites: handleLoadAllNonFavorites,
-    onLoadMoreFavorites: handleLoadMoreFavorites,
-    onLoadAllFavorites: handleLoadAllFavorites,
-    onLoadMoreHidden: handleLoadMoreHidden,
-    onLoadAllHidden: handleLoadAllHidden,
+    viewerTabMetrics,
     onDeleteHiddenImages: handleDeleteHiddenImages,
-    onLoadMoreImages: handleLoadMoreImages,
-    onLoadAllPreloaded: handleLoadAllPreloaded,
+    onLoadMoreActiveTab: handleLoadMoreActiveTab,
+    onLoadAllActiveTab: handleLoadAllActiveTab,
     onEnsureImageInView: handleEnsureImageInView,
     onToggleFavoriteImage: toggleFavoriteImage,
     onToggleHiddenImage: toggleHiddenImage,
@@ -2561,7 +2572,6 @@ export default function App() {
     modalContextLabel,
     thumbSize: THUMB_SIZE,
     viewerThumbSize: VIEWER_THUMB_SIZE,
-    sampleGridRef,
     allGridRef,
   };
 
@@ -2573,10 +2583,9 @@ export default function App() {
     setActiveImages,
     setImageLimit,
     allPageSize,
-    samplePageSize,
+    gridPageSize,
     favoriteImages,
     setFavoriteImages,
-    setSampleImages,
     setNonFavoriteImages,
     setHiddenImages,
     readImageListCache,

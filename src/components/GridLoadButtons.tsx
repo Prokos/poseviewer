@@ -2,17 +2,6 @@ import { useLoadMoreClick } from '../hooks/useLoadMoreClick';
 
 type GridLoadButtonsProps =
   | {
-      variant: 'sample';
-      isLoading: boolean;
-      currentCount: number;
-      pendingCount: number;
-      totalCount?: number;
-      showLoadMore?: boolean;
-      showLoadAll?: boolean;
-      onLoadMore: () => void | Promise<void>;
-      onLoadAll: () => void | Promise<void>;
-    }
-  | {
       variant: 'favorites';
       isLoading: boolean;
       currentCount: number;
@@ -134,16 +123,6 @@ function renderLoadAllLabel(props: GridLoadButtonsProps) {
         ? `Load all remaining ${Math.max(0, total - props.currentCount)} • ${props.currentCount}/${total}`
         : 'Load all remaining';
   }
-  if (props.variant === 'sample') {
-    const total = props.totalCount;
-    return props.isLoading
-      ? total !== undefined
-        ? `Loading all ${total}...`
-        : 'Loading all images...'
-      : total !== undefined
-        ? `Load all remaining ${Math.max(0, total - props.currentCount)}`
-        : 'Load all remaining';
-  }
   if (props.variant === 'all') {
     if (!props.onLoadAll || props.remainingCount === undefined) {
       return '';
@@ -161,8 +140,7 @@ export function GridLoadButtons(props: GridLoadButtonsProps) {
   const showLoadMore = props.showLoadMore ?? true;
   const showLoadAll =
     (props.showLoadAll ?? true) &&
-    (props.variant === 'sample' ||
-      props.variant === 'favorites' ||
+    (props.variant === 'favorites' ||
       props.variant === 'hidden' ||
       props.variant === 'nonfavorites' ||
       (props.variant === 'all' && props.onLoadAll && props.remainingCount !== undefined));

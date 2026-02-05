@@ -134,6 +134,10 @@ export function SourcesPage({ isConnected }: SourcesPageProps) {
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [downloadSetId, setDownloadSetId] = useState<string | null>(null);
   const [downloadImageIds, setDownloadImageIds] = useState<Set<string>>(() => new Set());
+  const [stateLoadedAt, setStateLoadedAt] = useState<Date | null>(null);
+  const [stateSavedAt, setStateSavedAt] = useState<Date | null>(null);
+  const [stateLoadError, setStateLoadError] = useState<string>('');
+  const [stateSaveError, setStateSaveError] = useState<string>('');
   const isSavingStateRef = useRef(false);
   const folderCacheRef = useRef<Map<string, string>>(new Map());
   const pendingRemovalIdsRef = useRef<Set<string>>(new Set());
@@ -164,6 +168,10 @@ export function SourcesPage({ isConnected }: SourcesPageProps) {
       try {
         const nextId = await saveSourceState(stateFileId, next);
         setStateFileId(nextId);
+        setStateSavedAt(new Date());
+        setStateSaveError('');
+      } catch (saveError) {
+        setStateSaveError((saveError as Error).message);
       } finally {
         isSavingStateRef.current = false;
       }
@@ -225,6 +233,31 @@ export function SourcesPage({ isConnected }: SourcesPageProps) {
     return new Set(entry.downloadedImages[activeSet.id] ?? []);
   }, [activeSet, activeSource?.id, state]);
 
+  const activeSourceEntry = useMemo(
+    () => getSourceStateEntry(state, activeSource?.id ?? ''),
+    [activeSource?.id, state]
+  );
+
+  const hiddenSetCount = activeSourceEntry.hiddenSets.length;
+  const downloadedSetCount = activeSourceEntry.downloadedSets.length;
+  const hiddenImageCountTotal = useMemo(
+    () =>
+      Object.values(activeSourceEntry.hiddenImages ?? {}).reduce(
+        (sum, list) => sum + list.length,
+        0
+      ),
+    [activeSourceEntry]
+  );
+  const downloadedImageCountTotal = useMemo(
+    () =>
+      Object.values(activeSourceEntry.downloadedImages ?? {}).reduce(
+        (sum, list) => sum + list.length,
+        0
+      ),
+    [activeSourceEntry]
+  );
+  const stateSize = useMemo(() => JSON.stringify(state).length, [state]);
+
   useEffect(() => {
     if (!isConnected) {
       return;
@@ -238,11 +271,13 @@ export function SourcesPage({ isConnected }: SourcesPageProps) {
         setConfig(configResult.config);
         setState(stateResult.state);
         setStateFileId(stateResult.fileId);
+        setStateLoadedAt(new Date());
+        setStateLoadError('');
         const freepik = configResult.config.sources.find((source) => source.id === 'freepik');
         setActiveSourceId(freepik?.id ?? configResult.config.sources[0]?.id ?? '');
       })
-      .catch(() => {
-        // Keep defaults on failure.
+      .catch((loadError) => {
+        setStateLoadError((loadError as Error).message);
       });
     return () => {
       isMounted = false;
@@ -1083,6 +1118,24 @@ export function SourcesPage({ isConnected }: SourcesPageProps) {
             </>
           ) : null}
         </div>
+      </div>
+      <div className="panel-header panel-header--row">
+        <details className="debug-panel">
+          <summary className="muted">Debug</summary>
+          <div className="muted">
+            <div>State file id: {stateFileId ?? '—'}</div>
+            <div>Loaded: {stateLoadedAt ? stateLoadedAt.toLocaleString() : '—'}</div>
+            <div>Saved: {stateSavedAt ? stateSavedAt.toLocaleString() : '—'}</div>
+            <div>Load error: {stateLoadError || '—'}</div>
+            <div>Save error: {stateSaveError || '—'}</div>
+            <div>Sources entries: {Object.keys(state.sources).length}</div>
+            <div>Hidden sets: {hiddenSetCount}</div>
+            <div>Downloaded sets: {downloadedSetCount}</div>
+            <div>Hidden images: {hiddenImageCountTotal}</div>
+            <div>Downloaded images: {downloadedImageCountTotal}</div>
+            <div>State size (chars): {stateSize}</div>
+          </div>
+        </details>
       </div>
       {activeSet ? (
         <>

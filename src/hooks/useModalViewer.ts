@@ -21,6 +21,7 @@ import { useModalHistory } from '../features/modal/useModalHistory';
 import { useModalDataLoader } from '../features/modal/useModalDataLoader';
 import { useModalState } from '../features/modal/useModalState';
 import { useImageCache } from '../features/imageCache/ImageCacheContext';
+import { computeSetTotals } from '../features/setViewer/viewerMetrics';
 
 type ResolveSetImages = (
   set: PoseSet,
@@ -49,10 +50,8 @@ export type ModalDeps = {
   setActiveImages: Dispatch<SetStateAction<DriveImage[]>>;
   setImageLimit: Dispatch<SetStateAction<number>>;
   allPageSize: number;
-  samplePageSize: number;
   favoriteImages: DriveImage[];
   setFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
-  setSampleImages: Dispatch<SetStateAction<DriveImage[]>>;
   setNonFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
   setHiddenImages: Dispatch<SetStateAction<DriveImage[]>>;
   readImageListCache: (setId: string) => DriveImage[] | null;
@@ -67,11 +66,11 @@ export type ModalDeps = {
     mode: 'hidden' | 'visible' | 'all'
   ) => DriveImage[];
   pickNext: {
-    sample: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     favorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     nonFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     hidden: (setId: string, images: DriveImage[], count: number) => DriveImage[];
   };
+  gridPageSize: number;
   resolveSetImages: ResolveSetImages;
   updateFavoriteImagesFromSource: UpdateFavoritesFromSource;
   handleLoadMoreImages: () => Promise<void>;
@@ -167,12 +166,11 @@ export function useModalViewer({
   setActiveImages,
   setImageLimit,
   allPageSize,
-  samplePageSize,
   favoriteImages,
   setFavoriteImages,
-  setSampleImages,
   setNonFavoriteImages,
   setHiddenImages,
+  gridPageSize,
   readImageListCache,
   resolveSetImages,
   updateFavoriteImagesFromSource,
@@ -273,8 +271,6 @@ export function useModalViewer({
   const ignoreNextFullscreenRef = useRef(false);
   const modalNavThrottleRef = useRef(0);
   const goNextImageRef = useRef<(options?: { suppressControls?: boolean }) => void>(() => {});
-  const sampleHistoryRef = useRef<DriveImage[]>([]);
-  const sampleHistorySetRef = useRef<string | null>(null);
 
   const {
     modalTimerMs,
@@ -343,11 +339,18 @@ export function useModalViewer({
   const activeHiddenIds = activeSet?.hiddenImageIds ?? [];
   const cachedCount = activeSet ? readImageListCache(activeSet.id)?.length : undefined;
   const totalImagesKnownRaw = activeSet?.imageCount ?? cachedCount;
-  const totalImagesKnown =
-    totalImagesKnownRaw !== undefined
-      ? Math.max(0, totalImagesKnownRaw - activeHiddenIds.length)
-      : undefined;
-  const totalImages = totalImagesKnown ?? activeImages.length;
+  const {
+    totalVisibleKnown: totalImagesKnown,
+    allImagesCount: totalImages,
+    favoritesCount,
+    hiddenCount,
+    nonFavoritesCount,
+  } = computeSetTotals({
+    totalImagesKnownRaw,
+    activeImagesLength: activeImages.length,
+    favoriteIds: activeSet?.favoriteImageIds ?? [],
+    hiddenIds: activeHiddenIds,
+  });
   const modalTotalImagesKnown =
     modalContextLabel === 'Set' && modalContextSetId
       ? (() => {
@@ -364,20 +367,12 @@ export function useModalViewer({
     modalTotalImagesKnown !== undefined
       ? Math.max(0, modalTotalImagesKnown - modalItems.length)
       : undefined;
-  const hiddenCount = activeHiddenIds.length;
-  const activeHiddenSet = new Set(activeHiddenIds);
-  const favoritesCount = (activeSet?.favoriteImageIds ?? []).filter(
-    (id) => !activeHiddenSet.has(id)
-  ).length;
-  const nonFavoritesCount =
-    totalImagesKnown !== undefined ? Math.max(0, totalImagesKnown - favoritesCount) : undefined;
 
   const canGoPrevModal = modalIndex !== null && modalIndex > 0;
   const canGoNextModal =
     modalIndex !== null &&
     (modalIndex < modalItems.length - 1 ||
       (modalContextLabel === 'Set' && !!modalRemainingImages) ||
-      (modalContextLabel === 'Sample' && !!activeSet) ||
       (modalContextLabel === 'Favorites' && !!activeSet) ||
       (modalContextLabel === 'Non favorites' && !!activeSet) ||
       (modalContextLabel === 'Hidden' && !!activeSet) ||
@@ -564,7 +559,6 @@ export function useModalViewer({
 
 
   const {
-    appendSample,
     appendFavorites,
     appendNonFavorites,
     appendHidden,
@@ -573,7 +567,7 @@ export function useModalViewer({
   } = useModalDataLoader({
     activeSet,
     modalItems,
-    samplePageSize,
+    gridPageSize,
     readImageListCache,
     resolveSetImages,
     setError,
@@ -582,12 +576,9 @@ export function useModalViewer({
     filterImagesByFavoriteStatus,
     filterImagesByHiddenStatus,
     pickNext,
-    setSampleImages,
     setFavoriteImages,
     setNonFavoriteImages,
     setHiddenImages,
-    sampleHistoryRef,
-    sampleHistorySetRef,
     loadSlideshowBatch,
     slideshowImagesRef,
     slideshowPageSize,
@@ -659,8 +650,6 @@ export function useModalViewer({
     setModalPan,
     resetModalTimerState,
     resetModalHistory,
-    sampleHistoryRef,
-    sampleHistorySetRef,
     resetInFlight,
     modalPulseTimeoutRef: modalPulseTimeout,
     modalFavoritePulseTimeoutRef: modalFavoritePulseTimeout,
@@ -866,10 +855,6 @@ export function useModalViewer({
     }
     const isLast = currentIndex + 1 >= modalItems.length;
     if (isLast) {
-      if (modalContextLabel === 'Sample' && activeSet) {
-        void appendSample({ suppressControls: options?.suppressControls });
-        return;
-      }
       if (modalContextLabel === 'Non favorites' && activeSet) {
         void appendNonFavorites({ suppressControls: options?.suppressControls });
         return;

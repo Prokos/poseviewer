@@ -7,7 +7,7 @@ import { appendUniqueImages } from '../../utils/imageSampling';
 type UseModalDataLoaderOptions = {
   activeSet: PoseSet | null;
   modalItems: DriveImage[];
-  samplePageSize: number;
+  gridPageSize: number;
   readImageListCache: (setId: string) => DriveImage[] | null;
   resolveSetImages: (
     set: PoseSet,
@@ -32,17 +32,13 @@ type UseModalDataLoaderOptions = {
     mode: 'hidden' | 'visible' | 'all'
   ) => DriveImage[];
   pickNext: {
-    sample: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     favorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     nonFavorites: (setId: string, images: DriveImage[], count: number) => DriveImage[];
     hidden: (setId: string, images: DriveImage[], count: number) => DriveImage[];
   };
-  setSampleImages: Dispatch<SetStateAction<DriveImage[]>>;
   setFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
   setNonFavoriteImages: Dispatch<SetStateAction<DriveImage[]>>;
   setHiddenImages: Dispatch<SetStateAction<DriveImage[]>>;
-  sampleHistoryRef: MutableRefObject<DriveImage[]>;
-  sampleHistorySetRef: MutableRefObject<string | null>;
   loadSlideshowBatch: (
     count: number,
     options?: { openModal?: boolean }
@@ -54,7 +50,7 @@ type UseModalDataLoaderOptions = {
 export function useModalDataLoader({
   activeSet,
   modalItems,
-  samplePageSize,
+  gridPageSize,
   readImageListCache,
   resolveSetImages,
   setError,
@@ -63,17 +59,13 @@ export function useModalDataLoader({
   filterImagesByFavoriteStatus,
   filterImagesByHiddenStatus,
   pickNext,
-  setSampleImages,
   setFavoriteImages,
   setNonFavoriteImages,
   setHiddenImages,
-  sampleHistoryRef,
-  sampleHistorySetRef,
   loadSlideshowBatch,
   slideshowImagesRef,
   slideshowPageSize,
 }: UseModalDataLoaderOptions) {
-  const sampleAppendInFlightRef = useRef(false);
   const favoriteAppendInFlightRef = useRef(false);
   const nonFavoriteAppendInFlightRef = useRef(false);
   const hiddenAppendInFlightRef = useRef(false);
@@ -110,7 +102,7 @@ export function useModalDataLoader({
         if (scopedSource.length === 0) {
           return false;
         }
-        const nextBatch = options.pickNext(setId, scopedSource, samplePageSize);
+        const nextBatch = options.pickNext(setId, scopedSource, gridPageSize);
         if (nextBatch.length === 0) {
           return false;
         }
@@ -140,40 +132,10 @@ export function useModalDataLoader({
       modalItems,
       readImageListCache,
       resolveSetImages,
-      samplePageSize,
+      gridPageSize,
       setError,
       setModalImageAtIndex,
       updateModalItems,
-    ]
-  );
-
-  const appendSample = useCallback(
-    async (options?: { suppressControls?: boolean }) => {
-      return appendModalBatch({
-        inFlightRef: sampleAppendInFlightRef,
-        transformSource: (source) =>
-          filterImagesByHiddenStatus(source, activeSet?.hiddenImageIds ?? [], 'visible'),
-        pickNext: pickNext.sample,
-        appendToList: (items) => {
-          setSampleImages((current) => appendUniqueImages(current, items));
-        },
-        beforeAppend: (setId) =>
-          !sampleHistorySetRef.current || sampleHistorySetRef.current === setId,
-        onUpdated: (items, setId) => {
-          sampleHistoryRef.current = items;
-          sampleHistorySetRef.current = setId;
-        },
-        suppressControls: options?.suppressControls,
-      });
-    },
-    [
-      appendModalBatch,
-      filterImagesByHiddenStatus,
-      activeSet?.hiddenImageIds,
-      pickNext,
-      sampleHistoryRef,
-      sampleHistorySetRef,
-      setSampleImages,
     ]
   );
 
@@ -298,7 +260,6 @@ export function useModalDataLoader({
   );
 
   const resetInFlight = useCallback(() => {
-    sampleAppendInFlightRef.current = false;
     favoriteAppendInFlightRef.current = false;
     nonFavoriteAppendInFlightRef.current = false;
     hiddenAppendInFlightRef.current = false;
@@ -306,7 +267,6 @@ export function useModalDataLoader({
   }, []);
 
   return {
-    appendSample,
     appendFavorites,
     appendNonFavorites,
     appendHidden,

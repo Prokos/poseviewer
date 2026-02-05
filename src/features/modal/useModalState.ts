@@ -25,8 +25,6 @@ type UseModalStateOptions = {
   setModalPan: Dispatch<SetStateAction<{ x: number; y: number }>>;
   resetModalTimerState: () => void;
   resetModalHistory: () => void;
-  sampleHistoryRef: MutableRefObject<DriveImage[]>;
-  sampleHistorySetRef: MutableRefObject<string | null>;
   resetInFlight: () => void;
   modalPulseTimeoutRef: MutableRefObject<number | null>;
   modalFavoritePulseTimeoutRef: MutableRefObject<number | null>;
@@ -55,8 +53,6 @@ export function useModalState({
   setModalPan,
   resetModalTimerState,
   resetModalHistory,
-  sampleHistoryRef,
-  sampleHistorySetRef,
   resetInFlight,
   modalPulseTimeoutRef,
   modalFavoritePulseTimeoutRef,
@@ -83,13 +79,6 @@ export function useModalState({
         label === 'Set' ? options?.contextSetId ?? activeSet?.id ?? null : null
       );
       resetModalMediaState();
-      if (label === 'Sample' && activeSet) {
-        sampleHistoryRef.current = items;
-        sampleHistorySetRef.current = activeSet.id;
-      } else {
-        sampleHistoryRef.current = [];
-        sampleHistorySetRef.current = null;
-      }
       setModalImageId(imageId);
       setModalIndex(resolvedIndex >= 0 ? resolvedIndex : null);
       triggerModalPulse();
@@ -105,8 +94,6 @@ export function useModalState({
       setModalIndex,
       triggerModalPulse,
       updateModalItems,
-      sampleHistoryRef,
-      sampleHistorySetRef,
     ]
   );
 
@@ -125,9 +112,7 @@ export function useModalState({
     setModalPan({ x: 0, y: 0 });
     resetModalTimerState();
     resetModalHistory();
-    sampleHistoryRef.current = [];
-    sampleHistorySetRef.current = null;
-    resetInFlight();
+      resetInFlight();
     if (modalPulseTimeoutRef.current) {
       window.clearTimeout(modalPulseTimeoutRef.current);
       modalPulseTimeoutRef.current = null;
@@ -166,8 +151,6 @@ export function useModalState({
     setModalZoom,
     stopModalLoading,
     updateModalItems,
-    sampleHistoryRef,
-    sampleHistorySetRef,
   ]);
 
   return { openModal, closeModal };

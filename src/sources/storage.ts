@@ -41,19 +41,86 @@ function normalizeSourceConfig(raw: SourceConfigDocument): SourceConfigDocument 
   };
 }
 
-async function findFileId(folderId: string, name: string) {
+async function findFileId(folderId: string, name: string, orderBy?: string) {
   const files = await driveList(
     {
       q: `'${folderId}' in parents and name='${name}' and trashed=false`,
+      ...(orderBy ? { orderBy } : {}),
       pageSize: '1',
     },
-    'nextPageToken,files(id,name)'
+    'nextPageToken,files(id,name,modifiedTime)'
   );
   return files[0]?.id ?? null;
 }
 
+async function listFilesByName(folderId: string, name: string, orderBy?: string) {
+  return driveList(
+    {
+      q: `'${folderId}' in parents and name='${name}' and trashed=false`,
+      ...(orderBy ? { orderBy } : {}),
+      pageSize: '100',
+    },
+    'nextPageToken,files(id,name,modifiedTime)'
+  );
+}
+
+function mergeStringList(base: string[] = [], incoming: string[] = []) {
+  if (incoming.length === 0) {
+    return base.slice();
+  }
+  const seen = new Set(base);
+  const merged = base.slice();
+  for (const value of incoming) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      merged.push(value);
+    }
+  }
+  return merged;
+}
+
+function mergeImageMap(
+  base: Record<string, string[]> = {},
+  incoming: Record<string, string[]> = {}
+) {
+  const merged: Record<string, string[]> = { ...base };
+  for (const [setId, list] of Object.entries(incoming)) {
+    merged[setId] = mergeStringList(merged[setId] ?? [], list ?? []);
+  }
+  return merged;
+}
+
+function mergeSourceStateDocuments(
+  base: SourceStateDocument,
+  incoming: SourceStateDocument
+): SourceStateDocument {
+  const mergedSources: SourceStateDocument['sources'] = { ...base.sources };
+  for (const [sourceId, entry] of Object.entries(incoming.sources ?? {})) {
+    const existing = mergedSources[sourceId] ?? {
+      subdir: '',
+      downloadedSets: [],
+      hiddenSets: [],
+      downloadedImages: {},
+      hiddenImages: {},
+    };
+    const nextSubdir = existing.subdir?.trim() ? existing.subdir : entry.subdir ?? '';
+    mergedSources[sourceId] = {
+      subdir: nextSubdir,
+      downloadedSets: mergeStringList(existing.downloadedSets, entry.downloadedSets),
+      hiddenSets: mergeStringList(existing.hiddenSets, entry.hiddenSets),
+      downloadedImages: mergeImageMap(existing.downloadedImages, entry.downloadedImages),
+      hiddenImages: mergeImageMap(existing.hiddenImages, entry.hiddenImages),
+    };
+  }
+  return { version: 1, sources: mergedSources };
+}
+
 export async function loadSourceConfig() {
-  const fileId = await findFileId(SOURCES_ROOT_FOLDER_ID, CONFIG_FILE_NAME);
+  const fileId = await findFileId(
+    SOURCES_ROOT_FOLDER_ID,
+    CONFIG_FILE_NAME,
+    'modifiedTime desc'
+  );
   if (!fileId) {
     const created = await driveUploadText(
       SOURCES_ROOT_FOLDER_ID,
@@ -76,7 +143,12 @@ export async function loadSourceConfig() {
 }
 
 export async function loadSourceState() {
-  const fileId = await findFileId(SOURCES_ROOT_FOLDER_ID, STATE_FILE_NAME);
+  const files = await listFilesByName(
+    SOURCES_ROOT_FOLDER_ID,
+    STATE_FILE_NAME,
+    'modifiedTime desc'
+  );
+  const fileId = files[0]?.id ?? null;
   if (!fileId) {
     const empty = createEmptyState();
     const created = await driveUploadText(
@@ -87,25 +159,72 @@ export async function loadSourceState() {
     );
     return { fileId: created.id, state: empty };
   }
-  const raw = await driveDownloadText(fileId);
-  try {
-    const parsed = JSON.parse(raw) as SourceStateDocument;
-    if (parsed?.version === 1 && parsed.sources) {
-      return { fileId, state: parsed };
+  let merged = createEmptyState();
+  let validCount = 0;
+  for (const file of files) {
+    if (!file.id) {
+      continue;
     }
-  } catch {
-    // fall back to empty state
+    try {
+      const raw = await driveDownloadText(file.id);
+      const parsed = JSON.parse(raw) as SourceStateDocument;
+      if (parsed?.version === 1 && parsed.sources) {
+        merged = mergeSourceStateDocuments(merged, parsed);
+        validCount += 1;
+      }
+    } catch {
+      // Ignore invalid entries and keep merging.
+    }
+  }
+  if (validCount > 1) {
+    try {
+      await driveUploadText(
+        SOURCES_ROOT_FOLDER_ID,
+        fileId,
+        STATE_FILE_NAME,
+        JSON.stringify(merged, null, 2)
+      );
+    } catch {
+      // Ignore failures; we still return the merged view.
+    }
+  }
+  if (validCount > 0) {
+    return { fileId, state: merged };
   }
   return { fileId, state: createEmptyState() };
 }
 
 export async function saveSourceState(fileId: string | null, state: SourceStateDocument) {
-  const content = JSON.stringify(state, null, 2);
+  const files = await listFilesByName(
+    SOURCES_ROOT_FOLDER_ID,
+    STATE_FILE_NAME,
+    'modifiedTime desc'
+  );
+  let merged = createEmptyState();
+  let validCount = 0;
+  for (const file of files) {
+    if (!file.id) {
+      continue;
+    }
+    try {
+      const raw = await driveDownloadText(file.id);
+      const parsed = JSON.parse(raw) as SourceStateDocument;
+      if (parsed?.version === 1 && parsed.sources) {
+        merged = mergeSourceStateDocuments(merged, parsed);
+        validCount += 1;
+      }
+    } catch {
+      // Ignore invalid entries and keep merging.
+    }
+  }
+  merged = mergeSourceStateDocuments(merged, state);
+  const content = JSON.stringify(merged, null, 2);
+  const resolvedId = fileId ?? files[0]?.id ?? null;
   const result = await driveUploadText(
     SOURCES_ROOT_FOLDER_ID,
-    fileId,
+    resolvedId,
     STATE_FILE_NAME,
     content
   );
-  return result.id ?? fileId;
+  return result.id ?? resolvedId ?? fileId;
 }

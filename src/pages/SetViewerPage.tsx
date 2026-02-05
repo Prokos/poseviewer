@@ -10,10 +10,11 @@ import {
 } from '@tabler/icons-react';
 import type { DriveImage } from '../drive/types';
 import { ImageThumb } from '../components/ImageThumb';
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type RefObject } from 'react';
 import { ImageGrid } from '../components/ImageGrid';
 import { GridLoadButtons } from '../components/GridLoadButtons';
 import { useSetViewer } from '../features/setViewer/SetViewerContext';
+import type { ViewerTabKey } from '../features/setViewer/viewerMetrics';
 
 const SCROLL_TARGET_KEY = 'poseviewer-scroll-target';
 
@@ -40,7 +41,6 @@ export function SetViewerPage() {
     hiddenCount,
     nonFavoritesCount,
     allImagesCount,
-    sampleImages,
     favoriteImages,
     nonFavoriteImages,
     hiddenImages,
@@ -53,20 +53,10 @@ export function SetViewerPage() {
     isLoadingMore,
     totalImagesKnown,
     allPageSize,
-    nonFavoritesPendingExtra,
-    favoritesPendingExtra,
-    hiddenPendingExtra,
-    pendingExtra,
-    remainingImages,
-    onLoadMoreNonFavorites,
-    onLoadAllNonFavorites,
-    onLoadMoreFavorites,
-    onLoadAllFavorites,
-    onLoadMoreHidden,
-    onLoadAllHidden,
+    viewerTabMetrics,
+    onLoadMoreActiveTab,
+    onLoadAllActiveTab,
     onDeleteHiddenImages,
-    onLoadMoreImages,
-    onLoadAllPreloaded,
     onEnsureImageInView,
     onToggleFavoriteImage,
     onToggleHiddenImage,
@@ -82,7 +72,6 @@ export function SetViewerPage() {
     modalContextLabel,
     thumbSize,
     viewerThumbSize,
-    sampleGridRef,
     allGridRef,
   } = useSetViewer();
   const thumbRef = useRef<HTMLDivElement | null>(null);
@@ -100,13 +89,13 @@ export function SetViewerPage() {
   const lastHiddenRef = useRef<{
     setId: string;
     imageId: string;
-    tab: 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all';
+    tab: ViewerTabKey;
     sort: 'random' | 'chronological';
     sortOrder: 'asc' | 'desc';
   } | null>(null);
   const undoScrollTargetRef = useRef<{
     imageId: string;
-    tab: 'samples' | 'favorites' | 'nonfavorites' | 'hidden' | 'all';
+    tab: ViewerTabKey;
   } | null>(null);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const placeholderCount =
@@ -117,29 +106,27 @@ export function SetViewerPage() {
       : 0;
   const viewerStatus =
     isLoadingImages || viewerIndexProgress ? viewerIndexProgress || 'Loading images…' : '';
-  const activeGridTotals = (() => {
-    const tab = setViewerTab;
-    if (tab === 'favorites') {
-      return { loaded: favoriteImages.length, total: favoritesCount };
-    }
-    if (tab === 'nonfavorites') {
-      return {
-        loaded: nonFavoriteImages.length,
-        total: typeof nonFavoritesCount === 'number' ? nonFavoritesCount : undefined,
-      };
-    }
-    if (tab === 'hidden') {
-      return { loaded: hiddenImages.length, total: hiddenCount };
-    }
-    return { loaded: activeImages.length, total: totalImagesKnown };
-  })();
+  const activeGridTotals = viewerTabMetrics[setViewerTab];
 
   useEffect(() => {
-    if (setViewerTab !== 'all' || !activeSet) {
+    if (!activeSet) {
       return;
     }
     const node = loadMoreSentinelRef.current;
     if (!node || typeof IntersectionObserver === 'undefined') {
+      return;
+    }
+    const loadingByTab: Record<ViewerTabKey, boolean> = {
+      all: isLoadingImages || isLoadingMore,
+      favorites: isLoadingFavorites,
+      nonfavorites: isLoadingNonFavorites,
+      hidden: isLoadingHidden,
+    };
+    const activeTabState = {
+      remaining: viewerTabMetrics[setViewerTab].remaining,
+      isLoading: loadingByTab[setViewerTab],
+    };
+    if (!activeTabState.remaining || activeTabState.remaining <= 0) {
       return;
     }
     const observer = new IntersectionObserver(
@@ -147,19 +134,29 @@ export function SetViewerPage() {
         if (!entries.some((entry) => entry.isIntersecting)) {
           return;
         }
-        if (typeof remainingImages !== 'number' || remainingImages <= 0) {
+        if (!activeTabState.remaining || activeTabState.remaining <= 0) {
           return;
         }
-        if (isLoadingMore || isLoadingImages) {
+        if (activeTabState.isLoading) {
           return;
         }
-        void onLoadMoreImages();
+        void onLoadMoreActiveTab();
       },
       { rootMargin: '600px 0px', threshold: 0.01 }
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [activeSet, isLoadingImages, isLoadingMore, onLoadMoreImages, remainingImages, setViewerTab]);
+  }, [
+    activeSet,
+    isLoadingFavorites,
+    isLoadingHidden,
+    isLoadingImages,
+    isLoadingMore,
+    isLoadingNonFavorites,
+    onLoadMoreActiveTab,
+    setViewerTab,
+    viewerTabMetrics,
+  ]);
 
   useEffect(() => {
     const nextPos = activeSet?.thumbnailPos ?? 50;
@@ -289,120 +286,6 @@ export function SetViewerPage() {
   }, [highlightedImageId]);
 
   useEffect(() => {
-    const modalTargetId = modalImageId;
-    const undoTarget = modalTargetId ? null : undoScrollTargetRef.current;
-    const targetId = modalTargetId ?? undoTarget?.imageId ?? null;
-    if (!targetId) {
-      return;
-    }
-    const tabForLabel = modalTargetId
-      ? modalContextLabel === 'Set'
-        ? 'all'
-        : modalContextLabel === 'Favorites'
-          ? 'favorites'
-          : modalContextLabel === 'Non favorites'
-            ? 'nonfavorites'
-            : modalContextLabel === 'Hidden'
-              ? 'hidden'
-              : modalContextLabel === 'Sample'
-                ? 'samples'
-                : null
-      : undoTarget?.tab ?? null;
-    if (!tabForLabel || tabForLabel !== setViewerTab) {
-      return;
-    }
-    const getGridContext = () => {
-      switch (tabForLabel) {
-        case 'all':
-          return { images: activeImages, grid: allGridRef.current };
-        case 'favorites':
-          return { images: favoriteImages, grid: favoritesGridRef.current };
-        case 'nonfavorites':
-          return { images: nonFavoriteImages, grid: nonFavoritesGridRef.current ?? sampleGridRef.current };
-        case 'hidden':
-          return { images: hiddenImages, grid: hiddenGridRef.current };
-        case 'samples':
-          return { images: sampleImages, grid: sampleGridRef.current };
-        default:
-          return { images: [], grid: null };
-      }
-    };
-    const gridContext = getGridContext();
-    const attemptScroll = () => {
-      const selector = `[data-image-id="${CSS.escape(targetId)}"]`;
-      const element = document.querySelector(selector);
-      if (!element || !(element instanceof HTMLElement)) {
-        if (gridContext.grid) {
-          const index = gridContext.images.findIndex((image) => image.id === targetId);
-          if (index >= 0) {
-            const grid = gridContext.grid;
-            const rect = grid.getBoundingClientRect();
-            const width = rect.width;
-            const gap = 4;
-            const minColWidth = 160;
-            const columns = Math.max(
-              1,
-              Math.floor((width + gap) / (minColWidth + gap))
-            );
-            const itemWidth = Math.max(
-              minColWidth,
-              Math.floor((width - gap * (columns - 1)) / columns)
-            );
-            const rowStride = itemWidth + gap;
-            const row = Math.floor(index / columns);
-            const targetTop =
-              rect.top + window.scrollY + row * rowStride - window.innerHeight * 0.5 + itemWidth * 0.5;
-            window.scrollTo({ top: Math.max(0, targetTop) });
-            setHighlightedImageId(targetId);
-            return true;
-          }
-        }
-        return false;
-      }
-      const rect = element.getBoundingClientRect();
-      const needsScroll = rect.top < 40 || rect.bottom > window.innerHeight - 40;
-      if (needsScroll) {
-        element.scrollIntoView({ block: 'center' });
-      }
-      setHighlightedImageId(targetId);
-      return true;
-    };
-    if (attemptScroll()) {
-      modalScrollAttemptsRef.current = 0;
-      if (undoTarget) {
-        undoScrollTargetRef.current = null;
-      }
-      return;
-    }
-    if (modalScrollAttemptsRef.current >= 8) {
-      modalScrollAttemptsRef.current = 0;
-      if (undoTarget) {
-        undoScrollTargetRef.current = null;
-      }
-      return;
-    }
-    modalScrollAttemptsRef.current += 1;
-    if (modalScrollTimeoutRef.current) {
-      window.clearTimeout(modalScrollTimeoutRef.current);
-    }
-    modalScrollTimeoutRef.current = window.setTimeout(() => {
-      modalScrollTimeoutRef.current = null;
-      attemptScroll();
-    }, 120);
-  }, [
-    activeImages,
-    allGridRef,
-    favoriteImages,
-    hiddenImages,
-    modalContextLabel,
-    modalImageId,
-    nonFavoriteImages,
-    sampleGridRef,
-    sampleImages,
-    setViewerTab,
-  ]);
-
-  useEffect(() => {
     return () => {
       if (modalScrollTimeoutRef.current) {
         window.clearTimeout(modalScrollTimeoutRef.current);
@@ -486,14 +369,6 @@ export function SetViewerPage() {
     },
     []
   );
-  const favoritesRemaining = Math.max(0, favoritesCount - favoriteImages.length);
-  const hiddenRemaining = Math.max(0, hiddenCount - hiddenImages.length);
-  const nonFavoritesRemaining =
-    nonFavoritesCount !== undefined
-      ? Math.max(0, nonFavoritesCount - nonFavoriteImages.length)
-      : undefined;
-  const showNonFavoritesLoadButtons =
-    nonFavoritesRemaining !== undefined ? nonFavoritesRemaining > 0 : true;
   const favoriteAction = activeSet
     ? {
         isActive: (image: DriveImage) => favoriteIds.includes(image.id),
@@ -529,6 +404,266 @@ export function SetViewerPage() {
           isSaving || activeSet.thumbnailFileId === image.id,
       }
     : undefined;
+  type FilteredTabKey = 'favorites' | 'nonfavorites' | 'hidden';
+  type TabConfig = {
+    key: ViewerTabKey;
+    label: string;
+    count?: number;
+    hideCountWhenUndefined?: boolean;
+    images: DriveImage[];
+    gridRef: RefObject<HTMLDivElement>;
+    isLoading: boolean;
+    loadingLabel: string;
+    emptyLabel: string;
+    modalLabel: string;
+    gridClassName: string;
+    showHiddenAction?: boolean;
+  };
+  const tabConfig: Record<ViewerTabKey, TabConfig> = useMemo(
+    () => ({
+      all: {
+        key: 'all',
+        label: 'All Images',
+        count: allImagesCount,
+        images: activeImages,
+        gridRef: allGridRef,
+        isLoading: isLoadingImages,
+        loadingLabel: 'Loading images…',
+        emptyLabel: 'No images loaded yet.',
+        modalLabel: 'Set',
+        gridClassName: 'image-grid image-grid--zoom',
+      },
+      favorites: {
+        key: 'favorites',
+        label: 'Favorites',
+        count: favoritesCount,
+        images: favoriteImages,
+        gridRef: favoritesGridRef,
+        isLoading: isLoadingFavorites,
+        loadingLabel: 'Loading favorites…',
+        emptyLabel: 'No favorites yet.',
+        modalLabel: 'Favorites',
+        gridClassName: 'image-grid image-grid--zoom image-grid--filled',
+      },
+      nonfavorites: {
+        key: 'nonfavorites',
+        label: 'Non-Favorites',
+        count: nonFavoritesCount,
+        hideCountWhenUndefined: true,
+        images: nonFavoriteImages,
+        gridRef: nonFavoritesGridRef,
+        isLoading: isLoadingNonFavorites,
+        loadingLabel: 'Loading images…',
+        emptyLabel: 'No non-favorites yet.',
+        modalLabel: 'Non favorites',
+        gridClassName: 'image-grid image-grid--zoom',
+      },
+      hidden: {
+        key: 'hidden',
+        label: 'Hidden',
+        count: hiddenCount,
+        images: hiddenImages,
+        gridRef: hiddenGridRef,
+        isLoading: isLoadingHidden,
+        loadingLabel: 'Loading hidden…',
+        emptyLabel: 'No hidden images yet.',
+        modalLabel: 'Hidden',
+        gridClassName: 'image-grid image-grid--zoom image-grid--filled',
+        showHiddenAction: true,
+      },
+    }),
+    [
+      activeImages,
+      allGridRef,
+      allImagesCount,
+      favoriteImages,
+      favoritesCount,
+      favoritesGridRef,
+      hiddenCount,
+      hiddenImages,
+      hiddenGridRef,
+      isLoadingFavorites,
+      isLoadingHidden,
+      isLoadingImages,
+      isLoadingNonFavorites,
+      nonFavoriteImages,
+      nonFavoritesCount,
+      nonFavoritesGridRef,
+    ]
+  );
+  const tabOrder: Array<'all' | 'favorites' | 'nonfavorites' | 'hidden'> = [
+    'all',
+    'favorites',
+    'nonfavorites',
+    'hidden',
+  ];
+
+  const renderFilteredTabBody = (tabKey: FilteredTabKey) => {
+    const tab = tabConfig[tabKey];
+    const metrics = viewerTabMetrics[tabKey];
+    const variant = tabKey;
+    const showAutoLoadSentinel =
+      typeof metrics.remaining === 'number' && metrics.remaining > 0;
+    return (
+      <>
+        {tab.isLoading ? (
+          <div className="stack">
+            <p className="empty">{tab.loadingLabel}</p>
+            {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+          </div>
+        ) : viewerIndexProgress ? (
+          <p className="muted">{viewerIndexProgress}</p>
+        ) : tab.images.length > 0 ? (
+          <ImageGrid
+            images={tab.images}
+            isConnected={isConnected}
+            thumbSize={thumbSize}
+            alt={activeSet?.name ?? ''}
+            modalLabel={tab.modalLabel}
+            gridClassName={tab.gridClassName}
+            gridRef={tab.gridRef}
+            virtualize
+            favoriteAction={favoriteAction}
+            hideAction={hideAction}
+            showHiddenAction={tab.showHiddenAction}
+            thumbnailAction={thumbnailAction}
+            highlightedImageId={highlightedImageId}
+          />
+        ) : (
+          <p className="empty">{tab.emptyLabel}</p>
+        )}
+        {variant === 'favorites' || variant === 'hidden' ? (
+          <GridLoadButtons
+            variant={variant}
+            isLoading={tab.isLoading}
+            currentCount={tab.images.length}
+            pendingCount={metrics.pending}
+            totalCount={tab.count ?? 0}
+            remainingCount={metrics.remaining ?? 0}
+            showLoadMore={metrics.showLoadMore}
+            showLoadAll={metrics.showLoadAll}
+            onLoadMore={onLoadMoreActiveTab}
+            onLoadAll={onLoadAllActiveTab}
+          />
+        ) : (
+          <GridLoadButtons
+            variant="nonfavorites"
+            isLoading={tab.isLoading}
+            currentCount={tab.images.length}
+            pendingCount={metrics.pending}
+            totalCount={tab.count}
+            showLoadMore={metrics.showLoadMore}
+            showLoadAll={metrics.showLoadAll}
+            onLoadMore={onLoadMoreActiveTab}
+            onLoadAll={onLoadAllActiveTab}
+          />
+        )}
+        {showAutoLoadSentinel ? (
+          <div className="load-more-sentinel" ref={loadMoreSentinelRef} />
+        ) : null}
+      </>
+    );
+  };
+
+  const modalLabelToTab: Record<string, ViewerTabKey> = useMemo(
+    () => ({
+      Set: 'all',
+      Favorites: 'favorites',
+      'Non favorites': 'nonfavorites',
+      Hidden: 'hidden',
+    }),
+    []
+  );
+
+  useEffect(() => {
+    const modalTargetId = modalImageId;
+    const undoTarget = modalTargetId ? null : undoScrollTargetRef.current;
+    const targetId = modalTargetId ?? undoTarget?.imageId ?? null;
+    if (!targetId) {
+      return;
+    }
+    const tabForLabel = modalTargetId
+      ? modalLabelToTab[modalContextLabel] ?? null
+      : undoTarget?.tab ?? null;
+    if (!tabForLabel || tabForLabel !== setViewerTab) {
+      return;
+    }
+    const gridContext = tabConfig[tabForLabel];
+    if (!gridContext) {
+      return;
+    }
+    const attemptScroll = () => {
+      const selector = `[data-image-id="${CSS.escape(targetId)}"]`;
+      const element = document.querySelector(selector);
+      if (!element || !(element instanceof HTMLElement)) {
+        if (gridContext.gridRef?.current) {
+          const index = gridContext.images.findIndex((image) => image.id === targetId);
+          if (index >= 0) {
+            const grid = gridContext.gridRef.current;
+            const rect = grid.getBoundingClientRect();
+            const width = rect.width;
+            const gap = 4;
+            const minColWidth = 160;
+            const columns = Math.max(
+              1,
+              Math.floor((width + gap) / (minColWidth + gap))
+            );
+            const itemWidth = Math.max(
+              minColWidth,
+              Math.floor((width - gap * (columns - 1)) / columns)
+            );
+            const rowStride = itemWidth + gap;
+            const row = Math.floor(index / columns);
+            const targetTop =
+              rect.top + window.scrollY + row * rowStride - window.innerHeight * 0.5 + itemWidth * 0.5;
+            window.scrollTo({ top: Math.max(0, targetTop) });
+            setHighlightedImageId(targetId);
+            return true;
+          }
+        }
+        return false;
+      }
+      const rect = element.getBoundingClientRect();
+      const needsScroll = rect.top < 40 || rect.bottom > window.innerHeight - 40;
+      if (needsScroll) {
+        element.scrollIntoView({ block: 'center' });
+      }
+      setHighlightedImageId(targetId);
+      return true;
+    };
+    if (attemptScroll()) {
+      modalScrollAttemptsRef.current = 0;
+      if (undoTarget) {
+        undoScrollTargetRef.current = null;
+      }
+      return;
+    }
+    if (modalScrollAttemptsRef.current >= 8) {
+      modalScrollAttemptsRef.current = 0;
+      if (undoTarget) {
+        undoScrollTargetRef.current = null;
+      }
+      return;
+    }
+    modalScrollAttemptsRef.current += 1;
+    if (modalScrollTimeoutRef.current) {
+      window.clearTimeout(modalScrollTimeoutRef.current);
+    }
+    modalScrollTimeoutRef.current = window.setTimeout(() => {
+      modalScrollTimeoutRef.current = null;
+      attemptScroll();
+    }, 120);
+  }, [
+    activeImages,
+    favoriteImages,
+    hiddenImages,
+    modalContextLabel,
+    modalImageId,
+    modalLabelToTab,
+    nonFavoriteImages,
+    setViewerTab,
+    tabConfig,
+  ]);
   return (
     <section className="panel">
       <div className="panel-header panel-header--row panel-header--viewer">
@@ -692,34 +827,23 @@ export function SetViewerPage() {
         {activeSet ? (
           <div className="stack">
             <div className="subtabs">
-              <button
-                type="button"
-                className={`subtab ${setViewerTab === 'all' ? 'is-active' : ''}`}
-                onClick={() => onSetViewerTab('all')}
-              >
-                All Images ({allImagesCount})
-              </button>
-              <button
-                type="button"
-                className={`subtab ${setViewerTab === 'favorites' ? 'is-active' : ''}`}
-                onClick={() => onSetViewerTab('favorites')}
-              >
-                Favorites ({favoritesCount})
-              </button>
-              <button
-                type="button"
-                className={`subtab ${setViewerTab === 'nonfavorites' ? 'is-active' : ''}`}
-                onClick={() => onSetViewerTab('nonfavorites')}
-              >
-                Non-Favorites{nonFavoritesCount !== undefined ? ` (${nonFavoritesCount})` : ''}
-              </button>
-              <button
-                type="button"
-                className={`subtab ${setViewerTab === 'hidden' ? 'is-active' : ''}`}
-                onClick={() => onSetViewerTab('hidden')}
-              >
-                Hidden ({hiddenCount})
-              </button>
+              {tabOrder.map((tabKey) => {
+                const meta = tabConfig[tabKey];
+                const countLabel = meta.hideCountWhenUndefined && meta.count === undefined
+                  ? ''
+                  : ` (${meta.count ?? 0})`;
+                return (
+                  <button
+                    key={tabKey}
+                    type="button"
+                    className={`subtab ${setViewerTab === tabKey ? 'is-active' : ''}`}
+                    onClick={() => onSetViewerTab(tabKey)}
+                  >
+                    {meta.label}
+                    {countLabel}
+                  </button>
+                );
+              })}
               <div className="subtabs-spacer" aria-hidden="true" />
               <div className="viewer-sort-toggle" role="group" aria-label="Image order">
                 <span className="muted">Order</span>
@@ -753,139 +877,27 @@ export function SetViewerPage() {
                 </button>
               </div>
             </div>
-            {setViewerTab === 'nonfavorites' ? (
+            {setViewerTab === 'favorites' ||
+            setViewerTab === 'nonfavorites' ||
+            setViewerTab === 'hidden' ? (
               <div className="preview">
-                {isLoadingNonFavorites ? (
-                  <div className="stack">
-                    <p className="empty">Loading images…</p>
-                    {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
+                {setViewerTab === 'hidden' ? (
+                  <div className="viewer-hidden-actions">
+                    <button
+                      type="button"
+                      className="primary primary--danger"
+                      onClick={onDeleteHiddenImages}
+                      disabled={!isConnected || hiddenCount === 0 || isDeletingHidden}
+                    >
+                      {isDeletingHidden
+                        ? `Deleting ${hiddenDeleteProgress?.completed ?? 0}/${
+                            hiddenDeleteProgress?.total ?? hiddenCount
+                          }…`
+                        : `Delete hidden from Drive (${hiddenCount})`}
+                    </button>
                   </div>
-                ) : viewerIndexProgress ? (
-                  <p className="muted">{viewerIndexProgress}</p>
-                ) : nonFavoriteImages.length > 0 ? (
-                  <ImageGrid
-                    images={nonFavoriteImages}
-                    isConnected={isConnected}
-                    thumbSize={thumbSize}
-                    alt={activeSet.name}
-                    modalLabel="Non favorites"
-                    gridClassName="image-grid image-grid--zoom"
-                    gridRef={nonFavoritesGridRef}
-                    virtualize
-                    favoriteAction={favoriteAction}
-                    hideAction={hideAction}
-                    thumbnailAction={thumbnailAction}
-                    highlightedImageId={highlightedImageId}
-                  />
-                ) : (
-                  <p className="empty">No non-favorites yet.</p>
-                )}
-                <GridLoadButtons
-                  variant="nonfavorites"
-                  isLoading={isLoadingNonFavorites}
-                  currentCount={nonFavoriteImages.length}
-                  pendingCount={nonFavoritesPendingExtra}
-                  totalCount={nonFavoritesCount}
-                  showLoadMore={showNonFavoritesLoadButtons}
-                  showLoadAll={showNonFavoritesLoadButtons}
-                  onLoadMore={onLoadMoreNonFavorites}
-                  onLoadAll={onLoadAllNonFavorites}
-                />
-              </div>
-            ) : null}
-            {setViewerTab === 'favorites' ? (
-              <div className="preview">
-                {isLoadingFavorites ? (
-                  <div className="stack">
-                    <p className="empty">Loading favorites…</p>
-                    {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
-                  </div>
-                ) : viewerIndexProgress ? (
-                  <p className="muted">{viewerIndexProgress}</p>
-                ) : favoriteImages.length > 0 ? (
-                  <ImageGrid
-                    images={favoriteImages}
-                    isConnected={isConnected}
-                    thumbSize={thumbSize}
-                    alt={activeSet.name}
-                    modalLabel="Favorites"
-                    gridClassName="image-grid image-grid--zoom image-grid--filled"
-                    gridRef={favoritesGridRef}
-                    virtualize
-                    favoriteAction={favoriteAction}
-                    hideAction={hideAction}
-                    thumbnailAction={thumbnailAction}
-                    highlightedImageId={highlightedImageId}
-                  />
-                ) : (
-                  <p className="empty">No favorites yet.</p>
-                )}
-                <GridLoadButtons
-                  variant="favorites"
-                  isLoading={isLoadingFavorites}
-                  currentCount={favoriteImages.length}
-                  pendingCount={favoritesPendingExtra}
-                  totalCount={favoritesCount}
-                  remainingCount={favoritesRemaining}
-                  showLoadMore={favoritesRemaining > 0}
-                  showLoadAll={favoritesRemaining > 0}
-                  onLoadMore={onLoadMoreFavorites}
-                  onLoadAll={onLoadAllFavorites}
-                />
-              </div>
-            ) : null}
-            {setViewerTab === 'hidden' ? (
-              <div className="preview">
-                <div className="viewer-hidden-actions">
-                  <button
-                    type="button"
-                    className="primary primary--danger"
-                    onClick={onDeleteHiddenImages}
-                    disabled={!isConnected || hiddenCount === 0 || isDeletingHidden}
-                  >
-                    {isDeletingHidden
-                      ? `Deleting ${hiddenDeleteProgress?.completed ?? 0}/${
-                          hiddenDeleteProgress?.total ?? hiddenCount
-                        }…`
-                      : `Delete hidden from Drive (${hiddenCount})`}
-                  </button>
-                </div>
-                {isLoadingHidden ? (
-                  <div className="stack">
-                    <p className="empty">Loading hidden…</p>
-                    {viewerIndexProgress ? <p className="muted">{viewerIndexProgress}</p> : null}
-                  </div>
-                ) : hiddenImages.length > 0 ? (
-                  <ImageGrid
-                    images={hiddenImages}
-                    isConnected={isConnected}
-                    thumbSize={thumbSize}
-                    alt={activeSet.name}
-                    modalLabel="Hidden"
-                    gridClassName="image-grid image-grid--zoom image-grid--filled"
-                    gridRef={hiddenGridRef}
-                    virtualize
-                    favoriteAction={favoriteAction}
-                    hideAction={hideAction}
-                    showHiddenAction
-                    thumbnailAction={thumbnailAction}
-                    highlightedImageId={highlightedImageId}
-                  />
-                ) : (
-                  <p className="empty">No hidden images yet.</p>
-                )}
-                <GridLoadButtons
-                  variant="hidden"
-                  isLoading={isLoadingHidden}
-                  currentCount={hiddenImages.length}
-                  pendingCount={hiddenPendingExtra}
-                  totalCount={hiddenCount}
-                  remainingCount={hiddenRemaining}
-                  showLoadMore={hiddenRemaining > 0}
-                  showLoadAll={hiddenRemaining > 0}
-                  onLoadMore={onLoadMoreHidden}
-                  onLoadAll={onLoadAllHidden}
-                />
+                ) : null}
+                {renderFilteredTabBody(setViewerTab)}
               </div>
             ) : null}
             {setViewerTab === 'all' ? (
@@ -918,21 +930,22 @@ export function SetViewerPage() {
                     <p className="empty">No images loaded yet. Use the load buttons below.</p>
                   )
                 ) : null}
-                {pendingExtra > 0 || (remainingImages !== undefined && remainingImages > 0) ? (
+                {viewerTabMetrics.all.showLoadMore || viewerTabMetrics.all.showLoadAll ? (
                   <GridLoadButtons
                     variant="all"
                     isLoading={isLoadingMore}
                     currentCount={activeImages.length}
-                    pendingCount={pendingExtra}
-                    totalCount={totalImagesKnown}
-                    remainingCount={remainingImages}
-                    showLoadMore={pendingExtra > 0}
-                    showLoadAll={remainingImages !== undefined && remainingImages > 0}
-                    onLoadMore={onLoadMoreImages}
-                    onLoadAll={onLoadAllPreloaded}
+                    pendingCount={viewerTabMetrics.all.pending}
+                    totalCount={viewerTabMetrics.all.total}
+                    remainingCount={viewerTabMetrics.all.remaining}
+                    showLoadMore={viewerTabMetrics.all.showLoadMore}
+                    showLoadAll={viewerTabMetrics.all.showLoadAll}
+                    onLoadMore={onLoadMoreActiveTab}
+                    onLoadAll={onLoadAllActiveTab}
                   />
                 ) : null}
-                {remainingImages !== undefined && remainingImages > 0 ? (
+                {typeof viewerTabMetrics.all.remaining === 'number' &&
+                viewerTabMetrics.all.remaining > 0 ? (
                   <div className="load-more-sentinel" ref={loadMoreSentinelRef} />
                 ) : null}
               </div>
